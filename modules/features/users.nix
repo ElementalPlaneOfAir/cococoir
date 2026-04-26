@@ -1,7 +1,11 @@
 {inputs, ...}: {
   imports = [inputs.flake-parts.flakeModules.modules];
 
-  flake.modules.nixos.users = {pkgs, inputs, ...}: {
+  flake.modules.nixos.users = {
+    pkgs,
+    inputs,
+    ...
+  }: {
     programs.fish.enable = true;
 
     users.groups.brad = {};
