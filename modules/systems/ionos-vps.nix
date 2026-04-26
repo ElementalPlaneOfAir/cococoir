@@ -2,6 +2,7 @@
   flake.nixosConfigurations.ionos-vps = inputs.nixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     modules = [
+      inputs.self.modules.nixos.users
       ({pkgs, lib, ...}: {
         networking.hostName = "ionos-vps";
 
@@ -69,7 +70,6 @@
         };
 
         environment.systemPackages = with pkgs; [
-          neovim
           git
           htop
           btop

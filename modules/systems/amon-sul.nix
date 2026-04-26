@@ -4,6 +4,7 @@
     modules = [
       inputs.self.modules.nixos.minimalBase
       inputs.self.modules.nixos.mediaServer
+      inputs.self.modules.nixos.users
       inputs.vpn-confinement.nixosModules.default
       ../../hardware/amon-sul.nix
       ({pkgs, ...}: {
@@ -35,29 +36,8 @@
           LC_TIME = "en_US.UTF-8";
         };
 
-        users.groups.brad = {};
-        users.users.nicole = {
-          isNormalUser = true;
-          description = "Nicole";
-          extraGroups = ["wheel" "jellyfin"];
-          shell = pkgs.fish;
-          openssh.authorizedKeys.keys = [
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINBfMZjr6H4oK3qSBTxjZrMZptWXdzYC6QV4bdS892Ls nicole@vermissian"
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN1tyFv2UbkAJMx2U6bp8OwRx5wMpK7/DxSslcPS0sWY nicole@incarnadine"
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDBQresTdgx3Se26QxvwD/S9SaCRCWL8dvZwZ6IM62b2 nicole@cheddar"
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKdPzSlJ3TCzPy7R2s2OOBJbBb+U5NY8dwMlGH9wm4Ot nicole@apiarist"
-          ];
-        };
-        users.users.brad = {
-          isNormalUser = true;
-          description = "Brad";
-          extraGroups = ["wheel" "jellyfin"];
-          shell = pkgs.fish;
-          openssh.authorizedKeys.keys = [
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHaOgK4fO5gTB79Infge2b+31VzXnC23lqV7m5NA+xuz bvenner@proton.me"
-          ];
-          group = "brad";
-        };
+        users.users.nicole.extraGroups = ["jellyfin"];
+        users.users.brad.extraGroups = ["jellyfin"];
 
         fileSystems."/backup" = {
           device = "/dev/disk/by-uuid/7b72c3a2-9a4b-4f43-b787-c179ec71847e";
@@ -85,7 +65,6 @@
         environment.systemPackages = with pkgs; [
           zellij
           tmux
-          neovim
           wget
           btop
           ripgrep-all

@@ -10,6 +10,11 @@
 
     import-tree.url = "github:vic/import-tree";
 
+    limonene = {
+      url = "github:cappuccinocosmico/limonene";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     vpn-confinement = {
       url = "github:Maroka-chan/VPN-Confinement";
       inputs.nixpkgs.follows = "nixpkgs";
