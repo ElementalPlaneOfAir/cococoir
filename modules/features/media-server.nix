@@ -51,7 +51,7 @@
 
       vpnNamespaces.wg = {
         enable = true;
-        wireguardConfigFile = "/etc/nixos/secrets/privado.den-017.conf";
+        wireguardConfigFile = config.sops.secrets.privado-wireguard.path;
         accessibleFrom = ["127.0.0.1"];
         portMappings = [
           {
@@ -74,7 +74,7 @@
 
       services.transmission = {
         enable = true;
-        package = inputs.nixpkgs.legacyPackages.x86_64-linux.transmission_4;
+        package = pkgs.transmission_4;
         openRPCPort = false;
         openPeerPorts = true;
         user = "jellyfin";
@@ -143,7 +143,7 @@
             local_addr = "127.0.0.1:443";
           };
         };
-        credentialsFile = "/etc/nixos/secrets/rathole-credentials.toml";
+        credentialsFile = config.sops.secrets.rathole-credentials.path;
       };
 
       networking.firewall.allowedTCPPorts = [53 80 111 2049 4000 4001 4002 443 20048 51413];

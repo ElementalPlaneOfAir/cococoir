@@ -1,0 +1,10 @@
+creation_rules:
+  - path_regex: secrets/secrets\.yaml$
+    # TODO: Replace these placeholders with the actual age public keys
+    # from each machine. Run on each host:
+    #   nix-shell -p ssh-to-age --run "ssh-to-age -i /etc/ssh/ssh_host_ed25519_key.pub"
+    # Then paste the output here and run:
+    #   sops encrypt secrets/secrets.yaml
+    age: >-
+      PLACEHOLDER_AMON_SUL_AGE_KEY,
+      PLACEHOLDER_IONOS_VPS_AGE_KEY
