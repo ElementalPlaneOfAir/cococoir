@@ -66,13 +66,6 @@
     ripgrep-all
   ];
 
-  # sops-nix secret configuration
-  sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
-  sops.defaultSopsFile = ../../secrets/secrets.yaml;
-
-  sops.secrets.privado-wireguard = {};
-  sops.secrets.rathole-credentials = {};
-
   # Clan deployment target
   clan.core.networking.targetHost = "root@192.168.0.7";
 

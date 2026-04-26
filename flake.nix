@@ -32,6 +32,7 @@
                 inputs.vpn-confinement.nixosModules.default
                 inputs.self.modules.nixos.minimalBase
                 inputs.self.modules.nixos.mediaServer
+                inputs.self.modules.nixos.ratholeVars
                 inputs.self.modules.nixos.users
                 ./machines/amon-sul/configuration.nix
               ];
@@ -41,6 +42,7 @@
               nixpkgs.hostPlatform = "x86_64-linux";
               imports = [
                 injectInputs
+                inputs.self.modules.nixos.ratholeVars
                 inputs.self.modules.nixos.users
                 ./machines/ionos-vps/configuration.nix
               ];

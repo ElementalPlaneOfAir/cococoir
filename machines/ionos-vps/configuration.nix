@@ -52,7 +52,7 @@
         bind_addr = "0.0.0.0:443";
       };
     };
-    credentialsFile = config.sops.secrets.rathole-credentials.path;
+    credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.tokens.path;
   };
 
   time.timeZone = "America/Denver";
@@ -69,12 +69,6 @@
     htop
     btop
   ];
-
-  # sops-nix secret configuration
-  sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
-  sops.defaultSopsFile = ../../secrets/secrets.yaml;
-
-  sops.secrets.rathole-credentials = {};
 
   # Clan deployment target
   # TODO: Replace with your VPS public IP or hostname

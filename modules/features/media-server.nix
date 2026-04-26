@@ -49,9 +49,17 @@
         };
       };
 
+      clan.core.vars.generators.privado-wireguard = {
+        prompts.wireguard-conf = {
+          description = "Paste your Privado VPN WireGuard configuration";
+          type = "multiline";
+          persist = true;
+        };
+      };
+
       vpnNamespaces.wg = {
         enable = true;
-        wireguardConfigFile = config.sops.secrets.privado-wireguard.path;
+        wireguardConfigFile = config.clan.core.vars.generators.privado-wireguard.files.wireguard-conf.path;
         accessibleFrom = ["127.0.0.1"];
         portMappings = [
           {
@@ -143,7 +151,7 @@
             local_addr = "127.0.0.1:443";
           };
         };
-        credentialsFile = config.sops.secrets.rathole-credentials.path;
+        credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.tokens.path;
       };
 
       networking.firewall.allowedTCPPorts = [53 80 111 2049 4000 4001 4002 443 20048 51413];
