@@ -1,15 +1,18 @@
 {
-  description = "A very basic flake";
+  description = "Homelab and VPS configuration";
+
+  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-  };
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs }: {
+    flake-parts.url = "github:hercules-ci/flake-parts";
 
-    packages.x86_64-linux.hello = nixpkgs.legacyPackages.x86_64-linux.hello;
+    import-tree.url = "github:vic/import-tree";
 
-    packages.x86_64-linux.default = self.packages.x86_64-linux.hello;
-
+    vpn-confinement = {
+      url = "github:Maroka-chan/VPN-Confinement";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 }
