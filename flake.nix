@@ -2,20 +2,29 @@
   description = "Homelab and VPS configuration";
 
   outputs = inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } (
-      { self, ... }:
-      let
-        injectInputs = { ... }: {
+    inputs.flake-parts.lib.mkFlake {inherit inputs;} (
+      {self, ...}: let
+        injectInputs = {...}: {
           _module.args.inputs = inputs;
         };
-      in
-      {
+      in {
         imports = [
           inputs.clan-core.flakeModules.default
           (inputs.import-tree ./modules)
         ];
 
-        systems = [ "x86_64-linux" ];
+        systems = [
+          "x86_64-linux"
+          "aarch64-linux"
+          "aarch64-darwin"
+          "x86_64-darwin"
+        ];
+
+        perSystem = {pkgs, system, ...}: {
+          devShells.default = pkgs.mkShell {
+            packages = [inputs.clan-core.packages.${system}.clan-cli];
+          };
+        };
 
         clan = {
           meta.name = "cococoir";
