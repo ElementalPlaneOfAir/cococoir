@@ -49,7 +49,7 @@
         bind_addr = "0.0.0.0:443";
       };
     };
-    credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.tokens.path;
+    credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.server-tokens.path;
   };
 
   time.timeZone = "America/Denver";

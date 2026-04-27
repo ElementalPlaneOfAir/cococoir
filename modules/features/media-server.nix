@@ -154,7 +154,7 @@
             local_addr = "127.0.0.1:443";
           };
         };
-        credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.tokens.path;
+        credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.client-tokens.path;
       };
 
       networking.firewall.allowedTCPPorts = [53 80 111 2049 4000 4001 4002 443 20048 51413];
