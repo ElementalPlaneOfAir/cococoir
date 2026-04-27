@@ -4,19 +4,11 @@
   config,
   ...
 }: {
+  imports = [ ./disk-config.nix ];
+
   networking.hostName = "ionos-vps";
 
-  # Bootloader — verify the correct device after installing with nixos-infect.
-  # Common values: /dev/sda, /dev/vda, /dev/nvme0n1
-  boot.loader.grub.enable = true;
-  boot.loader.grub.device = lib.mkDefault "/dev/sda";
-  boot.loader.grub.useOSProber = false;
-
-  # Placeholder root filesystem — override with your actual hardware config.
-  fileSystems."/" = lib.mkDefault {
-    device = "/dev/sda1";
-    fsType = "ext4";
-  };
+  # Bootloader configured automatically by disko
 
   # Basic networking — DHCP is usually correct for VPSes.
   networking.useDHCP = true;
