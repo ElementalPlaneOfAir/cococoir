@@ -107,36 +107,33 @@
 
       services.caddy = {
         enable = true;
-        globalConfig = lib.mkIf (!hasPublic) ''
-          auto_https off
-        '';
-        virtualHosts = lib.mkMerge [
-          (lib.mkIf (!hasPublic) {
-            "http://jellyfin.amon-sul.internal".extraConfig = ''
-              reverse_proxy localhost:8096
-            '';
-            "http://cryptpad.amon-sul.internal".extraConfig = ''
-              reverse_proxy localhost:9000
-            '';
-            "http://transmission.amon-sul.internal".extraConfig = ''
-              reverse_proxy localhost:9091
-            '';
-          })
-          (lib.mkIf hasPublic {
-            "${domain}".extraConfig = ''
-              redir https://jellyfin.${domain}{uri} permanent
-            '';
-            "jellyfin.${domain}".extraConfig = ''
-              reverse_proxy localhost:8096
-            '';
-            "cryptpad.${domain}".extraConfig = ''
-              reverse_proxy localhost:9000
-            '';
-            "transmission.${domain}".extraConfig = ''
-              reverse_proxy localhost:9091
-            '';
-          })
-        ];
+        # globalConfig = ''
+        #   auto_https off
+        # '';
+        virtualHosts = {
+          "http://jellyfin.amon-sul.internal".extraConfig = ''
+            reverse_proxy localhost:8096
+          '';
+          "http://cryptpad.amon-sul.internal".extraConfig = ''
+            reverse_proxy localhost:9000
+          '';
+          "http://transmission.amon-sul.internal".extraConfig = ''
+            reverse_proxy localhost:9091
+          '';
+          "${domain}".extraConfig = ''
+            redir https://jellyfin.${domain}{uri} permanent
+          '';
+          "jellyfin.${domain}".extraConfig = ''
+            reverse_proxy localhost:8096
+          '';
+          "cryptpad.${domain}".extraConfig = ''
+            reverse_proxy localhost:9000
+          '';
+          # Transmission not secure on an external domain
+          # "transmission.${domain}".extraConfig = ''
+          #   reverse_proxy localhost:9091
+          # '';
+        };
       };
 
       services.rathole = lib.mkIf hasPublic {
@@ -145,13 +142,16 @@
         settings = {
           client = {
             remote_addr = "${vps}:2333";
-            transport.type = "noise";
           };
           client.services.http = {
             local_addr = "127.0.0.1:80";
           };
           client.services.https = {
             local_addr = "127.0.0.1:443";
+          };
+          client.services.https_udp = {
+            local_addr = "127.0.0.1:443";
+            type = "udp";
           };
         };
         credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.client-tokens.path;

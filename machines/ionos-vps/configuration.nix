@@ -30,6 +30,7 @@
   networking.firewall = {
     enable = true;
     allowedTCPPorts = [22 80 443 2333];
+    allowedUDPPorts = [443];
   };
 
   # Rathole server — forwards public 80/443 through the encrypted tunnel
@@ -40,13 +41,16 @@
     settings = {
       server = {
         bind_addr = "0.0.0.0:2333";
-        transport.type = "noise";
       };
       server.services.http = {
         bind_addr = "0.0.0.0:80";
       };
       server.services.https = {
         bind_addr = "0.0.0.0:443";
+      };
+      server.services.https_udp = {
+        bind_addr = "0.0.0.0:443";
+        type = "udp";
       };
     };
     credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.server-tokens.path;
