@@ -1,4 +1,9 @@
-{pkgs, lib, config, ...}: {
+{
+  pkgs,
+  lib,
+  config,
+  ...
+}: {
   networking.hostName = "ionos-vps";
 
   # Bootloader — verify the correct device after installing with nixos-infect.
@@ -72,7 +77,7 @@
 
   # Clan deployment target
   # TODO: Replace with your VPS public IP or hostname
-  clan.core.networking.targetHost = "root@YOUR_VPS_IP";
+  clan.core.networking.targetHost = "root@66.179.138.70";
 
   system.stateVersion = "24.11";
 }

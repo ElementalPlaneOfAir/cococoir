@@ -6,17 +6,17 @@
     lib,
     ...
   }: let
-    domain = config.limonene.publicDomain;
-    vps = config.limonene.vpsAddress;
+    domain = config.cococoir.publicDomain;
+    vps = config.cococoir.vpsAddress;
     hasPublic = domain != null && vps != null;
   in {
-    options.limonene.publicDomain = lib.mkOption {
+    options.cococoir.publicDomain = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Public domain used for exposing services via reverse proxy and ACME.";
     };
 
-    options.limonene.vpsAddress = lib.mkOption {
+    options.cococoir.vpsAddress = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Public IP address or domain of the VPS running the rathole server.";

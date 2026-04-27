@@ -20,7 +20,11 @@
           "x86_64-darwin"
         ];
 
-        perSystem = {pkgs, system, ...}: {
+        perSystem = {
+          pkgs,
+          system,
+          ...
+        }: {
           devShells.default = pkgs.mkShell {
             packages = [inputs.clan-core.packages.${system}.clan-cli];
           };
@@ -31,7 +35,7 @@
           # TODO: Change this to your public domain (e.g. "example.com")
           # or an internal domain you control. Clan uses this for service
           # discovery, internal SSL certificates, and mesh networking.
-          meta.domain = "cococoir.local";
+          meta.domain = "interdim.net";
 
           machines = {
             amon-sul = {
