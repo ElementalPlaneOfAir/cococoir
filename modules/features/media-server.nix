@@ -123,6 +123,9 @@
             '';
           })
           (lib.mkIf hasPublic {
+            "${domain}".extraConfig = ''
+              redir https://jellyfin.${domain}{uri} permanent
+            '';
             "jellyfin.${domain}".extraConfig = ''
               reverse_proxy localhost:8096
             '';

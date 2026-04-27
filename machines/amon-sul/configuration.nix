@@ -3,6 +3,9 @@
 
   networking.hostName = "amon-sul";
 
+  cococoir.publicDomain = "interdim.net";
+  cococoir.vpsAddress = "66.179.138.70";
+
   networking.interfaces.enp11s0.useDHCP = false;
   networking.interfaces.enp11s0.ipv4.addresses = [
     {
