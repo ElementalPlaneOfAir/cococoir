@@ -96,7 +96,7 @@
           interface = "enp11s0";
           bind-interfaces = true;
           server = ["8.8.8.8" "1.1.1.1"];
-          address = "/amon-sul.internal/192.168.0.7";
+          address = ["/${machineName}.internal/192.168.0.7" "/${domain}/192.168.0.7"];
         };
       };
 
