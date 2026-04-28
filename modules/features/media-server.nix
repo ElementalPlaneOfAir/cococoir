@@ -131,7 +131,7 @@
         };
       };
 
-      services.rathole = lib.mkIf hasPublic {
+      services.rathole = {
         enable = true;
         role = "client";
         settings = {
