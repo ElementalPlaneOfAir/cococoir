@@ -26,15 +26,18 @@
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKdPzSlJ3TCzPy7R2s2OOBJbBb+U5NY8dwMlGH9wm4Ot nicole@apiarist"
   ];
 
-  # Firewall: 22 (SSH), 80 (HTTP), 443 (HTTPS), 2333 (rathole control)
+  # Firewall: 22 (SSH), 25 (SMTP), 80 (HTTP), 443 (HTTPS), 587 (SMTP submission),
+  # 993 (IMAPS), 2333 (rathole control)
+  # NOTE: Port 25 may be blocked by IONOS by default. You may need to contact
+  # support to unblock it for inbound mail.
   networking.firewall = {
     enable = true;
-    allowedTCPPorts = [22 80 443 2333];
+    allowedTCPPorts = [22 25 80 443 587 993 2333];
     allowedUDPPorts = [443];
   };
 
-  # Rathole server — forwards public 80/443 through the encrypted tunnel
-  # to the client (amon-sul) where Caddy terminates TLS.
+  # Rathole server — forwards public ports through the encrypted tunnel
+  # to the client (amon-sul).
   services.rathole = {
     enable = true;
     role = "server";
@@ -51,6 +54,18 @@
       server.services.https_udp = {
         bind_addr = "0.0.0.0:443";
         type = "udp";
+      };
+      server.services.smtp = {
+        bind_addr = "0.0.0.0:25";
+        type = "tcp";
+      };
+      server.services.submission = {
+        bind_addr = "0.0.0.0:587";
+        type = "tcp";
+      };
+      server.services.imaps = {
+        bind_addr = "0.0.0.0:993";
+        type = "tcp";
       };
     };
     credentialsFile = config.clan.core.vars.generators.rathole-tokens.files.server-tokens.path;

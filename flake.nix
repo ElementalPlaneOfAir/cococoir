@@ -45,6 +45,7 @@
                 inputs.vpn-confinement.nixosModules.default
                 inputs.self.modules.nixos.minimalBase
                 inputs.self.modules.nixos.mediaServer
+                inputs.self.modules.nixos.mailServer
                 inputs.self.modules.nixos.ratholeVars
                 inputs.self.modules.nixos.users
                 ./machines/amon-sul/configuration.nix

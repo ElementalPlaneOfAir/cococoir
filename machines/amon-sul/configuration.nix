@@ -10,6 +10,12 @@
   cococoir.publicDomain = "interdim.net";
   cococoir.vpsAddress = "66.179.138.70";
 
+  # Enable the Stalwart mail server. It listens on localhost mail ports
+  # and tunnels them through rathole from the VPS.
+  # NOTE: Before first deploy, ensure you have set up TLS certificates
+  # or are OK with the auto-generated self-signed cert.
+  cococoir.mail.enable = true;
+
   networking.interfaces.enp11s0.useDHCP = false;
   networking.interfaces.enp11s0.ipv4.addresses = [
     {
