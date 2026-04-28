@@ -1,4 +1,5 @@
 {...}: {
+  # NOTE: Disabled for now, mainly since after a deep dive into mail deliverability, running your own email server seems next to fucking impossible :(
   #
   # Stalwart Mail Server — all-in-one SMTP, IMAP, JMAP, and webadmin.
   #
@@ -31,7 +32,11 @@
 
       hostname = lib.mkOption {
         type = lib.types.str;
-        default = "mail.${if domain != null then domain else config.networking.hostName}";
+        default = "mail.${
+          if domain != null
+          then domain
+          else config.networking.hostName
+        }";
         description = ''
           Hostname used for the mail server. This should match the PTR/reverse
           DNS record of your public IP, and be the target of your MX record.
