@@ -8,7 +8,7 @@
   }: let
     domain = config.cococoir.publicDomain;
     vps = config.cococoir.vpsAddress;
-    hasPublic = domain != null && vps != null;
+    machineName = config.cococoir.machineName;
   in {
     options.cococoir.publicDomain = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -36,14 +36,9 @@
         settings = {
           httpPort = 9000;
           httpAddress = "127.0.0.1";
-          httpUnsafeOrigin =
-            if hasPublic
-            then "https://cryptpad.${domain}"
-            else "http://localhost:${toString config.services.cryptpad.settings.httpPort}";
-          httpSafeOrigin =
-            if hasPublic
-            then "https://cryptpad.${domain}"
-            else "http://localhost:${toString config.services.cryptpad.settings.httpPort}";
+          # Ideally it would be nice to include cryptpad.amon-sul.internal as an extra interface for these components.
+          httpUnsafeOrigin = "https://cryptpad.${domain}";
+          httpSafeOrigin = "https://cryptpad.${domain}";
           # NOTE: For full CryptPad security isolation, httpSafeOrigin should be a
           # separate subdomain (e.g. https://cryptpad-sandbox.<domain>).
         };
@@ -111,13 +106,13 @@
         #   auto_https off
         # '';
         virtualHosts = {
-          "http://jellyfin.amon-sul.internal".extraConfig = ''
+          "http://jellyfin.${machineName}.internal".extraConfig = ''
             reverse_proxy localhost:8096
           '';
-          "http://cryptpad.amon-sul.internal".extraConfig = ''
+          "http://cryptpad.${machineName}.internal".extraConfig = ''
             reverse_proxy localhost:9000
           '';
-          "http://transmission.amon-sul.internal".extraConfig = ''
+          "http://transmission.${machineName}.internal".extraConfig = ''
             reverse_proxy localhost:9091
           '';
           "${domain}".extraConfig = ''
