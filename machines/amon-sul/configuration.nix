@@ -1,5 +1,9 @@
-{pkgs, config, ...}: {
-  imports = [ ../../hardware/amon-sul.nix ];
+{
+  pkgs,
+  config,
+  ...
+}: {
+  imports = [../../hardware/amon-sul.nix];
 
   networking.hostName = "amon-sul";
 

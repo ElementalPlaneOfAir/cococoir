@@ -8,7 +8,7 @@
   }: let
     domain = config.cococoir.publicDomain;
     vps = config.cococoir.vpsAddress;
-    machineName = config.cococoir.machineName;
+    machineName = config.networking.hostName;
   in {
     options.cococoir.publicDomain = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
