@@ -44,6 +44,39 @@
         };
       };
 
+      services.forgejo = {
+        enable = true;
+        settings = {
+          server = {
+            DOMAIN = "git.${domain}";
+            ROOT_URL = "https://git.${domain}";
+            HTTP_ADDR = "127.0.0.1";
+            HTTP_PORT = 3000;
+          };
+        };
+      };
+
+      services.matrix-continuwuity = {
+        enable = true;
+        settings = {
+          global = {
+            server_name = "${domain}";
+            address = [ "127.0.0.1" ];
+            port = [ 6167 ];
+          };
+        };
+      };
+
+      services.vaultwarden = {
+        enable = true;
+        config = {
+          DOMAIN = "https://vault.${domain}";
+          ROCKET_ADDRESS = "127.0.0.1";
+          ROCKET_PORT = 8222;
+          SIGNUPS_ALLOWED = false;
+        };
+      };
+
       clan.core.vars.generators.privado-wireguard = {
         prompts.wireguard-conf = {
           description = "Paste your Privado VPN WireGuard configuration";
@@ -115,7 +148,24 @@
           "http://transmission.${machineName}.internal".extraConfig = ''
             reverse_proxy localhost:9091
           '';
+          "http://git.${machineName}.internal".extraConfig = ''
+            reverse_proxy localhost:3000
+          '';
+          "http://matrix.${machineName}.internal".extraConfig = ''
+            reverse_proxy localhost:6167
+          '';
+          "http://vault.${machineName}.internal".extraConfig = ''
+            reverse_proxy localhost:8222
+          '';
           "${domain}".extraConfig = ''
+            handle_path /.well-known/matrix/server {
+              header Content-Type application/json
+              respond "{\"m.server\": \"matrix.${domain}:443\"}"
+            }
+            handle_path /.well-known/matrix/client {
+              header Content-Type application/json
+              respond "{\"m.homeserver\": {\"base_url\": \"https://matrix.${domain}\"}}"
+            }
             redir https://jellyfin.${domain}{uri} permanent
           '';
           "jellyfin.${domain}".extraConfig = ''
@@ -123,6 +173,15 @@
           '';
           "cryptpad.${domain}".extraConfig = ''
             reverse_proxy localhost:9000
+          '';
+          "git.${domain}".extraConfig = ''
+            reverse_proxy localhost:3000
+          '';
+          "matrix.${domain}".extraConfig = ''
+            reverse_proxy localhost:6167
+          '';
+          "vault.${domain}".extraConfig = ''
+            reverse_proxy localhost:8222
           '';
           # Transmission not secure on an external domain
           # "transmission.${domain}".extraConfig = ''
