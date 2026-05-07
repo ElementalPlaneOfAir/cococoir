@@ -1,7 +1,6 @@
 { config, lib, ... }:
 let
   cfg = config.cococoir.services.vaultwarden;
-  domain = config.cococoir.domain;
 in
 {
   options.cococoir.services.vaultwarden = {
@@ -9,14 +8,12 @@ in
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = if domain != null then "vault.${domain}" else "vault.local";
-      description = "Public domain for Vaultwarden.";
+      description = "External domain for Vaultwarden.";
     };
 
-    globallyAccessible = lib.mkOption {
+    public = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = "Whether to expose Vaultwarden on the public domain via Caddy.";
+      description = "Whether to allow public access to Vaultwarden.";
     };
 
     signupsAllowed = lib.mkOption {
@@ -37,17 +34,13 @@ in
       };
     };
 
-    services.caddy.virtualHosts = lib.mkMerge [
-      {
-        "http://vault.${config.networking.hostName}.internal".extraConfig = ''
-          reverse_proxy localhost:8222
-        '';
-      }
-      (lib.mkIf cfg.globallyAccessible {
-        "${cfg.domain}".extraConfig = ''
-          reverse_proxy localhost:8222
-        '';
-      })
-    ];
+    services.caddy.virtualHosts."${cfg.domain}".extraConfig =
+      if cfg.public
+      then ''reverse_proxy localhost:8222''
+      else ''
+        @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+        respond @not_local "Forbidden" 403
+        reverse_proxy localhost:8222
+      '';
   };
 }

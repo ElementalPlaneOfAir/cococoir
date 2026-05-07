@@ -18,7 +18,9 @@
         ./modules/services/forgejo.nix
         ./modules/services/matrix.nix
         ./modules/services/cryptpad.nix
-        ./modules/services/stalwart.nix
+        ./modules/services/media-stack.nix
+        ./modules/services/kavita.nix
+        ./modules/services/custom.nix
       ];
     };
   };

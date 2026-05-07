@@ -1,7 +1,6 @@
 { config, lib, ... }:
 let
   cfg = config.cococoir.services.forgejo;
-  domain = config.cococoir.domain;
 in
 {
   options.cococoir.services.forgejo = {
@@ -9,14 +8,12 @@ in
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = if domain != null then "git.${domain}" else "git.local";
-      description = "Public domain for Forgejo.";
+      description = "External domain for Forgejo.";
     };
 
-    globallyAccessible = lib.mkOption {
+    public = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = "Whether to expose Forgejo on the public domain via Caddy.";
+      description = "Whether to allow public access to Forgejo.";
     };
   };
 
@@ -33,17 +30,13 @@ in
       };
     };
 
-    services.caddy.virtualHosts = lib.mkMerge [
-      {
-        "http://git.${config.networking.hostName}.internal".extraConfig = ''
-          reverse_proxy localhost:3000
-        '';
-      }
-      (lib.mkIf cfg.globallyAccessible {
-        "${cfg.domain}".extraConfig = ''
-          reverse_proxy localhost:3000
-        '';
-      })
-    ];
+    services.caddy.virtualHosts."${cfg.domain}".extraConfig =
+      if cfg.public
+      then ''reverse_proxy localhost:3000''
+      else ''
+        @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+        respond @not_local "Forbidden" 403
+        reverse_proxy localhost:3000
+      '';
   };
 }

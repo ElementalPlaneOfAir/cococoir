@@ -9,14 +9,12 @@ in
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = if domain != null then "matrix.${domain}" else "matrix.local";
-      description = "Public domain for the Matrix server.";
+      description = "External domain for the Matrix server.";
     };
 
-    globallyAccessible = lib.mkOption {
+    public = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = "Whether to expose Matrix on the public domain via Caddy.";
+      description = "Whether to allow public access to Matrix.";
     };
   };
 
@@ -32,30 +30,27 @@ in
       };
     };
 
-    services.caddy.virtualHosts = lib.mkMerge [
-      {
-        "http://matrix.${config.networking.hostName}.internal".extraConfig = ''
+    services.caddy.virtualHosts = {
+      "${cfg.domain}".extraConfig =
+        if cfg.public
+        then ''reverse_proxy localhost:6167''
+        else ''
+          @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+          respond @not_local "Forbidden" 403
           reverse_proxy localhost:6167
         '';
-      }
-      (lib.mkIf cfg.globallyAccessible {
-        "${cfg.domain}".extraConfig = ''
-          reverse_proxy localhost:6167
-        '';
-        "${if domain != null then domain else config.networking.hostName}" = {
-          extraConfig = ''
-            handle_path /.well-known/matrix/server {
-              header Content-Type application/json
-              respond "{\"m.server\": \"matrix.${if domain != null then domain else config.networking.hostName}:443\"}"
-            }
-            handle_path /.well-known/matrix/client {
-              header Content-Type application/json
-              respond "{\"m.homeserver\": {\"base_url\": \"https://matrix.${if domain != null then domain else config.networking.hostName}\"}}"
-            }
-            redir https://jellyfin.${if domain != null then domain else config.networking.hostName}{uri} permanent
-          '';
-        };
-      })
-    ];
+    } // lib.optionalAttrs cfg.public {
+      "${if domain != null then domain else config.networking.hostName}".extraConfig = ''
+        handle_path /.well-known/matrix/server {
+          header Content-Type application/json
+          respond "{\"m.server\": \"matrix.${if domain != null then domain else config.networking.hostName}:443\"}"
+        }
+        handle_path /.well-known/matrix/client {
+          header Content-Type application/json
+          respond "{\"m.homeserver\": {\"base_url\": \"https://matrix.${if domain != null then domain else config.networking.hostName}\"}}"
+        }
+        redir https://${cfg.domain}{uri} permanent
+      '';
+    };
   };
 }
