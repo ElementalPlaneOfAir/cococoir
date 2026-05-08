@@ -17,6 +17,7 @@
         ./modules/services/vaultwarden.nix
         ./modules/services/forgejo.nix
         ./modules/services/matrix.nix
+        ./modules/services/mautrix-gmessages.nix
         ./modules/services/cryptpad.nix
         ./modules/services/media-stack.nix
         ./modules/services/kavita.nix

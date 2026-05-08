@@ -46,6 +46,7 @@ Every service under `modules/services/` follows a **consistent pattern**:
 | `vaultwarden.nix` | Vaultwarden | `8222` | Has `signupsAllowed` option. |
 | `forgejo.nix` | Forgejo | `3000` | — |
 | `matrix.nix` | Matrix (continuwuity) | `6167` | Also serves `.well-known/matrix/*` on the base domain. |
+| `mautrix-gmessages.nix` | mautrix-gmessages | `29336` | Matrix-Google Messages bridge. No Caddy vhost (appservice). Requires PostgreSQL. |
 | `cryptpad.nix` | CryptPad | `9000` | — |
 | `media-stack.nix` | Transmission | `9091` | **VPN-confined** via `vpnNamespaces.wg`. Requires `vpnConfigFile`. |
 | `media-stack.nix` | Radarr | `7878` | Shares `jellyfin` user/group. |
