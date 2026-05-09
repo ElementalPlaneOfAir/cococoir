@@ -1,0 +1,11 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+domain = "example.com"
+
+# Paste your SSH public key here (cat ~/.ssh/id_ed25519.pub)
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC..."
+
+# Optional overrides:
+# server_name = "my-proxy"
+# server_type = "cx22"
+# location    = "nbg1"

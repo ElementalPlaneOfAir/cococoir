@@ -1,0 +1,14 @@
+# Nix build results
+result
+result-*
+
+# direnv
+.direnv/
+
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.*.backup
+terraform.tfvars
+.terraform.lock.hcl
+*.tfplan

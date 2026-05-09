@@ -111,6 +111,52 @@ in
 }
 ```
 
+## CLI Tool
+
+The `cli/` directory contains a Go-based CLI application for managing Cococoir deployments.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `cococoir init [dir]` | Interactive wizard to scaffold a new project |
+| `cococoir add service` | Add a new service to an existing project |
+| `cococoir status` | Show deployment status (placeholder) |
+| `cococoir version` | Print version info |
+
+### Building
+
+```bash
+nix build .#default          # Build the CLI
+nix run .#default -- init    # Run directly
+nix develop                  # Enter dev shell with Go tooling
+```
+
+### Implementation
+
+- **Cobra** for command structure
+- **Huh** (Charm) for interactive forms
+- **Lipgloss** for terminal styling
+
+## Infrastructure Provisioning
+
+The `terraform/` directory contains reusable modules for provisioning the VPS and DNS records needed for a Cococoir deployment. Everything uses **Hetzner** (Cloud + DNS) so users only need a single account and API token.
+
+| Module | Provider | Purpose |
+|--------|----------|---------|
+| `terraform/modules/vps` | Hetzner Cloud | Server, firewall (22/80/443/2333), SSH key |
+| `terraform/modules/dns` | Hetzner DNS | Zone + A/AAAA records |
+
+The `terraform/examples/basic/` directory shows how to wire both modules together. It creates a server and points a domain (and wildcard) at it.
+
+### Dev Shell
+
+`flake.nix` exposes a devShell with Terraform and Go available:
+
+```bash
+nix develop
+```
+
 ## Networking Model
 
 - **Caddy** runs on the home server (`amon-sul`) and terminates TLS.
