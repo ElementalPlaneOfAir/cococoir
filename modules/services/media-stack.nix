@@ -169,6 +169,7 @@ in
         settings = {
           rpc-bind-address = "0.0.0.0";
           rpc-whitelist-enabled = false;
+          rpc-host-whitelist-enabled = false;
           peer-port = cfg.transmission.peerPort;
           download-dir = cfg.transmission.downloadDir;
         };

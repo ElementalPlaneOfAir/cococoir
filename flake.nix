@@ -28,6 +28,7 @@
           ./modules/services/cryptpad.nix
           ./modules/services/media-stack.nix
           ./modules/services/kavita.nix
+          ./modules/services/octoprint.nix
           ./modules/services/custom.nix
         ];
       };
