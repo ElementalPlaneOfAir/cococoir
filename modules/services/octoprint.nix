@@ -23,7 +23,11 @@ in
       host = "127.0.0.1";
       port = 5321;
       openFirewall = false;
-      extraConfig.accessControl.trustBasicAuthentication = true;
+      extraConfig.accessControl = lib.mkIf config.cococoir.adminAuth.enable {
+        autologinLocal = true;
+        autologinAs = "admin";
+        localNetworks = [ "127.0.0.1/8" ];
+      };
     };
 
     services.caddy.virtualHosts."${cfg.domain}".extraConfig =
