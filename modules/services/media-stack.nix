@@ -4,13 +4,15 @@ let
 
   mkServiceVhost = name: port: serviceCfg: {
     "${serviceCfg.domain}".extraConfig =
-      if serviceCfg.public
-      then ''reverse_proxy localhost:${toString port}''
-      else ''
-        @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
-        respond @not_local "Forbidden" 403
-        reverse_proxy localhost:${toString port}
-      '';
+      config.lib.cococoir.withAuth (
+        if serviceCfg.public
+        then ''reverse_proxy localhost:${toString port}''
+        else ''
+          @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+          respond @not_local "Forbidden" 403
+          reverse_proxy localhost:${toString port}
+        ''
+      );
   };
 in
 {
@@ -170,6 +172,7 @@ in
           rpc-bind-address = "0.0.0.0";
           rpc-whitelist-enabled = false;
           rpc-host-whitelist-enabled = false;
+          rpc-authentication-required = false;
           peer-port = cfg.transmission.peerPort;
           download-dir = cfg.transmission.downloadDir;
         };
@@ -181,13 +184,15 @@ in
       };
 
       services.caddy.virtualHosts."${cfg.transmission.domain}".extraConfig =
-        if cfg.transmission.public
-        then ''reverse_proxy 192.168.15.1:9091''
-        else ''
-          @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
-          respond @not_local "Forbidden" 403
-          reverse_proxy 192.168.15.1:9091
-        '';
+        config.lib.cococoir.withAuth (
+          if cfg.transmission.public
+          then ''reverse_proxy 192.168.15.1:9091''
+          else ''
+            @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+            respond @not_local "Forbidden" 403
+            reverse_proxy 192.168.15.1:9091
+          ''
+        );
     })
 
     (lib.optionalAttrs (options ? vpnNamespaces) (lib.mkIf cfg.transmission.enable {
@@ -217,6 +222,7 @@ in
         user = "jellyfin";
         group = "jellyfin";
         settings.server.bindaddress = "127.0.0.1";
+        settings.auth.method = "External";
       };
       services.caddy.virtualHosts = mkServiceVhost "radarr" 7878 cfg.radarr;
     })
@@ -229,6 +235,7 @@ in
         user = "jellyfin";
         group = "jellyfin";
         settings.server.bindaddress = "127.0.0.1";
+        settings.auth.method = "External";
       };
       services.caddy.virtualHosts = mkServiceVhost "sonarr" 8989 cfg.sonarr;
     })
@@ -241,6 +248,7 @@ in
         user = "jellyfin";
         group = "jellyfin";
         settings.server.bindaddress = "127.0.0.1";
+        settings.auth.method = "External";
       };
       services.caddy.virtualHosts = mkServiceVhost "lidarr" 8686 cfg.lidarr;
     })
@@ -262,6 +270,7 @@ in
         enable = true;
         openFirewall = false;
         settings.server.bindaddress = "127.0.0.1";
+        settings.auth.method = "External";
       };
       services.caddy.virtualHosts = mkServiceVhost "prowlarr" 9696 cfg.prowlarr;
     })

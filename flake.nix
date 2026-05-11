@@ -16,6 +16,7 @@
       nixosModules.default = { config, lib, pkgs, ... }: {
         imports = [
           ./modules/core.nix
+          ./modules/auth.nix
           ./modules/base.nix
           ./modules/proxy/client.nix
           ./modules/proxy/server.nix
