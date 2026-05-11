@@ -5,7 +5,7 @@ let
 in
 {
   options.cococoir.services.matrix = {
-    enable = lib.mkEnableOption "Matrix homeserver (continuwuity)";
+    enable = lib.mkEnableOption "Matrix homeserver (Synapse)";
 
     domain = lib.mkOption {
       type = lib.types.str;
@@ -19,14 +19,26 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    services.matrix-continuwuity = {
+    services.matrix-synapse = {
       enable = true;
       settings = {
-        global = {
-          server_name = if domain != null then domain else config.networking.hostName;
-          address = [ "127.0.0.1" ];
-          port = [ 6167 ];
-        };
+        server_name = if domain != null then domain else config.networking.hostName;
+        public_baseurl = "https://${cfg.domain}";
+        listeners = [
+          {
+            port = 6167;
+            bind_addresses = [ "127.0.0.1" ];
+            type = "http";
+            tls = false;
+            x_forwarded = true;
+            resources = [
+              { names = [ "client" ]; compress = true; }
+              { names = [ "federation" ]; compress = false; }
+            ];
+          }
+        ];
+        enable_registration = false;
+        report_stats = false;
       };
     };
 

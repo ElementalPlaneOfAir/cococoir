@@ -126,47 +126,85 @@ in
     };
     users.groups.mautrix-gmessages = { };
 
+    # Group for synapse to read the registration file
+    users.groups.mautrix-gmessages-registration = {
+      members = lib.optional config.services.matrix-synapse.enable "matrix-synapse";
+    };
+
     # Ensure domain permission defaults to user level
     cococoir.services.mautrix-gmessages.settings.bridge.permissions =
       lib.mkDefault (lib.optionalAttrs (config.cococoir.domain != null) {
         "${config.cococoir.domain}" = "user";
       });
 
-    systemd.services.mautrix-gmessages = {
-      description = "mautrix-gmessages, a Matrix-Google Messages puppeting bridge";
-      wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" "continuwuity.service" ];
-      after = [ "network-online.target" "continuwuity.service" "postgresql.service" ];
-      requires = [ "postgresql.service" ];
+    # Register the bridge with synapse
+    services.matrix-synapse = lib.mkIf config.services.matrix-synapse.enable {
+      settings.app_service_config_files = [ registrationFile ];
+    };
 
-      preStart = ''
+    # Make synapse wait for the registration file to exist
+    systemd.services.matrix-synapse = lib.mkIf config.services.matrix-synapse.enable {
+      wants = [ "mautrix-gmessages-registration.service" ];
+      after = [ "mautrix-gmessages-registration.service" ];
+    };
+
+    # Registration service: generates config and registration file before either
+    # synapse or the bridge start
+    systemd.services.mautrix-gmessages-registration = {
+      description = "mautrix-gmessages registration generation";
+      serviceConfig = {
+        Type = "oneshot";
+        UMask = 27;
+        User = "mautrix-gmessages";
+        Group = "mautrix-gmessages";
+        EnvironmentFile = cfg.environmentFile;
+        StateDirectory = baseNameOf dataDir;
+        WorkingDirectory = dataDir;
+        SystemCallFilter = [ "@system-service" ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+      };
+      path = [ pkgs.yq pkgs.envsubst pkgs.mautrix-gmessages ];
+      script = ''
         # Substitute environment variables into the config file
-        test -f '${settingsFile}' && rm -f '${settingsFile}'
+        rm -f '${settingsFile}'
         old_umask=$(umask)
         umask 0177
-        ${pkgs.envsubst}/bin/envsubst \
+        envsubst \
           -o '${settingsFile}' \
           -i '${settingsFileUnsubstituted}'
         umask $old_umask
 
         # Generate appservice registration if absent
         if [ ! -f '${registrationFile}' ]; then
-          ${pkgs.mautrix-gmessages}/bin/mautrix-gmessages \
+          mautrix-gmessages \
             --generate-registration \
             --config='${settingsFile}' \
             --registration='${registrationFile}'
         fi
-        chmod 640 ${registrationFile}
+        chown :mautrix-gmessages-registration '${registrationFile}'
+        chmod 640 '${registrationFile}'
 
         # Sync tokens from registration back into config
         umask 0177
-        ${pkgs.yq}/bin/yq -s '.[0].appservice.as_token = .[1].as_token
+        yq -s '.[0].appservice.as_token = .[1].as_token
           | .[0].appservice.hs_token = .[1].hs_token
           | .[0]' \
           '${settingsFile}' '${registrationFile}' > '${settingsFile}.tmp'
         mv '${settingsFile}.tmp' '${settingsFile}'
         umask $old_umask
       '';
+      restartTriggers = [ settingsFileUnsubstituted ];
+    };
+
+    systemd.services.mautrix-gmessages = {
+      description = "mautrix-gmessages, a Matrix-Google Messages puppeting bridge";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "network-online.target" "mautrix-gmessages-registration.service" ]
+        ++ lib.optional config.services.matrix-synapse.enable "matrix-synapse.service";
+      after = [ "network-online.target" "mautrix-gmessages-registration.service" "postgresql.service" ]
+        ++ lib.optional config.services.matrix-synapse.enable "matrix-synapse.service";
+      requires = [ "postgresql.service" ];
 
       serviceConfig = {
         User = "mautrix-gmessages";
