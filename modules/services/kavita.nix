@@ -40,17 +40,17 @@ in
       tokenKeyFile = cfg.tokenKeyFile;
       settings = {
         IpAddresses = "127.0.0.1";
-        Port = 5000;
+        Port = 5001;
       };
     };
 
     services.caddy.virtualHosts."${cfg.domain}".extraConfig = lib.mkIf cfg.enable (
       if cfg.public
-      then ''reverse_proxy localhost:5000''
+      then ''reverse_proxy localhost:5001''
       else ''
         @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
         respond @not_local "Forbidden" 403
-        reverse_proxy localhost:5000
+        reverse_proxy localhost:5001
       ''
     );
   };

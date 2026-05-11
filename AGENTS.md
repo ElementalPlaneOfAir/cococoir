@@ -44,10 +44,10 @@ Every service under `modules/services/` follows a **consistent pattern**:
 |--------------|---------|------------|-------|
 | `jellyfin.nix` | Jellyfin | `8096` | Creates `jellyfin` system user with `render`/`video` groups. |
 | `vaultwarden.nix` | Vaultwarden | `8222` | Has `signupsAllowed` option. |
-| `forgejo.nix` | Forgejo | `3000` | — |
+| `forgejo.nix` | Forgejo | `3121` | — |
 | `matrix.nix` | Matrix (continuwuity) | `6167` | Also serves `.well-known/matrix/*` on the base domain. |
 | `mautrix-gmessages.nix` | mautrix-gmessages | `29336` | Matrix-Google Messages bridge. No Caddy vhost (appservice). Requires PostgreSQL. |
-| `cryptpad.nix` | CryptPad | `9000` | — |
+| `cryptpad.nix` | CryptPad | `9123` | — |
 | `media-stack.nix` | Transmission | `9091` | **VPN-confined** via `vpnNamespaces.wg`. Requires `vpnConfigFile`. |
 | `media-stack.nix` | Radarr | `7878` | Shares `jellyfin` user/group. |
 | `media-stack.nix` | Sonarr | `8989` | Shares `jellyfin` user/group. |
@@ -55,6 +55,8 @@ Every service under `modules/services/` follows a **consistent pattern**:
 | `media-stack.nix` | Bazarr | `6767` | Shares `jellyfin` user/group. |
 | `media-stack.nix` | Prowlarr | `9696` | — |
 | `media-stack.nix` | FlareSolverr | `8191` | — |
+| `octoprint.nix` | OctoPrint | `5321` | — |
+| `kavita.nix` | Kavita | `5001` | — |
 | `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. |
 
 ## Adding a New First-Party Service
