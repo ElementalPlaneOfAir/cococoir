@@ -55,7 +55,7 @@ Every service under `modules/services/` follows a **consistent pattern**:
 | `media-stack.nix` | Bazarr | `6767` | Shares `jellyfin` user/group. |
 | `media-stack.nix` | Prowlarr | `9696` | — |
 | `media-stack.nix` | FlareSolverr | `8191` | — |
-| `octoprint.nix` | OctoPrint | `5321` | — |
+| `octoprint.nix` | OctoPrint | `5321` | Optional Obico AI failure-detection plugin via `cococoir.services.octoprint.obico.enable`. |
 | `kavita.nix` | Kavita | `5001` | — |
 | `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. |
 
