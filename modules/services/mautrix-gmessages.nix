@@ -142,10 +142,12 @@ in
       settings.app_service_config_files = [ registrationFile ];
     };
 
-    # Make synapse wait for the registration file to exist
+    # Make synapse wait for the registration file to exist, and allow it to
+    # read the registration file via the shared group.
     systemd.services.matrix-synapse = lib.mkIf config.services.matrix-synapse.enable {
       wants = [ "mautrix-gmessages-registration.service" ];
       after = [ "mautrix-gmessages-registration.service" ];
+      serviceConfig.SupplementaryGroups = [ "mautrix-gmessages-registration" ];
     };
 
     # Registration service: generates config and registration file before either

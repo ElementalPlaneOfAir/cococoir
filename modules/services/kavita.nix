@@ -26,7 +26,7 @@ in
     };
   };
 
-  config = {
+  config = lib.mkIf cfg.enable {
     clan.core.vars.generators.kavita-token = {
       files.token-key = {};
       script = ''
@@ -35,7 +35,7 @@ in
       runtimeInputs = [ pkgs.coreutils ];
     };
 
-    services.kavita = lib.mkIf cfg.enable {
+    services.kavita = {
       enable = true;
       tokenKeyFile = cfg.tokenKeyFile;
       settings = {
@@ -44,14 +44,13 @@ in
       };
     };
 
-    services.caddy.virtualHosts."${cfg.domain}".extraConfig = lib.mkIf cfg.enable (
+    services.caddy.virtualHosts."${cfg.domain}".extraConfig =
       if cfg.public
       then ''reverse_proxy localhost:5001''
       else ''
         @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
         respond @not_local "Forbidden" 403
         reverse_proxy localhost:5001
-      ''
-    );
+      '';
   };
 }

@@ -19,6 +19,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    services.postgresql = {
+      enable = true;
+      ensureDatabases = [ "matrix-synapse" ];
+      ensureUsers = [
+        {
+          name = "matrix-synapse";
+          ensureDBOwnership = true;
+        }
+      ];
+    };
+
     services.matrix-synapse = {
       enable = true;
       settings = {
