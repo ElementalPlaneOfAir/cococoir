@@ -157,8 +157,6 @@ in
       serviceConfig = {
         Type = "oneshot";
         UMask = 27;
-        User = "mautrix-gmessages";
-        Group = "mautrix-gmessages";
         EnvironmentFile = cfg.environmentFile;
         StateDirectory = baseNameOf dataDir;
         WorkingDirectory = dataDir;
