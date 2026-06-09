@@ -35,7 +35,13 @@ in
       settings = {
         server_name = if domain != null then domain else config.networking.hostName;
         public_baseurl = "https://${cfg.domain}";
-        database.args.allow_unsafe_locale = true;
+        database = {
+          name = "psycopg2";
+          args = {
+            host = "/run/postgresql";
+          };
+          allow_unsafe_locale = true;
+        };
         listeners = [
           {
             port = 6167;
