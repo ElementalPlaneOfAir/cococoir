@@ -48,13 +48,9 @@ Every service under `modules/services/` follows a **consistent pattern**:
 | `matrix.nix` | Matrix (Synapse) | `6167` | Also serves `.well-known/matrix/*` on the base domain. |
 | `mautrix-gmessages.nix` | mautrix-gmessages | `29336` | Matrix-Google Messages bridge. No Caddy vhost (appservice). Requires PostgreSQL. |
 | `cryptpad.nix` | CryptPad | `9123` | — |
-| `media-stack.nix` | Transmission | `9091` | **VPN-confined** via `vpnNamespaces.wg`. Requires `vpnConfigFile`. |
-| `media-stack.nix` | Radarr | `7878` | Shares `jellyfin` user/group. |
-| `media-stack.nix` | Sonarr | `8989` | Shares `jellyfin` user/group. |
-| `media-stack.nix` | Lidarr | `8686` | Shares `jellyfin` user/group. |
-| `media-stack.nix` | Bazarr | `6767` | Shares `jellyfin` user/group. |
-| `media-stack.nix` | Prowlarr | `9696` | — |
-| `media-stack.nix` | FlareSolverr | `8191` | — |
+| `qbittorrent.nix` | qBittorrent | `8080` (WebUI) | **VPN-confined** via `vpnNamespaces.wg`. Requires `vpnConfigFile`. Pairs with autobrr. |
+| `autobrr.nix` | autobrr | `7474` | Release automation. Hands matched releases to qBittorrent. Requires `secretFile`. |
+| `jellyseerr.nix` | Jellyseerr (seerr) | `5055` | Unified movie/TV request UI. Points at Jellyfin + qBittorrent. |
 | `octoprint.nix` | OctoPrint | `5321` | — |
 | `kavita.nix` | Kavita | `5001` | — |
 | `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. |

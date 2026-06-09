@@ -28,6 +28,9 @@
           ./modules/services/mautrix-gmessages.nix
           ./modules/services/cryptpad.nix
           ./modules/services/media-stack.nix
+          ./modules/services/qbittorrent.nix
+          ./modules/services/autobrr.nix
+          ./modules/services/jellyseerr.nix
           ./modules/services/kavita.nix
           ./modules/services/octoprint.nix
           ./modules/services/custom.nix
