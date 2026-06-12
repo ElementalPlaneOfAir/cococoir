@@ -42,19 +42,16 @@ in
       };
     }) enabledMounts;
 
-    systemd.mounts = lib.mapAttrs' (name: m: {
-      name = "var-lib-cococoir-mounts-${name}";
-      value = {
-        description = "geesefs mount of bucket ${m.bucket} at ${m.mountPoint}";
-        where = m.mountPoint;
-        what = m.bucket;
-        type = "fuse.geesefs";
-        mountConfig = {
-          Options = lib.concatStringsSep "," ([
-            "allow_other"
-            (if m.readOnly then "ro" else "rw")
-          ] ++ m.extraOptions);
-        };
+    systemd.mounts = lib.mapAttrsToList (name: m: {
+      description = "geesefs mount of bucket ${m.bucket} at ${m.mountPoint}";
+      where = m.mountPoint;
+      what = m.bucket;
+      type = "fuse.geesefs";
+      mountConfig = {
+        Options = lib.concatStringsSep "," ([
+          "allow_other"
+          (if m.readOnly then "ro" else "rw")
+        ] ++ m.extraOptions);
       };
     }) enabledMounts;
   };
