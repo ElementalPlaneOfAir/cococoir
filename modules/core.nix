@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 { lib, config, ... }:
 let
   cfg = config.cococoir;

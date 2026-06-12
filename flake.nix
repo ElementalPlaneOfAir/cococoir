@@ -1,81 +1,84 @@
 {
-  description = "Self-hosting made simple: declarative home server proxy library";
+  description = "Cococoir: declarative self-hosting for small office clusters. MIT-licensed.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    import-tree.url = "github:denful/import-tree";
+    clan-core = {
+      url = "https://git.clan.lol/clan/clan-core/archive/25.11.tar.gz";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+    };
+    vpn-confinement = {
+      url = "github:Maroka-chan/VPN-Confinement";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs }:
-    let
-      forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      pkgsFor = system: import nixpkgs {
-        inherit system;
+  outputs = inputs:
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+        "x86_64-darwin"
+      ];
+
+      perSystem = { pkgs, system, ... }: {
+        packages.default = pkgs.buildGoModule {
+          pname = "cococoir";
+          version = "0.1.0";
+          src = ./cli;
+          vendorHash = null;
+          subPackages = [ "." ];
+          ldflags = [
+            "-s"
+            "-w"
+            "-X github.com/cococoir/cli/cmd.version=0.1.0"
+          ];
+          postInstall = ''
+            mv $out/bin/cli $out/bin/cococoir
+          '';
+          meta = with pkgs.lib; {
+            description = "CLI for managing Cococoir homelab deployments";
+            license = licenses.mit;
+          };
+        };
+
+        devShells.default = pkgs.mkShell {
+          packages = with pkgs; [
+            opentofu
+            go
+            gopls
+            golangci-lint
+          ];
+        };
       };
-    in
-    {
-      nixosModules.default = { config, lib, pkgs, ... }: {
+
+      # ── NixOS modules exposed for consumption ──────────────────────────────
+      # The full default is what most consumers want. It auto-imports every
+      # module under modules/ (excluding _-prefixed paths) and pulls in the
+      # clan-core + vpn-confinement modules so consumers don't have to.
+      flake.nixosModules.default = { inputs, ... }: {
         imports = [
-          ./modules/core.nix
-          ./modules/auth.nix
-          ./modules/base.nix
-          ./modules/proxy/client.nix
-          ./modules/proxy/server.nix
-          ./modules/networking/caddy.nix
-          ./modules/services/jellyfin.nix
-          ./modules/services/vaultwarden.nix
-          ./modules/services/forgejo.nix
-          ./modules/services/matrix.nix
-          ./modules/services/mautrix-gmessages.nix
-          ./modules/services/cryptpad.nix
-          ./modules/services/media-stack.nix
-          ./modules/services/qbittorrent.nix
-          ./modules/services/autobrr.nix
-          ./modules/services/jellyseerr.nix
-          ./modules/services/kavita.nix
-          ./modules/services/octoprint.nix
-          ./modules/services/custom.nix
+          inputs.clan-core.nixosModules.clanCore
+          inputs.vpn-confinement.nixosModules.default
+          (inputs.import-tree ./modules)
         ];
       };
 
-      packages = forAllSystems (system:
-        let
-          pkgs = pkgsFor system;
-        in
-        {
-          default = pkgs.buildGoModule {
-            pname = "cococoir";
-            version = "0.1.0";
-            src = ./cli;
-            vendorHash = null;
-            subPackages = [ "." ];
-            ldflags = [
-              "-s"
-              "-w"
-              "-X github.com/cococoir/cli/cmd.version=0.1.0"
-            ];
-            postInstall = ''
-              mv $out/bin/cli $out/bin/cococoir
-            '';
-            meta = with pkgs.lib; {
-              description = "CLI for managing Cococoir homelab deployments";
-              license = licenses.mit;
-            };
-          };
-        });
+      # Per-module entry points for consumers who want a minimal surface.
+      flake.nixosModules = {
+        core = ./modules/core.nix;
+        auth = ./modules/auth.nix;
+        base = ./modules/base.nix;
+        storage = ./modules/storage.nix;
+        caddy = ./modules/networking/caddy.nix;
+      };
 
-      devShells = forAllSystems (system:
-        let
-          pkgs = pkgsFor system;
-        in
-        {
-          default = pkgs.mkShell {
-            packages = with pkgs; [
-              opentofu
-              go
-              gopls
-              golangci-lint
-            ];
-          };
-        });
+      # Clan vars generators, auto-discovered from modules/vars/.
+      # Each file there exposes flake.modules.nixos.<name> for one generator.
+      flake.modules.nixos = inputs.import-tree ./modules/vars;
     };
 }

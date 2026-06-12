@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 { pkgs, lib, ... }: {
   programs.fish.enable = true;
 

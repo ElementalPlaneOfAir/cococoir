@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 { config, lib, pkgs, ... }:
 let
   cfg = config.cococoir.services.jellyfin;

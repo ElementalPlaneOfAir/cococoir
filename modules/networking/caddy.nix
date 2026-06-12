@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 { lib, config, ... }: {
   services.caddy = {
     enable = lib.mkDefault true;
