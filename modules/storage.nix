@@ -28,6 +28,14 @@ let
 
   bucketType = lib.types.submodule ({ name, ... }: {
     options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        default = name;
+        description = "Internal: bucket name, derived from the attribute key.";
+        internal = true;
+        visible = false;
+      };
+
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -108,6 +116,14 @@ let
 
   mountType = lib.types.submodule ({ name, ... }: {
     options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        default = name;
+        description = "Internal: mount name, derived from the attribute key.";
+        internal = true;
+        visible = false;
+      };
+
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -137,7 +153,6 @@ let
         default = false;
       };
     };
-    config.name = lib.mkDefault name;
   });
 
   # ── Derived state ─────────────────────────────────────────────────────────
