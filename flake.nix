@@ -57,13 +57,13 @@
       };
 
       # ── NixOS modules exposed for consumption ──────────────────────────────
-      # The full default is what most consumers want. It auto-imports every
-      # module under modules/ (excluding _-prefixed paths) and pulls in the
-      # clan-core + vpn-confinement modules so consumers don't have to.
-      flake.nixosModules.default = { inputs, ... }: {
+      # The full default is self-contained (does not reference flake
+      # `inputs`), so it works in any module system. Consumers that want
+      # clan-core, vpn-confinement, or other cococoir-bundled extras add
+      # them as separate imports in their machine config. amon-sul does
+      # this already; see machines/amon-sul in that repo for the pattern.
+      flake.nixosModules.default = { ... }: {
         imports = [
-          inputs.clan-core.nixosModules.clanCore
-          inputs.vpn-confinement.nixosModules.default
           (inputs.import-tree ./modules)
         ];
       };

@@ -1,7 +1,19 @@
 # SPDX-License-Identifier: MIT
-{ lib, pkgs, cfg, clampedBuckets }:
+{ config, lib, pkgs, ... }:
 let
+  cfg = config.cococoir.storage;
   garagePackage = pkgs.garage_2;
+  enabledBuckets = lib.filter (b: b.enable) (lib.attrValues cfg.buckets);
+  numZonesWithCapacity = builtins.length (lib.filter
+    (z: z.capacity != null && z.capacity != 0)
+    cfg.cluster.layout.zones);
+
+  # RF clamping computed here, used both for assertions (in storage.nix)
+  # and for the bucket-init script.
+  clampRF = rf:
+    if rf <= numZonesWithCapacity then rf
+    else if numZonesWithCapacity == 0 then 1
+    else numZonesWithCapacity;
 
   bucketInitScript = pkgs.writeShellScript "garage-bucket-init" ''
     set -euo pipefail
@@ -25,9 +37,7 @@ let
     # ── 1. Cluster-wide global key ──────────────────────────────────────────
     # The user picked "one global key" for the cluster (vs per-bucket keys).
     # The keypair is generated once on first deploy and persisted under
-    # $COCOCOIR_GLOBAL_KEY_DIR. The access key id and secret are also
-    # written to the clan vars directory if clan-cmd is available, so the
-    # secret key gets backed up with the rest of the secret material.
+    # $COCOCOIR_GLOBAL_KEY_DIR.
     GLOBAL_KEYID_FILE="$COCOCOIR_GLOBAL_KEY_DIR/access-key-id"
     GLOBAL_SECRET_FILE="$COCOCOIR_GLOBAL_KEY_DIR/secret-access-key"
 
@@ -35,8 +45,6 @@ let
       GLOBAL_KEY_ID=$(cat "$GLOBAL_KEYID_FILE")
       echo "global key already exists: $GLOBAL_KEY_ID"
     else
-      # Generate a new key. We use a stable name so the same key is
-      # recreated on cluster re-formation.
       CREATE_OUT=$(GCALL key create --name "$GARAGE_NODE_ID-cluster-global" 2>&1) || true
       GLOBAL_KEY_ID=$(echo "$CREATE_OUT" | ${pkgs.gnugrep}/bin/grep -oE 'Key ID:[[:space:]]*[A-Za-z0-9_-]+' | head -1 | awk '{print $3}')
       GLOBAL_SECRET=$(echo "$CREATE_OUT" | ${pkgs.gnugrep}/bin/grep -oE 'Secret key:[[:space:]]*[A-Za-z0-9_-]+' | head -1 | awk '{print $3}')
@@ -61,8 +69,8 @@ let
         GCALL bucket create "$BUCKET"
       fi
 
-      INTENDED_RF=${toString b._intendedRF}
-      CLAMPED_RF=${toString b._clampedRF}
+      INTENDED_RF=${toString b.replicationFactor}
+      CLAMPED_RF=${toString (clampRF b.replicationFactor)}
       if [ "$INTENDED_RF" != "$CLAMPED_RF" ]; then
         echo "WARNING: bucket $BUCKET RF clamped from $INTENDED_RF to $CLAMPED_RF (cluster topology)" >&2
       fi
@@ -72,7 +80,7 @@ let
       GCALL bucket allow --read  --key "$GLOBAL_KEY_ID" "$BUCKET" 2>&1 || true
       GCALL bucket allow --write --key "$GLOBAL_KEY_ID" "$BUCKET" 2>&1 || true
 
-      # Quotas (only apply if both quota fields are non-null)
+      # Quotas
       ${lib.optionalString (b.quotas != null && (b.quotas.maxSize != null || b.quotas.maxObjects != null)) ''
         QARGS=""
         ${lib.optionalString (b.quotas.maxSize != null) ''QARGS="$QARGS --max-size ${toString b.quotas.maxSize}"''}
@@ -86,25 +94,24 @@ let
           --index-document "${b.website.index}" \
           --error-document "${b.website.error}" 2>&1 || true
       ''}
-    '') (lib.attrValues clampedBuckets)}
+    '') enabledBuckets}
 
     echo "garage bucket init complete"
   '';
 in
 {
-  # ── Bucket init oneshot ──────────────────────────────────────────────────
-  # Runs after garage.service. Reads the declared buckets and applies
-  # the desired state to the cluster. Idempotent.
-  systemd.services.garage-bucket-init = {
-    description = "Provision Cococoir buckets, global key, and per-bucket RF";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "garage.service" ];
-    requires = [ "garage.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      User = "root";
+  config = lib.mkIf cfg.enable {
+    systemd.services.garage-bucket-init = {
+      description = "Provision Cococoir buckets, global key, and per-bucket RF";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "garage.service" ];
+      requires = [ "garage.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+      };
+      script = bucketInitScript;
     };
-    script = bucketInitScript;
   };
 }

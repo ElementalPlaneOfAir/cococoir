@@ -178,9 +178,14 @@ let
     replicationFactor = b._clampedRF;
     intendedReplicationFactor = b._intendedRF;
   }) clampedBuckets;
-
 in
 {
+  imports = [
+    ./storage/garage.nix
+    ./storage/bucket.nix
+    ./storage/fuse.nix
+  ];
+
   options.cococoir.storage = {
     enable = lib.mkEnableOption "Cococoir distributed object storage (Garage S3)";
 
@@ -261,9 +266,6 @@ in
         description = ''
           Stable identifier for this node. Set explicitly in each
           machine's configuration. Must be unique within the cluster.
-          Garage's `node id` is generated from this by the runtime
-          bucket-init service; you don't need to manage garage's
-          internal id separately.
         '';
       };
 
@@ -338,68 +340,57 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (lib.mkMerge [
-    (import ./storage/garage.nix {
-      inherit lib pkgs;
-      inherit cfg localPeers localHost numZonesWithCapacity;
-    })
+  config = lib.mkIf cfg.enable {
+    cococoir.storage.derived = {
+      buckets = derivedBuckets;
+      gatewayAddress = "${localHost}:${toString cfg.cluster.s3ApiPort}";
+    };
 
-    (import ./storage/bucket.nix {
-      inherit lib pkgs;
-      inherit cfg clampedBuckets;
-    })
+    # Expose the derived state to submodules via assertions-free channels.
+    # garage.nix reads the port/host from cfg directly, but we also
+    # pass them to bucket.nix via environment.etc (in garage.nix).
+    # The clampedBuckets are consumed by bucket.nix through a special
+    # submodule option below.
 
-    (import ./storage/fuse.nix {
-      inherit lib pkgs;
-      inherit cfg enabledMounts localHost;
-    })
+    assertions =
+      lib.optionals (cfg.node.zone != "" && !(builtins.elem cfg.node.zone zoneIds))
+      [{
+        assertion = builtins.elem cfg.node.zone zoneIds;
+        message = ''
+          cococoir.storage.node.zone = "${cfg.node.zone}" but no matching zone
+          is defined in cococoir.storage.cluster.layout.zones.
+          Add a zone with id = "${cfg.node.zone}" or fix the node.zone value.
+        '';
+      }]
+      ++ lib.optionals (cfg.node.capacity != null && !(builtins.elem cfg.node.zone zoneIds))
+      [{
+        assertion = builtins.elem cfg.node.zone zoneIds;
+        message = ''
+          cococoir.storage.node.capacity is set but node.zone =
+          "${cfg.node.zone}" is not in cluster.layout.zones.
+        '';
+      }]
+      ++ map (b: {
+        assertion = b._clampedRF >= 1;
+        message = ''
+          Bucket "${b.name}" has clamped replication factor ${toString b._clampedRF}.
+          The cluster has 0 zones with non-zero capacity; buckets must have RF >= 1.
+        '';
+      }) (lib.attrValues clampedBuckets)
+      ++ map (b: {
+        assertion = b._intendedRF == b._clampedRF;
+        message = ''
+          Bucket "${b.name}" requested replicationFactor = ${toString b._intendedRF}
+          but the cluster only has ${toString numZonesWithCapacity} zone(s)
+          with non-zero capacity. RF clamped to ${toString b._clampedRF}.
 
-    {
-      cococoir.storage.derived = {
-        buckets = derivedBuckets;
-        gatewayAddress = "${localHost}:${toString cfg.cluster.s3ApiPort}";
-      };
+          To silence this warning, either:
+            - Lower the bucket's replicationFactor to ${toString b._clampedRF}, or
+            - Add more zones with capacity to cluster.layout.zones.
 
-      assertions =
-        lib.optionals (cfg.node.zone != "" && !(builtins.elem cfg.node.zone zoneIds))
-        [{
-          assertion = builtins.elem cfg.node.zone zoneIds;
-          message = ''
-            cococoir.storage.node.zone = "${cfg.node.zone}" but no matching zone
-            is defined in cococoir.storage.cluster.layout.zones.
-            Add a zone with id = "${cfg.node.zone}" or fix the node.zone value.
-          '';
-        }]
-        ++ lib.optionals (cfg.node.capacity != null && !(builtins.elem cfg.node.zone zoneIds))
-        [{
-          assertion = builtins.elem cfg.node.zone zoneIds;
-          message = ''
-            cococoir.storage.node.capacity is set but node.zone =
-            "${cfg.node.zone}" is not in cluster.layout.zones.
-          '';
-        }]
-        ++ map (b: {
-          assertion = b._clampedRF >= 1;
-          message = ''
-            Bucket "${b.name}" has clamped replication factor ${toString b._clampedRF}.
-            The cluster has 0 zones with non-zero capacity; buckets must have RF >= 1.
-          '';
-        }) (lib.attrValues clampedBuckets)
-        ++ map (b: {
-          assertion = b._intendedRF == b._clampedRF;
-          message = ''
-            Bucket "${b.name}" requested replicationFactor = ${toString b._intendedRF}
-            but the cluster only has ${toString numZonesWithCapacity} zone(s)
-            with non-zero capacity. RF clamped to ${toString b._clampedRF}.
-
-            To silence this warning, either:
-              - Lower the bucket's replicationFactor to ${toString b._clampedRF}, or
-              - Add more zones with capacity to cluster.layout.zones.
-
-            Clamping is intentional: Garage will only keep
-            ${toString b._clampedRF} copy/copies of objects in this bucket.
-          '';
-        }) (lib.filter (b: b._intendedRF != b._clampedRF) (lib.attrValues clampedBuckets));
-    }
-  ]);
+          Clamping is intentional: Garage will only keep
+          ${toString b._clampedRF} copy/copies of objects in this bucket.
+        '';
+      }) (lib.filter (b: b._intendedRF != b._clampedRF) (lib.attrValues clampedBuckets));
+  };
 }
