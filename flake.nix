@@ -77,8 +77,13 @@
         caddy = ./modules/networking/caddy.nix;
       };
 
-      # Clan vars generators, auto-discovered from modules/vars/.
+      # Clan vars generators, auto-discovered from ./flake-vars/.
       # Each file there exposes flake.modules.nixos.<name> for one generator.
-      flake.modules.nixos = inputs.import-tree ./modules/vars;
+      # Consumers add a specific generator to their machine imports, e.g.:
+      #   imports = [ inputs.cococoir.modules.nixos.storageVars ];
+      #
+      # Note: don't confuse this with ./vars/, which is clan's runtime
+      # secret-state directory (not module definitions).
+      flake.modules.nixos = inputs.import-tree ./flake-vars;
     };
 }
