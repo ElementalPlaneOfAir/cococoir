@@ -111,7 +111,10 @@ in
         RemainAfterExit = true;
         User = "root";
       };
-      script = bucketInitScript;
+      path = [ pkgs.gnused pkgs.gnugrep ];
+      script = ''
+        exec ${bucketInitScript}
+      '';
     };
   };
 }
