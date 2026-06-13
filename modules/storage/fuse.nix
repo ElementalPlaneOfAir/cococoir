@@ -39,6 +39,7 @@ in {
                 "${globalKeyDir}/access-key-id"
                 "--secret-key-file"
                 "${globalKeyDir}/secret-access-key"
+                "--umask=000"
                 (
                   if m.readOnly
                   then "--ro"
@@ -64,6 +65,7 @@ in {
         mountConfig = {
           Options = lib.concatStringsSep "," ([
               "allow_other"
+              "umask=000"
               (
                 if m.readOnly
                 then "ro"
