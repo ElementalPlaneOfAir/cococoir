@@ -1,8 +1,10 @@
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.autobrr;
-in
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.services.autobrr;
+in {
   options.cococoir.services.autobrr = {
     enable = lib.mkEnableOption "autobrr release automation";
 

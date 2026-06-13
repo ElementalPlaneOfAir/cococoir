@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Clan vars generators for the storage module.
 #
@@ -17,15 +17,15 @@
 #                            generation runs on one node and propagates.
 #
 # The bucket init oneshot reads these paths, not user-supplied ones.
-{ ... }: {
+{...}: {
   flake.modules.nixos.storageVars = {
     clan.core.vars.generators.storage-rpc-secret = {
       share = true;
-      files.rpc-secret = { };
+      files.rpc-secret = {};
       script = ''
         od -An -tx1 -N32 < /dev/urandom | tr -d ' \n' > $out/rpc-secret
       '';
-      runtimeInputs = [ ];
+      runtimeInputs = [];
     };
 
     clan.core.vars.generators.storage-global-key = {
@@ -35,7 +35,7 @@
       # We don't put the secret in clan vars because garage generates the
       # keypair at runtime; we only stash the access key id here as a
       # reference. The actual secret lives on disk.
-      files.access-key-id = { };
+      files.access-key-id = {};
       script = ''
         # Placeholder: the real access-key-id is written by the
         # garage-bucket-init oneshot once garage has created the key.
@@ -43,7 +43,7 @@
         # vars tree (and auditable) from the first deployment.
         echo "pending-runtime-generation" > $out/access-key-id
       '';
-      runtimeInputs = [ ];
+      runtimeInputs = [];
     };
   };
 }

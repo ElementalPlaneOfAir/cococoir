@@ -1,6 +1,10 @@
-# SPDX-License-Identifier: MIT
-{ config, lib, pkgs, ... }:
-let
+# SPDX-License-Identifier: AGPL-3.0-or-later
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.cococoir.storage;
   garagePackage = pkgs.garage_2;
   enabledBuckets = lib.filter (b: b.enable) (lib.attrValues cfg.buckets);
@@ -11,8 +15,10 @@ let
   # RF clamping computed here, used both for assertions (in storage.nix)
   # and for the bucket-init script.
   clampRF = rf:
-    if rf <= numZonesWithCapacity then rf
-    else if numZonesWithCapacity == 0 then 1
+    if rf <= numZonesWithCapacity
+    then rf
+    else if numZonesWithCapacity == 0
+    then 1
     else numZonesWithCapacity;
 
   bucketInitScript = pkgs.writeShellScript "garage-bucket-init" ''
@@ -61,57 +67,57 @@ let
 
     # ── 2. Per-bucket: create + apply RF + website/quotas ───────────────────
     ${lib.concatMapStrings (b: ''
-      BUCKET="${b.name}"
-      BDIR="$COCOCOIR_BUCKETS_DIR/$BUCKET"
-      mkdir -p "$BDIR"
+        BUCKET="${b.name}"
+        BDIR="$COCOCOIR_BUCKETS_DIR/$BUCKET"
+        mkdir -p "$BDIR"
 
-      if ! GCALL bucket info "$BUCKET" >/dev/null 2>&1; then
-        GCALL bucket create "$BUCKET"
-      fi
+        if ! GCALL bucket info "$BUCKET" >/dev/null 2>&1; then
+          GCALL bucket create "$BUCKET"
+        fi
 
-      INTENDED_RF=${toString b.replicationFactor}
-      CLAMPED_RF=${toString (clampRF b.replicationFactor)}
-      if [ "$INTENDED_RF" != "$CLAMPED_RF" ]; then
-        echo "WARNING: bucket $BUCKET RF clamped from $INTENDED_RF to $CLAMPED_RF (cluster topology)" >&2
-      fi
-      GCALL bucket layout --apply "$BUCKET" --replication-factor "$CLAMPED_RF" 2>&1 || true
+        INTENDED_RF=${toString b.replicationFactor}
+        CLAMPED_RF=${toString (clampRF b.replicationFactor)}
+        if [ "$INTENDED_RF" != "$CLAMPED_RF" ]; then
+          echo "WARNING: bucket $BUCKET RF clamped from $INTENDED_RF to $CLAMPED_RF (cluster topology)" >&2
+        fi
+        GCALL bucket layout --apply "$BUCKET" --replication-factor "$CLAMPED_RF" 2>&1 || true
 
-      # Allow the global key to read+write this bucket
-      GCALL bucket allow --read  --key "$GLOBAL_KEY_ID" "$BUCKET" 2>&1 || true
-      GCALL bucket allow --write --key "$GLOBAL_KEY_ID" "$BUCKET" 2>&1 || true
+        # Allow the global key to read+write this bucket
+        GCALL bucket allow --read  --key "$GLOBAL_KEY_ID" "$BUCKET" 2>&1 || true
+        GCALL bucket allow --write --key "$GLOBAL_KEY_ID" "$BUCKET" 2>&1 || true
 
-      # Quotas
-      ${lib.optionalString (b.quotas != null && (b.quotas.maxSize != null || b.quotas.maxObjects != null)) ''
-        QARGS=""
-        ${lib.optionalString (b.quotas.maxSize != null) ''QARGS="$QARGS --max-size ${toString b.quotas.maxSize}"''}
-        ${lib.optionalString (b.quotas.maxObjects != null) ''QARGS="$QARGS --max-objects ${toString b.quotas.maxObjects}"''}
-        GCALL bucket set-quotas $QARGS "$BUCKET" 2>&1 || true
-      ''}
+        # Quotas
+        ${lib.optionalString (b.quotas != null && (b.quotas.maxSize != null || b.quotas.maxObjects != null)) ''
+          QARGS=""
+          ${lib.optionalString (b.quotas.maxSize != null) ''QARGS="$QARGS --max-size ${toString b.quotas.maxSize}"''}
+          ${lib.optionalString (b.quotas.maxObjects != null) ''QARGS="$QARGS --max-objects ${toString b.quotas.maxObjects}"''}
+          GCALL bucket set-quotas $QARGS "$BUCKET" 2>&1 || true
+        ''}
 
-      # Website hosting
-      ${lib.optionalString (b.website != null) ''
-        GCALL bucket website --allow "$BUCKET" \
-          --index-document "${b.website.index}" \
-          --error-document "${b.website.error}" 2>&1 || true
-      ''}
-    '') enabledBuckets}
+        # Website hosting
+        ${lib.optionalString (b.website != null) ''
+          GCALL bucket website --allow "$BUCKET" \
+            --index-document "${b.website.index}" \
+            --error-document "${b.website.error}" 2>&1 || true
+        ''}
+      '')
+      enabledBuckets}
 
     echo "garage bucket init complete"
   '';
-in
-{
+in {
   config = lib.mkIf cfg.enable {
     systemd.services.garage-bucket-init = {
       description = "Provision Cococoir buckets, global key, and per-bucket RF";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "garage.service" ];
-      requires = [ "garage.service" ];
+      wantedBy = ["multi-user.target"];
+      after = ["garage.service"];
+      requires = ["garage.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         User = "root";
       };
-      path = [ pkgs.gnused pkgs.gnugrep ];
+      path = [pkgs.gnused pkgs.gnugrep];
       script = ''
         exec ${bucketInitScript}
       '';

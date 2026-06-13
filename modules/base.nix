@@ -1,5 +1,9 @@
-# SPDX-License-Identifier: MIT
-{ pkgs, lib, ... }: {
+# SPDX-License-Identifier: AGPL-3.0-or-later
+{
+  pkgs,
+  lib,
+  ...
+}: {
   programs.fish.enable = true;
 
   services.openssh = {
@@ -11,7 +15,7 @@
   i18n.defaultLocale = lib.mkDefault "en_US.UTF-8";
 
   nix = {
-    settings.trusted-users = [ "root" ];
+    settings.trusted-users = ["root"];
     extraOptions = ''
       experimental-features = nix-command flakes
     '';

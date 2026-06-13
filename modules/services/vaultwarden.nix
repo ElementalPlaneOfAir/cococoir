@@ -1,8 +1,10 @@
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.vaultwarden;
-in
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.services.vaultwarden;
+in {
   options.cococoir.services.vaultwarden = {
     enable = lib.mkEnableOption "Vaultwarden password manager";
 

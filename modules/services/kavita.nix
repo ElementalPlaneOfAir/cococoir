@@ -1,8 +1,11 @@
-{ config, lib, pkgs, ... }:
-let
-  cfg = config.cococoir.services.kavita;
-in
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.cococoir.services.kavita;
+in {
   options.cococoir.services.kavita = {
     enable = lib.mkEnableOption "Kavita reading server";
 
@@ -32,7 +35,7 @@ in
       script = ''
         head -c 64 /dev/urandom | base64 --wrap=0 > $out/token-key
       '';
-      runtimeInputs = [ pkgs.coreutils ];
+      runtimeInputs = [pkgs.coreutils];
     };
 
     services.kavita = {

@@ -17,7 +17,7 @@
   };
 
   outputs = inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+    inputs.flake-parts.lib.mkFlake {inherit inputs;} {
       imports = [
         # Auto-import every flake-parts module in ./flake-vars/.
         # Each file there declares `flake.modules.nixos.<name>` and
@@ -33,13 +33,17 @@
         "x86_64-darwin"
       ];
 
-      perSystem = { pkgs, system, ... }: {
+      perSystem = {
+        pkgs,
+        system,
+        ...
+      }: {
         packages.default = pkgs.buildGoModule {
           pname = "cococoir";
           version = "0.1.0";
           src = ./cli;
           vendorHash = null;
-          subPackages = [ "." ];
+          subPackages = ["."];
           ldflags = [
             "-s"
             "-w"
@@ -70,7 +74,7 @@
       # clan-core, vpn-confinement, or other cococoir-bundled extras add
       # them as separate imports in their machine config. amon-sul does
       # this already; see machines/amon-sul in that repo for the pattern.
-      flake.nixosModules.default = { ... }: {
+      flake.nixosModules.default = {...}: {
         imports = [
           (inputs.import-tree ./modules)
         ];

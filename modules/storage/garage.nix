@@ -1,6 +1,10 @@
-# SPDX-License-Identifier: MIT
-{ config, lib, pkgs, ... }:
-let
+# SPDX-License-Identifier: AGPL-3.0-or-later
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.cococoir.storage;
   garagePackage = pkgs.garage_2;
   localHost = builtins.elemAt (lib.splitString ":" cfg.node.address) 0;
@@ -8,8 +12,7 @@ let
   numZonesWithCapacity = builtins.length (lib.filter
     (z: z.capacity != null && z.capacity != 0)
     cfg.cluster.layout.zones);
-in
-{
+in {
   # ── Static: garage daemon config + state directories ─────────────────────
   config = lib.mkIf cfg.enable {
     services.garage = {
@@ -18,29 +21,38 @@ in
       logLevel = "info";
       environmentFile = cfg.cluster.rpcSecretFile;
 
-      settings = {
-        metadata_dir = cfg.node.metaDir;
-        data_dir = [
-          {
-            path = cfg.node.dataDir;
-            capacity = if cfg.node.capacity == null then null else cfg.node.capacity;
+      settings =
+        {
+          metadata_dir = cfg.node.metaDir;
+          data_dir = [
+            {
+              path = cfg.node.dataDir;
+              capacity =
+                if cfg.node.capacity == null
+                then null
+                else cfg.node.capacity;
+            }
+          ];
+          replication_factor = "1";
+          rpc_bind_addr = "${localHost}:${toString cfg.cluster.rpcPort}";
+          rpc_public_addr = cfg.node.address;
+          # Placeholder — the real secret is substituted in ExecStartPre below.
+          rpc_secret = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+          s3_api = {
+            api_bind_addr = "${localHost}:${toString cfg.cluster.s3ApiPort}";
+            s3_region = cfg.cluster.region;
+          };
+          admin = {
+            api_bind_addr = "127.0.0.1:${toString cfg.cluster.adminPort}";
+          };
+        }
+        // (
+          if localPeers == []
+          then {}
+          else {
+            bootstrap_peers = localPeers;
           }
-        ];
-        replication_factor = "1";
-        rpc_bind_addr = "${localHost}:${toString cfg.cluster.rpcPort}";
-        rpc_public_addr = cfg.node.address;
-        # Placeholder — the real secret is substituted in ExecStartPre below.
-        rpc_secret = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
-        s3_api = {
-          api_bind_addr = "${localHost}:${toString cfg.cluster.s3ApiPort}";
-          s3_region = cfg.cluster.region;
-        };
-        admin = {
-          api_bind_addr = "127.0.0.1:${toString cfg.cluster.adminPort}";
-        };
-      } // (if localPeers == [ ] then { } else {
-        bootstrap_peers = localPeers;
-      });
+        );
     };
 
     # ── Substitute the real RPC secret into the rendered config ───────────
@@ -72,7 +84,11 @@ in
       GARAGE_BIN=${garagePackage}/bin/garage
       GARAGE_NODE_ID=${cfg.node.id}
       GARAGE_NODE_ZONE=${cfg.node.zone}
-      GARAGE_NODE_CAPACITY=${if cfg.node.capacity == null then "0" else toString cfg.node.capacity}
+      GARAGE_NODE_CAPACITY=${
+        if cfg.node.capacity == null
+        then "0"
+        else toString cfg.node.capacity
+      }
       COCOCOIR_BUCKETS_DIR=/var/lib/cococoir/garage/buckets
       COCOCOIR_GLOBAL_KEY_DIR=/var/lib/cococoir/garage/global
       NUM_ZONES_WITH_CAPACITY=${toString numZonesWithCapacity}

@@ -1,8 +1,10 @@
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.forgejo;
-in
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.services.forgejo;
+in {
   options.cococoir.services.forgejo = {
     enable = lib.mkEnableOption "Forgejo Git server";
 

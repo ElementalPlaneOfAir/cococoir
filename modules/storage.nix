@@ -1,6 +1,10 @@
-# SPDX-License-Identifier: MIT
-{ config, lib, pkgs, ... }:
-let
+# SPDX-License-Identifier: AGPL-3.0-or-later
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.cococoir.storage;
 
   # ── Submodule types ───────────────────────────────────────────────────────
@@ -26,7 +30,7 @@ let
     };
   };
 
-  bucketType = lib.types.submodule ({ name, ... }: {
+  bucketType = lib.types.submodule ({name, ...}: {
     options = {
       name = lib.mkOption {
         type = lib.types.str;
@@ -114,7 +118,7 @@ let
     config.name = lib.mkDefault name;
   });
 
-  mountType = lib.types.submodule ({ name, ... }: {
+  mountType = lib.types.submodule ({name, ...}: {
     options = {
       name = lib.mkOption {
         type = lib.types.str;
@@ -144,8 +148,8 @@ let
       };
       extraOptions = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [ ];
-        example = [ "--memory-limit=1000" "--debug" ];
+        default = [];
+        example = ["--memory-limit=1000" "--debug"];
         description = "Extra command-line options passed to the FUSE binary.";
       };
       readOnly = lib.mkOption {
@@ -159,23 +163,27 @@ let
   enabledBuckets = lib.filter (b: b.enable) (lib.attrValues cfg.buckets);
   enabledMounts = lib.filterAttrs (_: m: m.enable) cfg.mounts;
   zoneIds = map (z: z.id) cfg.cluster.layout.zones;
-  zonesWithCapacity = lib.filter (z: z.capacity != null && z.capacity != 0)
+  zonesWithCapacity =
+    lib.filter (z: z.capacity != null && z.capacity != 0)
     cfg.cluster.layout.zones;
   numZonesWithCapacity = builtins.length zonesWithCapacity;
 
   # ── Per-bucket RF clamping ────────────────────────────────────────────────
   clampedBuckets = lib.listToAttrs (map (b: {
-    name = b.name;
-    value = b // {
-      _intendedRF = b.replicationFactor;
-      _clampedRF =
-        if b.replicationFactor <= numZonesWithCapacity
-        then b.replicationFactor
-        else if numZonesWithCapacity == 0
-        then 1
-        else numZonesWithCapacity;
-    };
-  }) enabledBuckets);
+      name = b.name;
+      value =
+        b
+        // {
+          _intendedRF = b.replicationFactor;
+          _clampedRF =
+            if b.replicationFactor <= numZonesWithCapacity
+            then b.replicationFactor
+            else if numZonesWithCapacity == 0
+            then 1
+            else numZonesWithCapacity;
+        };
+    })
+    enabledBuckets);
 
   # ── Local peers (everything in bootstrapPeers except this node) ───────────
   localPeers = lib.filter (p: p != cfg.node.address) cfg.cluster.bootstrapPeers;
@@ -184,17 +192,18 @@ let
   localHost = builtins.elemAt (lib.splitString ":" cfg.node.address) 0;
 
   # ── Derived view (read by native-S3 apps) ─────────────────────────────────
-  derivedBuckets = lib.mapAttrs (_: b: {
-    name = b.name;
-    endpoint = "http://${cfg.node.address}:${toString cfg.cluster.s3ApiPort}";
-    region = cfg.cluster.region;
-    accessKeyId = b._accessKeyId;
-    secretAccessKeyFile = b._secretAccessKeyFile;
-    replicationFactor = b._clampedRF;
-    intendedReplicationFactor = b._intendedRF;
-  }) clampedBuckets;
-in
-{
+  derivedBuckets =
+    lib.mapAttrs (_: b: {
+      name = b.name;
+      endpoint = "http://${cfg.node.address}:${toString cfg.cluster.s3ApiPort}";
+      region = cfg.cluster.region;
+      accessKeyId = b._accessKeyId;
+      secretAccessKeyFile = b._secretAccessKeyFile;
+      replicationFactor = b._clampedRF;
+      intendedReplicationFactor = b._intendedRF;
+    })
+    clampedBuckets;
+in {
   imports = [
     ./storage/garage.nix
     ./storage/bucket.nix
@@ -218,7 +227,8 @@ in
       rpcSecretFile = lib.mkOption {
         type = lib.types.path;
         default = config.clan.core.vars.generators.storage-rpc-secret.files.rpc-secret.path;
-        defaultText = lib.literalExpression
+        defaultText =
+          lib.literalExpression
           "config.clan.core.vars.generators.storage-rpc-secret.files.rpc-secret.path";
         description = ''
           Path to the cluster's shared RPC secret. Defaults to the
@@ -250,8 +260,8 @@ in
 
       bootstrapPeers = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [ ];
-        example = [ "192.168.1.10:3901" "192.168.1.11:3901" "192.168.1.12:3901" ];
+        default = [];
+        example = ["192.168.1.10:3901" "192.168.1.11:3901" "192.168.1.12:3901"];
         description = ''
           Full list of peer RPC addresses (host:rpcPort) in the cluster.
           The local node's own address is filtered out at eval time.
@@ -261,11 +271,20 @@ in
 
       layout.zones = lib.mkOption {
         type = lib.types.listOf zoneType;
-        default = [ ];
+        default = [];
         example = [
-          { id = "z1"; capacity = "4T"; }
-          { id = "z2"; capacity = "4T"; }
-          { id = "z3"; capacity = "4T"; }
+          {
+            id = "z1";
+            capacity = "4T";
+          }
+          {
+            id = "z2";
+            capacity = "4T";
+          }
+          {
+            id = "z3";
+            capacity = "4T";
+          }
         ];
         description = ''
           Full topology of the cluster. Used to clamp per-bucket
@@ -327,7 +346,7 @@ in
 
     buckets = lib.mkOption {
       type = lib.types.attrsOf bucketType;
-      default = { };
+      default = {};
       description = ''
         Declarative S3 buckets. Per-bucket replicationFactor is clamped
         to the number of zones with non-zero capacity; an assertion fires
@@ -337,7 +356,7 @@ in
 
     mounts = lib.mkOption {
       type = lib.types.attrsOf mountType;
-      default = { };
+      default = {};
       description = ''
         Optional FUSE mount points that present a bucket as a POSIX
         filesystem (via geesefs). For native-S3 apps, read the
@@ -350,7 +369,7 @@ in
       internal = true;
       visible = false;
       readOnly = true;
-      default = { };
+      default = {};
       description = "Internal: derived values populated at eval time.";
     };
   };
@@ -369,22 +388,26 @@ in
 
     assertions =
       lib.optionals (cfg.node.zone != "" && !(builtins.elem cfg.node.zone zoneIds))
-      [{
-        assertion = builtins.elem cfg.node.zone zoneIds;
-        message = ''
-          cococoir.storage.node.zone = "${cfg.node.zone}" but no matching zone
-          is defined in cococoir.storage.cluster.layout.zones.
-          Add a zone with id = "${cfg.node.zone}" or fix the node.zone value.
-        '';
-      }]
+      [
+        {
+          assertion = builtins.elem cfg.node.zone zoneIds;
+          message = ''
+            cococoir.storage.node.zone = "${cfg.node.zone}" but no matching zone
+            is defined in cococoir.storage.cluster.layout.zones.
+            Add a zone with id = "${cfg.node.zone}" or fix the node.zone value.
+          '';
+        }
+      ]
       ++ lib.optionals (cfg.node.capacity != null && !(builtins.elem cfg.node.zone zoneIds))
-      [{
-        assertion = builtins.elem cfg.node.zone zoneIds;
-        message = ''
-          cococoir.storage.node.capacity is set but node.zone =
-          "${cfg.node.zone}" is not in cluster.layout.zones.
-        '';
-      }]
+      [
+        {
+          assertion = builtins.elem cfg.node.zone zoneIds;
+          message = ''
+            cococoir.storage.node.capacity is set but node.zone =
+            "${cfg.node.zone}" is not in cluster.layout.zones.
+          '';
+        }
+      ]
       ++ map (b: {
         assertion = b._clampedRF >= 1;
         message = ''

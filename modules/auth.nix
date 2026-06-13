@@ -1,9 +1,11 @@
-# SPDX-License-Identifier: MIT
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.adminAuth;
-in
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.adminAuth;
+in {
   options.cococoir.adminAuth = {
     enable = lib.mkEnableOption "admin HTTP Basic Authentication for admin services";
     users = lib.mkOption {
@@ -25,11 +27,13 @@ in
     ];
 
     lib.cococoir.withAuth = extraConfig:
-      if cfg.enable then ''
+      if cfg.enable
+      then ''
         basicauth {
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList (user: hash: "  ${user} ${hash}") cfg.users)}
         }
         ${extraConfig}
-      '' else extraConfig;
+      ''
+      else extraConfig;
   };
 }

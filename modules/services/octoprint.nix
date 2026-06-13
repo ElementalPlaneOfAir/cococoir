@@ -1,8 +1,10 @@
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.octoprint;
-in
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.services.octoprint;
+in {
   options.cococoir.services.octoprint = {
     enable = lib.mkEnableOption "OctoPrint 3D printer web interface";
 
@@ -26,19 +28,18 @@ in
       extraConfig.accessControl = lib.mkIf config.cococoir.adminAuth.enable {
         autologinLocal = true;
         autologinAs = "admin";
-        localNetworks = [ "127.0.0.1/8" ];
+        localNetworks = ["127.0.0.1/8"];
       };
     };
 
-    services.caddy.virtualHosts."${cfg.domain}".extraConfig =
-      config.lib.cococoir.withAuth (
-        if cfg.public
-        then ''reverse_proxy localhost:5321''
-        else ''
-          @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
-          respond @not_local "Forbidden" 403
-          reverse_proxy localhost:5321
-        ''
-      );
+    services.caddy.virtualHosts."${cfg.domain}".extraConfig = config.lib.cococoir.withAuth (
+      if cfg.public
+      then ''reverse_proxy localhost:5321''
+      else ''
+        @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+        respond @not_local "Forbidden" 403
+        reverse_proxy localhost:5321
+      ''
+    );
   };
 }

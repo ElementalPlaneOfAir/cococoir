@@ -1,12 +1,15 @@
-{ config, lib, pkgs, ... }:
-let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.cococoir.services.jellyseerr;
   port = 5055;
   dataDir = "/var/lib/jellyseerr";
   user = "jellyseerr";
   group = "jellyseerr";
-in
-{
+in {
   options.cococoir.services.jellyseerr = {
     enable = lib.mkEnableOption "Jellyseerr (seerr) media request and discovery UI";
 
@@ -36,8 +39,8 @@ in
 
     systemd.services.jellyseerr = {
       description = "Jellyseerr media request UI";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
+      wantedBy = ["multi-user.target"];
+      after = ["network.target"];
       environment = {
         LOG_LEVEL = "info";
         PORT = toString port;

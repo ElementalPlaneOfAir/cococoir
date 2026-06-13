@@ -1,8 +1,10 @@
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.cryptpad;
-in
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.services.cryptpad;
+in {
   options.cococoir.services.cryptpad = {
     enable = lib.mkEnableOption "CryptPad collaborative office suite";
 

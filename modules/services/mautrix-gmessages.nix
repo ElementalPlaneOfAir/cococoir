@@ -1,10 +1,14 @@
-{ config, lib, pkgs, ... }:
-let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.cococoir.services.mautrix-gmessages;
   dataDir = "/var/lib/mautrix-gmessages";
   registrationFile = "${dataDir}/gmessages-registration.yaml";
   settingsFile = "${dataDir}/config.yaml";
-  settingsFormat = pkgs.formats.json { };
+  settingsFormat = pkgs.formats.json {};
   appservicePort = 29336;
 
   mkDefaults = lib.mapAttrsRecursive (n: v: lib.mkDefault v);
@@ -51,8 +55,8 @@ let
       username_template = "gmessages_{{.}}";
     };
     double_puppet = {
-      servers = { };
-      secrets = { };
+      servers = {};
+      secrets = {};
     };
     encryption = {
       allow = false;
@@ -77,8 +81,7 @@ let
   };
 
   settingsFileUnsubstituted = settingsFormat.generate "mautrix-gmessages-config-unsubstituted.json" cfg.settings;
-in
-{
+in {
   options.cococoir.services.mautrix-gmessages = {
     enable = lib.mkEnableOption "mautrix-gmessages, a Matrix-Google Messages puppeting bridge";
 
@@ -108,7 +111,7 @@ in
     # PostgreSQL database for the bridge
     services.postgresql = {
       enable = true;
-      ensureDatabases = [ "mautrix-gmessages" ];
+      ensureDatabases = ["mautrix-gmessages"];
       ensureUsers = [
         {
           name = "mautrix-gmessages";
@@ -124,7 +127,7 @@ in
       home = dataDir;
       description = "mautrix-gmessages bridge user";
     };
-    users.groups.mautrix-gmessages = { };
+    users.groups.mautrix-gmessages = {};
 
     # Group for synapse to read the registration file
     users.groups.mautrix-gmessages-registration = {
@@ -132,22 +135,21 @@ in
     };
 
     # Ensure domain permission defaults to user level
-    cococoir.services.mautrix-gmessages.settings.bridge.permissions =
-      lib.mkDefault (lib.optionalAttrs (config.cococoir.domain != null) {
-        "${config.cococoir.domain}" = "user";
-      });
+    cococoir.services.mautrix-gmessages.settings.bridge.permissions = lib.mkDefault (lib.optionalAttrs (config.cococoir.domain != null) {
+      "${config.cococoir.domain}" = "user";
+    });
 
     # Register the bridge with synapse
     services.matrix-synapse = lib.mkIf config.services.matrix-synapse.enable {
-      settings.app_service_config_files = [ registrationFile ];
+      settings.app_service_config_files = [registrationFile];
     };
 
     # Make synapse wait for the registration file to exist, and allow it to
     # read the registration file via the shared group.
     systemd.services.matrix-synapse = lib.mkIf config.services.matrix-synapse.enable {
-      wants = [ "mautrix-gmessages-registration.service" ];
-      after = [ "mautrix-gmessages-registration.service" ];
-      serviceConfig.SupplementaryGroups = [ "mautrix-gmessages-registration" ];
+      wants = ["mautrix-gmessages-registration.service"];
+      after = ["mautrix-gmessages-registration.service"];
+      serviceConfig.SupplementaryGroups = ["mautrix-gmessages-registration"];
     };
 
     # Registration service: generates config and registration file before either
@@ -160,11 +162,11 @@ in
         EnvironmentFile = cfg.environmentFile;
         StateDirectory = baseNameOf dataDir;
         WorkingDirectory = dataDir;
-        SystemCallFilter = [ "@system-service" ];
+        SystemCallFilter = ["@system-service"];
         ProtectSystem = "strict";
         ProtectHome = true;
       };
-      path = [ pkgs.yq pkgs.envsubst pkgs.mautrix-gmessages ];
+      path = [pkgs.yq pkgs.envsubst pkgs.mautrix-gmessages];
       script = ''
         # Substitute environment variables into the config file
         rm -f '${settingsFile}'
@@ -194,17 +196,19 @@ in
         mv '${settingsFile}.tmp' '${settingsFile}'
         umask $old_umask
       '';
-      restartTriggers = [ settingsFileUnsubstituted ];
+      restartTriggers = [settingsFileUnsubstituted];
     };
 
     systemd.services.mautrix-gmessages = {
       description = "mautrix-gmessages, a Matrix-Google Messages puppeting bridge";
-      wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" "mautrix-gmessages-registration.service" ]
+      wantedBy = ["multi-user.target"];
+      wants =
+        ["network-online.target" "mautrix-gmessages-registration.service"]
         ++ lib.optional config.services.matrix-synapse.enable "matrix-synapse.service";
-      after = [ "network-online.target" "mautrix-gmessages-registration.service" "postgresql.service" ]
+      after =
+        ["network-online.target" "mautrix-gmessages-registration.service" "postgresql.service"]
         ++ lib.optional config.services.matrix-synapse.enable "matrix-synapse.service";
-      requires = [ "postgresql.service" ];
+      requires = ["postgresql.service"];
 
       serviceConfig = {
         User = "mautrix-gmessages";
@@ -236,11 +240,11 @@ in
         RestrictSUIDSGID = true;
         SystemCallArchitectures = "native";
         SystemCallErrorNumber = "EPERM";
-        SystemCallFilter = [ "@system-service" ];
+        SystemCallFilter = ["@system-service"];
         Type = "simple";
         UMask = 27;
       };
-      restartTriggers = [ settingsFileUnsubstituted ];
+      restartTriggers = [settingsFileUnsubstituted];
     };
   };
 }

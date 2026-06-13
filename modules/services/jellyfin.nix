@@ -1,9 +1,12 @@
-# SPDX-License-Identifier: MIT
-{ config, lib, pkgs, ... }:
-let
-  cfg = config.cococoir.services.jellyfin;
-in
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.cococoir.services.jellyfin;
+in {
   options.cococoir.services.jellyfin = {
     enable = lib.mkEnableOption "Jellyfin media server";
 
@@ -30,7 +33,7 @@ in
       isSystemUser = true;
       description = "Jellyfin System User";
       shell = lib.mkDefault pkgs.bash;
-      extraGroups = [ "render" "video" ];
+      extraGroups = ["render" "video"];
     };
 
     services.caddy.virtualHosts."${cfg.domain}".extraConfig =

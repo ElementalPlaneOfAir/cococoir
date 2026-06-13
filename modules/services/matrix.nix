@@ -1,9 +1,11 @@
-{ config, lib, ... }:
-let
+{
+  config,
+  lib,
+  ...
+}: let
   cfg = config.cococoir.services.matrix;
   domain = config.cococoir.domain;
-in
-{
+in {
   options.cococoir.services.matrix = {
     enable = lib.mkEnableOption "Matrix homeserver (Synapse)";
 
@@ -21,7 +23,7 @@ in
   config = lib.mkIf cfg.enable {
     services.postgresql = {
       enable = true;
-      ensureDatabases = [ "matrix-synapse" ];
+      ensureDatabases = ["matrix-synapse"];
       ensureUsers = [
         {
           name = "matrix-synapse";
@@ -33,7 +35,10 @@ in
     services.matrix-synapse = {
       enable = true;
       settings = {
-        server_name = if domain != null then domain else config.networking.hostName;
+        server_name =
+          if domain != null
+          then domain
+          else config.networking.hostName;
         public_baseurl = "https://${cfg.domain}";
         database = {
           name = "psycopg2";
@@ -45,13 +50,19 @@ in
         listeners = [
           {
             port = 6167;
-            bind_addresses = [ "127.0.0.1" ];
+            bind_addresses = ["127.0.0.1"];
             type = "http";
             tls = false;
             x_forwarded = true;
             resources = [
-              { names = [ "client" ]; compress = true; }
-              { names = [ "federation" ]; compress = false; }
+              {
+                names = ["client"];
+                compress = true;
+              }
+              {
+                names = ["federation"];
+                compress = false;
+              }
             ];
           }
         ];
@@ -60,27 +71,41 @@ in
       };
     };
 
-    services.caddy.virtualHosts = {
-      "${cfg.domain}".extraConfig =
-        if cfg.public
-        then ''reverse_proxy localhost:6167''
-        else ''
-          @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
-          respond @not_local "Forbidden" 403
-          reverse_proxy localhost:6167
+    services.caddy.virtualHosts =
+      {
+        "${cfg.domain}".extraConfig =
+          if cfg.public
+          then ''reverse_proxy localhost:6167''
+          else ''
+            @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+            respond @not_local "Forbidden" 403
+            reverse_proxy localhost:6167
+          '';
+      }
+      // lib.optionalAttrs cfg.public {
+        "${
+          if domain != null
+          then domain
+          else config.networking.hostName
+        }".extraConfig = ''
+          handle_path /.well-known/matrix/server {
+            header Content-Type application/json
+            respond "{\"m.server\": \"matrix.${
+            if domain != null
+            then domain
+            else config.networking.hostName
+          }:443\"}"
+          }
+          handle_path /.well-known/matrix/client {
+            header Content-Type application/json
+            respond "{\"m.homeserver\": {\"base_url\": \"https://matrix.${
+            if domain != null
+            then domain
+            else config.networking.hostName
+          }\"}}"
+          }
+          redir https://${cfg.domain}{uri} permanent
         '';
-    } // lib.optionalAttrs cfg.public {
-      "${if domain != null then domain else config.networking.hostName}".extraConfig = ''
-        handle_path /.well-known/matrix/server {
-          header Content-Type application/json
-          respond "{\"m.server\": \"matrix.${if domain != null then domain else config.networking.hostName}:443\"}"
-        }
-        handle_path /.well-known/matrix/client {
-          header Content-Type application/json
-          respond "{\"m.homeserver\": {\"base_url\": \"https://matrix.${if domain != null then domain else config.networking.hostName}\"}}"
-        }
-        redir https://${cfg.domain}{uri} permanent
-      '';
-    };
+      };
   };
 }

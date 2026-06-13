@@ -1,9 +1,11 @@
-# SPDX-License-Identifier: MIT
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.custom;
-in
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {
+  config,
+  lib,
+  ...
+}: let
+  cfg = config.cococoir.services.custom;
+in {
   options.cococoir.services.custom = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {
@@ -29,16 +31,18 @@ in
     description = "Custom services to expose via Caddy reverse proxy.";
   };
 
-  config.services.caddy.virtualHosts = lib.mkMerge (lib.mapAttrsToList (_: svc:
-    lib.mkIf svc.enable {
-      "${svc.domain}".extraConfig =
-        if svc.public
-        then ''reverse_proxy localhost:${toString svc.port}''
-        else ''
-          @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
-          respond @not_local "Forbidden" 403
-          reverse_proxy localhost:${toString svc.port}
-        '';
-    }
-  ) cfg);
+  config.services.caddy.virtualHosts = lib.mkMerge (lib.mapAttrsToList (
+      _: svc:
+        lib.mkIf svc.enable {
+          "${svc.domain}".extraConfig =
+            if svc.public
+            then ''reverse_proxy localhost:${toString svc.port}''
+            else ''
+              @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
+              respond @not_local "Forbidden" 403
+              reverse_proxy localhost:${toString svc.port}
+            '';
+        }
+    )
+    cfg);
 }

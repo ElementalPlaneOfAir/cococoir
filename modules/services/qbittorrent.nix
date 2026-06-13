@@ -1,8 +1,11 @@
-{ config, lib, pkgs, ... }:
-let
-  cfg = config.cococoir.services.qbittorrent;
-in
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.cococoir.services.qbittorrent;
+in {
   options.cococoir.services.qbittorrent = {
     enable = lib.mkEnableOption "qBittorrent BitTorrent client";
 

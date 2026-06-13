@@ -1,8 +1,10 @@
-{ lib, config, ... }:
-let
-  cfg = config.cococoir.proxy.client;
-in
 {
+  lib,
+  config,
+  ...
+}: let
+  cfg = config.cococoir.proxy.client;
+in {
   options.cococoir.proxy.client = {
     enable = lib.mkEnableOption "rathole tunnel client (forwards local ports to a VPS)";
 
@@ -37,18 +39,20 @@ in
         client = {
           remote_addr = "${cfg.serverAddress}:${toString cfg.serverPort}";
         };
-        client.services = {
-          http = {
-            local_addr = "127.0.0.1:80";
-          };
-          https = {
-            local_addr = "127.0.0.1:443";
-          };
-          https_udp = {
-            local_addr = "127.0.0.1:443";
-            type = "udp";
-          };
-        } // cfg.extraServices;
+        client.services =
+          {
+            http = {
+              local_addr = "127.0.0.1:80";
+            };
+            https = {
+              local_addr = "127.0.0.1:443";
+            };
+            https_udp = {
+              local_addr = "127.0.0.1:443";
+              type = "udp";
+            };
+          }
+          // cfg.extraServices;
       };
       inherit (cfg) credentialsFile;
     };

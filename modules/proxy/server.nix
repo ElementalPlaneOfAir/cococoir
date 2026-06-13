@@ -1,8 +1,10 @@
-{ lib, config, ... }:
-let
-  cfg = config.cococoir.proxy.server;
-in
 {
+  lib,
+  config,
+  ...
+}: let
+  cfg = config.cococoir.proxy.server;
+in {
   options.cococoir.proxy.server = {
     enable = lib.mkEnableOption "rathole tunnel server (accepts public ports and forwards them to clients)";
 
@@ -47,8 +49,8 @@ in
 
   config = lib.mkIf cfg.enable {
     networking.firewall = {
-      allowedTCPPorts = [ cfg.controlPort 80 443 ] ++ cfg.extraTCPPorts;
-      allowedUDPPorts = [ 443 ] ++ cfg.extraUDPPorts;
+      allowedTCPPorts = [cfg.controlPort 80 443] ++ cfg.extraTCPPorts;
+      allowedUDPPorts = [443] ++ cfg.extraUDPPorts;
     };
 
     services.rathole = {
@@ -58,18 +60,20 @@ in
         server = {
           bind_addr = "${cfg.bindAddress}:${toString cfg.controlPort}";
         };
-        server.services = {
-          http = {
-            bind_addr = "${cfg.bindAddress}:80";
-          };
-          https = {
-            bind_addr = "${cfg.bindAddress}:443";
-          };
-          https_udp = {
-            bind_addr = "${cfg.bindAddress}:443";
-            type = "udp";
-          };
-        } // cfg.extraServices;
+        server.services =
+          {
+            http = {
+              bind_addr = "${cfg.bindAddress}:80";
+            };
+            https = {
+              bind_addr = "${cfg.bindAddress}:443";
+            };
+            https_udp = {
+              bind_addr = "${cfg.bindAddress}:443";
+              type = "udp";
+            };
+          }
+          // cfg.extraServices;
       };
       inherit (cfg) credentialsFile;
     };
