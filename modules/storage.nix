@@ -195,7 +195,7 @@
   derivedBuckets =
     lib.mapAttrs (_: b: {
       name = b.name;
-      endpoint = "http://${cfg.node.address}:${toString cfg.cluster.s3ApiPort}";
+      endpoint = "http://${localHost}:${toString cfg.cluster.s3ApiPort}";
       region = cfg.cluster.region;
       accessKeyId = b._accessKeyId;
       secretAccessKeyFile = b._secretAccessKeyFile;
@@ -369,7 +369,6 @@ in {
       internal = true;
       visible = false;
       readOnly = true;
-      default = {};
       description = "Internal: derived values populated at eval time.";
     };
   };
