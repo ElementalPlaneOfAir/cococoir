@@ -66,7 +66,7 @@ Every service under `modules/services/` follows a **consistent pattern**:
 | `jellyseerr.nix` | Jellyseerr (seerr) | `5055` | Unified movie/TV request UI. Points at Jellyfin + qBittorrent. |
 | `octoprint.nix` | OctoPrint | `5321` | — |
 | `kavita.nix` | Kavita | `5001` | — |
-| `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. |
+| `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. See [Live TV / Sports Streaming](#live-tv--sports-streaming) for a worked example (Threadfin + Jellyfin Live TV). |
 
 ## Adding a New First-Party Service
 
@@ -280,6 +280,62 @@ Example (`flake-vars/storage-vars.nix`):
 ### Adding a New First-Party Service
 
 For services that have a built-in NixOS module (Jellyfin, Vaultwarden, etc.), create a dedicated wrapper in `modules/services/<name>.nix` following the established pattern. If the service needs secrets, also create `flake-vars/<service>-vars.nix` declaring `flake.modules.nixos.<service>Vars`.
+
+## Live TV / Sports Streaming
+
+The *arr stack → Jellyfin pipeline handles movies and series well, but live sports isn't a "grab a release" problem — it's a "subscribe to a broadcast stream" problem. The equivalent pipeline is **Threadfin** (an M3U proxy) feeding **Jellyfin's built-in Live TV / DVR** so the same UI your dad already uses becomes a grid guide for live games.
+
+### Architecture
+
+```
+[upstream M3U + XMLTV]
+      │  free aggregators, IPTV provider, HDHomeRun, etc.
+      ▼
+[Threadfin on :34400]   ── filter, dedupe, map EPG, group by league
+      │
+      ├── /m3u   ──▶  Jellyfin Live TV tuner
+      └── /xmltv ──▶  Jellyfin Live TV EPG
+                        │
+                        ▼
+                 [Caddy → tv.<domain> or jellyfin.<domain>]
+                        │
+                        ▼
+                 Apple TV / web / phone (one app, one guide)
+```
+
+Typical end-to-end delay is **5–30 seconds** (one HLS segment + origin latency) — well under the 1-minute mark. The *arr → Jellyfin stack is slower because of release-group re-encoding; this path is HLS passthrough.
+
+### Cococoir wiring
+
+Threadfin isn't in nixpkgs, so it follows the **custom service** pattern: its NixOS module and systemd service are defined in the deployment repo, and Cococoir just exposes the admin UI through Caddy.
+
+```nix
+# In the downstream deployment repo (e.g. amon-sul/configuration.nix)
+cococoir.services.custom.threadfin = {
+  enable = true;
+  domain = "tv-helper.interdim.net";   # admin UI for curating the channel list
+  port = 34400;                         # Threadfin's default
+  public = false;                       # admin-only; Jellyfin hits 127.0.0.1:34400 directly
+};
+
+cococoir.services.jellyfin = {
+  enable = true;
+  domain = "jellyfin.interdim.net";
+  public = true;
+  # Jellyfin's Live TV section is configured at runtime in the admin UI:
+  #   Tuner type:  M3U Tuner
+  #   File/URL:    http://127.0.0.1:34400/m3u/threadfin
+  #   EPG:         http://127.0.0.1:34400/xmltv/threadfin
+};
+```
+
+Threadfin's Nix module (build from source, systemd unit, persistent `/var/lib/cococoir/threadfin` data dir) lives in the deployment repo, alongside any other bespoke services. **No `flake-vars/` generator is needed** — M3U sources and EPG URLs aren't secrets, they're config that goes in Threadfin's own settings file.
+
+### Maintenance
+
+Free M3U aggregators are volatile. Budget ~30 minutes/month to swap dead sources. Threadfin's filter groups and channel mapping persist across upstream changes, so the curation work compounds over time.
+
+Alternatives if Threadfin is stale: **xTeVe** (abandoned but still works), **Dispatcharr** (newer fork).
 
 ## CLI Tool
 
