@@ -1,14 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {
   config,
   lib,
-  pkgs,
   ...
 }: let
   cfg = config.cococoir.services.jellyseerr;
   port = 5055;
-  dataDir = "/var/lib/jellyseerr";
-  user = "jellyseerr";
-  group = "jellyseerr";
 in {
   options.cococoir.services.jellyseerr = {
     enable = lib.mkEnableOption "Jellyseerr (seerr) media request and discovery UI";
@@ -22,42 +19,31 @@ in {
       type = lib.types.bool;
       description = "Whether to allow public access to Jellyseerr.";
     };
+
+    configDir = lib.mkOption {
+      type = lib.types.path;
+      default = "/var/lib/jellyseerr";
+      defaultText = lib.literalExpression ''"/var/lib/jellyseerr"'';
+      description = ''
+        Where Jellyseerr stores its config + database. Defaults to
+        /var/lib/jellyseerr to preserve the original cococoir data path
+        for existing deployments.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
-    users.users.${user} = {
-      isSystemUser = true;
-      home = dataDir;
-      group = group;
-      description = "Jellyseerr system user";
+    services.seerr = {
+      enable = true;
+      openFirewall = false;
+      port = port;
+      configDir = cfg.configDir;
     };
-    users.groups.${group} = {};
 
-    systemd.tmpfiles.rules = [
-      "d ${dataDir} 0755 ${user} ${group} -"
-    ];
-
-    systemd.services.jellyseerr = {
-      description = "Jellyseerr media request UI";
-      wantedBy = ["multi-user.target"];
-      after = ["network.target"];
-      environment = {
-        LOG_LEVEL = "info";
-        PORT = toString port;
-        CONFIG_DIR = dataDir;
-        DATA_DIR = dataDir;
-        TZ = "UTC";
-      };
-      serviceConfig = {
-        ExecStart = "${pkgs.seerr}/bin/seerr";
-        User = user;
-        Group = group;
-        WorkingDirectory = dataDir;
-        Restart = "on-failure";
-        RestartSec = "5s";
-        StateDirectory = "jellyseerr";
-      };
-    };
+    # Bind to localhost: nixpkgs' services.seerr listens on 0.0.0.0 by
+    # default; Cococoir services are reached via the Caddy reverse
+    # proxy on 127.0.0.1, not directly.
+    systemd.services.seerr.environment.HOST = "127.0.0.1";
 
     services.caddy.virtualHosts."${cfg.domain}".extraConfig =
       if cfg.public

@@ -63,7 +63,7 @@ Every service under `modules/services/` follows a **consistent pattern**:
 | `cryptpad.nix` | CryptPad | `9123` | — |
 | `qbittorrent.nix` | qBittorrent | `8080` (WebUI) | **VPN-confined** via `vpnNamespaces.wg`. Requires `vpnConfigFile`. Pairs with autobrr. |
 | `autobrr.nix` | autobrr | `7474` | Release automation. Hands matched releases to qBittorrent. Requires `secretFile`. |
-| `jellyseerr.nix` | Jellyseerr (seerr) | `5055` | Unified movie/TV request UI. Points at Jellyfin + qBittorrent. |
+| `jellyseerr.nix` | Jellyseerr (seerr) | `5055` | Unified movie/TV request UI. Points at Jellyfin + qBittorrent. Delegates to nixpkgs `services.seerr`. |
 | `octoprint.nix` | OctoPrint | `5321` | — |
 | `kavita.nix` | Kavita | `5001` | — |
 | `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. See [Live TV / Sports Streaming](#live-tv--sports-streaming) for a worked example (Threadfin + Jellyfin Live TV). |
