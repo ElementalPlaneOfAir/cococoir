@@ -73,6 +73,10 @@ in {
       User = "garage";
       Group = "garage";
     };
+    # The nixpkgs services.garage module writes the rendered TOML to
+    # /etc/garage.toml (via environment.etc."garage.toml".source = configFile).
+    # Sed that file in place to replace the placeholder with the real
+    # secret from the clan vars generator.
     systemd.services.garage.serviceConfig.ExecStartPre = lib.mkBefore [
       "+${pkgs.writeShellScript "garage-secret-substitute" ''
         set -euo pipefail
@@ -81,9 +85,11 @@ in {
           echo "garage rpc secret file is empty" >&2
           exit 1
         fi
-        if [ -f /run/garage/garage.toml ]; then
-          ${pkgs.gnused}/bin/sed -i "s|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX|$SECRET|g" /run/garage/garage.toml
+        if [ ! -f /etc/garage.toml ]; then
+          echo "/etc/garage.toml not found" >&2
+          exit 1
         fi
+        ${pkgs.gnused}/bin/sed -i "s|XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX|$SECRET|g" /etc/garage.toml
       ''}"
     ];
 
