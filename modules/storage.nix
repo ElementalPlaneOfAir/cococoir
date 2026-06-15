@@ -322,15 +322,24 @@ in {
 
       dataDir = lib.mkOption {
         type = lib.types.path;
+        default = "/var/lib/cococoir/garage/data";
+        defaultText = lib.literalExpression ''"/var/lib/cococoir/garage/data"'';
         example = "/var/lib/garage/data";
+        description = ''
+          Where Garage stores object data blocks. Default lives under
+          /var/lib/cococoir/garage/ to keep cococoir state co-located.
+        '';
       };
 
       metaDir = lib.mkOption {
         type = lib.types.path;
+        default = "/var/lib/cococoir/garage/meta";
+        defaultText = lib.literalExpression ''"/var/lib/cococoir/garage/meta"'';
         example = "/var/lib/garage/meta";
         description = ''
           Where Garage stores its metadata database. Put this on a fast
-          disk (SSD) if possible; dataDir may be on a slower HDD.
+          disk (SSD) if possible; dataDir may be on a slower HDD. Default
+          lives under /var/lib/cococoir/garage/.
         '';
       };
 

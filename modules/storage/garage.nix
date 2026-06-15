@@ -15,6 +15,14 @@
 in {
   # ── Static: garage daemon config + state directories ─────────────────────
   config = lib.mkIf cfg.enable {
+    users.users.garage = {
+      isSystemUser = true;
+      group = "garage";
+      home = cfg.node.metaDir;
+      description = "Garage Object Storage daemon";
+    };
+    users.groups.garage = {};
+
     services.garage = {
       enable = true;
       package = garagePackage;
@@ -33,7 +41,7 @@ in {
                 else cfg.node.capacity;
             }
           ];
-          replication_factor = "1";
+          replication_factor = 1;
           rpc_bind_addr = "${localHost}:${toString cfg.cluster.rpcPort}";
           rpc_public_addr = cfg.node.address;
           # Placeholder — the real secret is substituted in ExecStartPre below.
@@ -56,6 +64,15 @@ in {
     };
 
     # ── Substitute the real RPC secret into the rendered config ───────────
+    # Override the nixpkgs module's `DynamicUser = lib.mkDefault true` and
+    # drop its empty `StateDirectory` (it only sets StateDirectory when the
+    # default /var/lib/garage path is used; for our custom paths under
+    # /var/lib/cococoir/garage/ we use tmpfiles below and a static user).
+    systemd.services.garage.serviceConfig = {
+      DynamicUser = false;
+      User = "garage";
+      Group = "garage";
+    };
     systemd.services.garage.serviceConfig.ExecStartPre = lib.mkBefore [
       "+${pkgs.writeShellScript "garage-secret-substitute" ''
         set -euo pipefail
@@ -71,9 +88,15 @@ in {
     ];
 
     # ── State directory for derived files (node id, bucket keys) ──────────
+    # Includes dataDir + metaDir so systemd can bind-mount them into the
+    # daemon's mount namespace (the nixpkgs services.garage unit sets
+    # `ReadWritePaths = [dataDir metaDir]` for non-default paths, and
+    # systemd will fail with NAMESPACE if the dirs don't exist).
     systemd.tmpfiles.rules = [
       "d /var/lib/cococoir 0755 root root -"
       "d /var/lib/cococoir/garage 0755 root root -"
+      "d ${cfg.node.dataDir} 0750 garage garage -"
+      "d ${cfg.node.metaDir} 0750 garage garage -"
       "d /var/lib/cococoir/garage/buckets 0755 root root -"
       "d /var/lib/cococoir/garage/global 0750 root root -"
     ];
