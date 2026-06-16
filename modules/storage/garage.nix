@@ -107,9 +107,11 @@ in {
       "d /var/lib/cococoir/garage/global 0750 root root -"
     ];
 
-    # ── Make garage and its admin API address available to other units ────
+    # ── Make garage admin address and CLI available to other units ────────
+    # Note: the admin API runs on adminPort (default 3903), but the CLI
+    # does not accept a separate --admin-address flag — it reads its
+    # config from /etc/garage.toml (rendered by nixpkgs services.garage).
     environment.etc."cococoir/garage.env".text = ''
-      GARAGE_ADMIN_URL=http://127.0.0.1:${toString cfg.cluster.adminPort}
       GARAGE_BIN=${garagePackage}/bin/garage
       GARAGE_NODE_ID=${cfg.node.id}
       GARAGE_NODE_ZONE=${cfg.node.zone}
