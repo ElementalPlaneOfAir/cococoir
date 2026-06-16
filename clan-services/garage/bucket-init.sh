@@ -2,46 +2,50 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # cococoir/garage bucket-init.
-# Idempotent first-boot setup: global S3 key, single-node layout,
-# buckets + per-bucket allow / quotas / website.
+# Idempotent first-boot setup: import the pre-generated global S3 key,
+# apply single-node layout, create buckets, set per-bucket allow / quotas
+# / website.
 #
 # Usage: garage-bucket-init <buckets.json> <global-dir>
+#
+# Required env:
+#   CLAN_VAR_S3_KEY_DIR — directory containing the pre-generated
+#                         access-key-id and secret-access-key files
+#                         (from the garage-global-s3-key clan-core var
+#                         generator).
 set -euo pipefail
 
 BUCKETS_JSON="${1:-}"
 GLOBAL_DIR="${2:-/var/lib/cococoir/garage/global}"
+CLAN_VAR_S3_KEY_DIR="${CLAN_VAR_S3_KEY_DIR:-}"
 
 if [ -z "$BUCKETS_JSON" ] || [ ! -r "$BUCKETS_JSON" ]; then
   echo "[bucket-init] buckets.json not readable: $BUCKETS_JSON" >&2
+  exit 1
+fi
+if [ -z "$CLAN_VAR_S3_KEY_DIR" ] || [ ! -d "$CLAN_VAR_S3_KEY_DIR" ]; then
+  echo "[bucket-init] CLAN_VAR_S3_KEY_DIR not set or not a directory" >&2
   exit 1
 fi
 
 mkdir -p "$GLOBAL_DIR"
 chmod 0700 "$GLOBAL_DIR"
 
-# Generate or read the global S3 access key.
-if [ ! -s "$GLOBAL_DIR/access-key-id" ]; then
-  KEY_OUT="$(garage -c /etc/garage.toml key create cococoir-global 2>&1)" || {
-    echo "[bucket-init] garage key create failed:" >&2
-    echo "$KEY_OUT" >&2
-    exit 1
-  }
-  KEY_ID="$(printf '%s\n' "$KEY_OUT" | awk '/^Key ID:/ {print $3}')"
-  SECRET="$(printf '%s\n' "$KEY_OUT" | awk '/^Secret key:/ {print $3}')"
-  if [ -z "$KEY_ID" ] || [ -z "$SECRET" ]; then
-    echo "[bucket-init] failed to parse key from garage output:" >&2
-    echo "$KEY_OUT" >&2
-    exit 1
-  fi
-  printf '%s' "$KEY_ID" > "$GLOBAL_DIR/access-key-id"
-  printf '%s' "$SECRET" > "$GLOBAL_DIR/secret-access-key"
-  chmod 0600 "$GLOBAL_DIR/secret-access-key"
-  chmod 0600 "$GLOBAL_DIR/access-key-id"
-  echo "[bucket-init] generated global S3 key"
+# Import the pre-generated global S3 key (idempotent).
+KEY_ID="$(cat "$CLAN_VAR_S3_KEY_DIR/access-key-id")"
+SECRET="$(cat "$CLAN_VAR_S3_KEY_DIR/secret-access-key")"
+
+if ! garage -c /etc/garage.toml key info "$KEY_ID" >/dev/null 2>&1; then
+  garage -c /etc/garage.toml key import --yes \
+    "$KEY_ID" "$SECRET" -n cococoir-global >/dev/null
+  echo "[bucket-init] imported global S3 key"
 else
-  echo "[bucket-init] reusing existing global S3 key"
+  echo "[bucket-init] global S3 key already imported"
 fi
-KEY_ID="$(cat "$GLOBAL_DIR/access-key-id")"
+
+# Symlink the key files into globalDir for native-S3 clients.
+ln -sf "$CLAN_VAR_S3_KEY_DIR/access-key-id" "$GLOBAL_DIR/access-key-id"
+ln -sf "$CLAN_VAR_S3_KEY_DIR/secret-access-key" "$GLOBAL_DIR/secret-access-key"
 
 # Apply single-node layout if not yet applied.
 if ! garage -c /etc/garage.toml layout show >/dev/null 2>&1; then

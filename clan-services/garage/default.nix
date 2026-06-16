@@ -237,7 +237,10 @@ in
                     Group = "garage";
                     WorkingDirectory = me.metaDir;
                     ExecStart = "${./bucket-init.sh} ${bucketInitJson} ${globalDir}";
-                    Environment = "PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.garage pkgs.jq pkgs.gnused pkgs.gawk ]}";
+                    Environment = [
+                      "PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.garage pkgs.jq pkgs.gnused pkgs.gawk ]}"
+                      "CLAN_VAR_S3_KEY_DIR=${config.clan.core.vars.generators.garage-global-s3-key.files.access-key-id.path | lib.dirOf}"
+                    ];
                   };
                 };
               }
@@ -249,13 +252,26 @@ in
                 };
               }) me.mounts);
 
-              # Clan vars: rpc-secret is shared (cluster-wide); admin
-              # and metrics tokens are per-node.
+              # Clan vars: rpc-secret and the global S3 key are shared
+              # (cluster-wide); admin and metrics tokens are per-node.
+              # The S3 key is pre-generated so native-S3 clients with
+              # eval-time configs (Nextcloud's objectstore.s3) can read it.
+              # bucket-init.sh imports it into garage on first boot.
               clan.core.vars.generators.garage-rpc-secret = {
                 share = true;
                 files.rpc-secret = { };
                 runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
                 script = "openssl rand -hex -out \"$out/rpc-secret\" 32";
+              };
+              clan.core.vars.generators.garage-global-s3-key = {
+                share = true;
+                files.access-key-id = { };
+                files.secret-access-key = { };
+                runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
+                script = ''
+                  printf 'GK%s' "$(openssl rand -hex 20)" > "$out/access-key-id"
+                  openssl rand -base64 -out "$out/secret-access-key" 32
+                '';
               };
               clan.core.vars.generators.garage-admin-token = {
                 files.admin-token = { };
@@ -294,9 +310,11 @@ in
               cococoir.storage.derived.buckets = lib.mapAttrs (n: b: {
                 name = n;
                 endpoint = "http://127.0.0.1:${toString me.s3ApiPort}";
+                host = "127.0.0.1";
+                port = me.s3ApiPort;
                 region = me.region;
-                accessKeyIdFile = "${globalDir}/access-key-id";
-                secretAccessKeyFile = "${globalDir}/secret-access-key";
+                accessKeyIdFile = config.clan.core.vars.generators.garage-global-s3-key.files.access-key-id.path;
+                secretAccessKeyFile = config.clan.core.vars.generators.garage-global-s3-key.files.secret-access-key.path;
               }) me.buckets;
             };
           };
