@@ -44,11 +44,11 @@
     # Wait for admin API to be reachable (max 60s).
     for i in $(seq 1 60); do
       if ERR=$($GARAGE_BIN status 2>&1); then
-        echo "garage admin API ready after ${i}s"
+        echo "garage admin API ready after ''${i}s"
         break
       fi
       if [ "$i" = "1" ] || [ "$((i % 10))" = "0" ]; then
-        echo "waiting for garage admin API (${i}s): $(echo "$ERR" | head -1)" >&2
+        echo "waiting for garage admin API (''${i}s): $(echo "$ERR" | head -1)" >&2
       fi
       sleep 1
     done
