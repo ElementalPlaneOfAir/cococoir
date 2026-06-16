@@ -18,13 +18,22 @@
 
   outputs = inputs:
     inputs.flake-parts.lib.mkFlake {inherit inputs;} {
-      imports = [
-        # Auto-import every flake-parts module in ./flake-vars/.
-        # Each file there declares `flake.modules.nixos.<name>` and
-        # becomes an individually-accessible entry in
-        # inputs.cococoir.modules.nixos.<name>.
-        (inputs.import-tree ./flake-vars)
-      ];
+      imports =
+        # Auto-import every clan-service module in ./clan-services/ by
+        # picking up each subdir's `flake-module.nix`. The `default.nix`
+        # files are the actual clan.service modules (class "clan.service"),
+        # which cannot be imported as flake-parts modules — only their
+        # `flake-module.nix` wrappers can.
+        let
+          dirContents = builtins.readDir ./clan-services;
+          validModuleDirs = builtins.filter (
+            name:
+            name != "result"
+            && dirContents.${name} == "directory"
+            && builtins.pathExists (./clan-services + "/${name}/flake-module.nix")
+          ) (builtins.attrNames dirContents);
+        in
+        map (name: ./clan-services + "/${name}/flake-module.nix") validModuleDirs;
 
       systems = [
         "x86_64-linux"
@@ -37,6 +46,7 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             opentofu
+            jq
           ];
         };
       };
@@ -58,7 +68,6 @@
         core = ./modules/core.nix;
         auth = ./modules/auth.nix;
         base = ./modules/base.nix;
-        storage = ./modules/storage.nix;
         caddy = ./modules/networking/caddy.nix;
       };
 
@@ -66,9 +75,6 @@
       # at the top of this flake-parts block. Each file in ./flake-vars/
       # declares `flake.modules.nixos.<name>` and becomes an individually-
       # accessible entry in inputs.cococoir.modules.nixos.<name>.
-      #
-      # Consumers add a specific generator to their machine imports, e.g.:
-      #   imports = [ inputs.cococoir.modules.nixos.storageVars ];
       #
       # Note: don't confuse this with ./vars/, which is clan's runtime
       # secret-state directory (not module definitions).
