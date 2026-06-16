@@ -73,33 +73,13 @@ in
           auto-derived from other machines' `address` settings.
         '';
       };
-      options.s3ApiPort = lib.mkOption {
-        type = lib.types.int;
-        default = 3900;
-      };
-      options.rpcPort = lib.mkOption {
-        type = lib.types.int;
-        default = 3901;
-      };
-      options.adminPort = lib.mkOption {
-        type = lib.types.int;
-        default = 3903;
-      };
-      options.region = lib.mkOption {
-        type = lib.types.str;
-        default = "garage";
-      };
       options.capacity = lib.mkOption {
         type = lib.types.str;
         default = "1T";
-      };
-      options.dataDir = lib.mkOption {
-        type = lib.types.str;
-        default = "/var/lib/cococoir/garage/data";
-      };
-      options.metaDir = lib.mkOption {
-        type = lib.types.str;
-        default = "/var/lib/cococoir/garage/meta";
+        description = ''
+          Storage capacity this node contributes to its zone. Used for
+          RF clamping and capacity reporting in the bucket-init oneshot.
+        '';
       };
       options.dataDevice = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -128,7 +108,13 @@ in
       { instanceName, settings, ... }:
       let
         me = settings;
+        dataDir = "/var/lib/cococoir/garage/data";
+        metaDir = "/var/lib/cococoir/garage/meta";
         globalDir = "/var/lib/cococoir/garage/global";
+        s3ApiPort = 3900;
+        rpcPort = 3901;
+        adminPort = 3903;
+        region = "garage";
       in
       {
         nixosModule =
@@ -156,7 +142,7 @@ in
               users.users.garage = {
                 isSystemUser = true;
                 group = "garage";
-                home = me.metaDir;
+                home = metaDir;
                 createHome = true;
               };
               users.groups.garage = { };
@@ -164,8 +150,8 @@ in
               # Ensure data + meta + global-key dirs exist with the right
               # ownership.
               systemd.tmpfiles.rules = [
-                "d ${me.dataDir} 0750 garage garage - -"
-                "d ${me.metaDir} 0750 garage garage - -"
+                "d ${dataDir} 0750 garage garage - -"
+                "d ${metaDir} 0750 garage garage - -"
                 "d ${globalDir} 0700 garage garage - -"
               ];
 
@@ -181,7 +167,7 @@ in
                       content = {
                         type = "filesystem";
                         format = "xfs";
-                        mountpoint = me.dataDir;
+                        mountpoint = dataDir;
                       };
                     };
                   };
@@ -192,16 +178,16 @@ in
               # LoadCredential= (no placeholder+sed hack).
               services.garage = {
                 enable = true;
-                dataDir = me.dataDir;
-                metaDir = me.metaDir;
+                dataDir = dataDir;
+                metaDir = metaDir;
                 package = pkgs.garage;
                 settings = {
                   replication_factor = 1;
-                  rpc_bind_addr = "0.0.0.0:${toString me.rpcPort}";
+                  rpc_bind_addr = "0.0.0.0:${toString rpcPort}";
                   rpc_public_addr = me.address;
-                  s3_api.bind_addr = "127.0.0.1:${toString me.s3ApiPort}";
-                  admin.bind_addr = "127.0.0.1:${toString me.adminPort}";
-                  s3_api.root_domain = "s3.${me.region}.local";
+                  s3_api.bind_addr = "127.0.0.1:${toString s3ApiPort}";
+                  admin.bind_addr = "127.0.0.1:${toString adminPort}";
+                  s3_api.root_domain = "s3.${region}.local";
                 };
               };
 
@@ -235,7 +221,7 @@ in
                     RemainAfterExit = true;
                     User = "garage";
                     Group = "garage";
-                    WorkingDirectory = me.metaDir;
+                    WorkingDirectory = metaDir;
                     ExecStart = "${./bucket-init.sh} ${bucketInitJson} ${globalDir}";
                     Environment = [
                       "PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.garage pkgs.jq pkgs.gnused pkgs.gawk ]}"
@@ -299,20 +285,20 @@ in
                     "allow_other"
                     "default_permissions"
                     "use_path_request_style"
-                    "url=http://127.0.0.1:${toString me.s3ApiPort}"
-                    "region=${me.region}"
+                    "url=http://127.0.0.1:${toString s3ApiPort}"
+                    "region=${region}"
                   ] ++ lib.optional m.readOnly "ro";
                 };
               }) me.mounts;
 
               # Derived config: what native-S3 and FUSE consumers read.
-              cococoir.storage.derived.gatewayAddress = "127.0.0.1:${toString me.s3ApiPort}";
+              cococoir.storage.derived.gatewayAddress = "127.0.0.1:${toString s3ApiPort}";
               cococoir.storage.derived.buckets = lib.mapAttrs (n: b: {
                 name = n;
-                endpoint = "http://127.0.0.1:${toString me.s3ApiPort}";
+                endpoint = "http://127.0.0.1:${toString s3ApiPort}";
                 host = "127.0.0.1";
-                port = me.s3ApiPort;
-                region = me.region;
+                port = s3ApiPort;
+                region = region;
                 accessKeyIdFile = config.clan.core.vars.generators.garage-global-s3-key.files.access-key-id.path;
                 secretAccessKeyFile = config.clan.core.vars.generators.garage-global-s3-key.files.secret-access-key.path;
               }) me.buckets;

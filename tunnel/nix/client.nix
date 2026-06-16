@@ -14,12 +14,6 @@ in {
       description = "Address of the rathole server (VPS public IP or hostname).";
     };
 
-    serverPort = lib.mkOption {
-      type = lib.types.port;
-      default = 2333;
-      description = "Port the rathole server control channel listens on.";
-    };
-
     credentialsFile = lib.mkOption {
       type = lib.types.path;
       description = "Path to a TOML file containing rathole client service tokens.";
@@ -38,7 +32,7 @@ in {
       role = "client";
       settings = {
         client = {
-          remote_addr = "${cfg.serverAddress}:${toString cfg.serverPort}";
+          remote_addr = "${cfg.serverAddress}:2333";
         };
         client.services =
           {

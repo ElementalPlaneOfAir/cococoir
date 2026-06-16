@@ -287,7 +287,9 @@ The phase 4 work is in the working tree but uncommitted. Files:
   tunnel/flake.nix).
 - **Phase 6** (amon-sul consumer update — switch rathole from
   `cococoir.proxy.*` to `tunnel.*`, add tunnel flake as an input,
-  add the new `bucket` options to jellyfin and qbittorrent).
+  add the new `bucket` options to jellyfin and qbittorrent, drop
+  the references to deleted services, switch the deleted
+  qbittorrent / jellyseerr options).
 - **FUSE-backed jellyfin / qbittorrent follow-up** *(DONE this session)*.
 
 #### FUSE-backed jellyfin / qbittorrent follow-up — what changed
@@ -312,6 +314,61 @@ The phase 4 work is in the working tree but uncommitted. Files:
   all file-based clients that write to a local filesystem path.
   FUSE via `geesefs` is the only viable path. The user accepts
   this.
+
+#### Options audit — pass-throughs removed *(DONE this session)*
+
+An audit of every `cococoir.*` option against actual consumer usage
+in `amon-sul` removed options that were just pass-throughs to
+nixpkgs defaults (no consumer overrode the default), or
+"future-proofing" options with no real consumer. Hardcoded values
+match the nixpkgs default — if a real need appears, add the option
+back.
+
+**Service modules:**
+
+- `cococoir.services.jellyseerr.configDir` removed (default was
+  `/var/lib/jellyseerr`, matches nixpkgs `services.seerr.configDir`).
+- `cococoir.services.qbittorrent.peerPort` removed (default was
+  51413, matches nixpkgs `services.qbittorrent.torrentingPort`).
+  The redundant `Connection.PortRangeMin = cfg.peerPort` override
+  is also gone (nixpkgs sets it from `torrentingPort` already).
+- `cococoir.services.qbittorrent.webuiPort` removed (default was
+  8080, matches nixpkgs `services.qbittorrent.webuiPort`).
+  `media-stack.nix` now hardcodes `qbtWebuiPort = 8080` and
+  `qbtPeerPort = 51413` (same constants, kept in sync by a comment).
+
+**Tunnel modules:**
+
+- `tunnel.client.serverPort` removed (default was 2333, rathole
+  standard). Hardcoded in `client.nix`.
+- `tunnel.server.controlPort` removed (default was 2333, rathole
+  standard). Hardcoded in `server.nix` (firewall + bind_addr).
+
+**Garage clan-service:**
+
+- `s3ApiPort` (3900), `rpcPort` (3901), `adminPort` (3903),
+  `region` ("garage"), `dataDir`, `metaDir` all removed. These had
+  defaults that were the only values any consumer used. Now
+  hardcoded as `let` bindings in `perInstance`.
+- Kept: `address` (required, no default), `capacity` (meaningful
+  for multi-node RF clamping), `dataDevice` (real feature: inline
+  disko), `buckets.<name>.{enable,quotas,website}`, and
+  `mounts.<name>.{bucket,mountPoint,readOnly}`.
+
+**Layering:**
+
+- Removed `options.cococoir.services = {};` from
+  `modules/services/media-stack.nix` (empty submodule declaration
+  that did nothing — each service module declares its own
+  sub-attribute).
+- `vpnConfigFile` stays in `qbittorrent.nix` (the user-facing
+  surface for qbittorrent config) even though `media-stack.nix` is
+  the only consumer. The layering note from the audit was
+  retracted — the option is correctly owned by the qbittorrent
+  module; the consumer doesn't need to know which sub-module reads
+  it.
+
+**`nix flake check` passes for both `path:.` and `path:tunnel`.**
 
 ## Key design notes
 

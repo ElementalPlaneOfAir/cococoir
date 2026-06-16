@@ -9,15 +9,15 @@
 #   public         — true → Caddy reverse-proxies; false → localNetworks 403
 #   bucket         — name of the Garage bucket that backs the downloads
 #
-# qBittorrent-specific options (not in the standard 4-option contract):
+# qBittorrent-specific option (not in the standard 4-option contract):
 #   vpnConfigFile  — required, WireGuard config for the namespace
-#   peerPort       — incoming peer port (default 51413)
-#   webuiPort      — WebUI listen port (default 8080)
 #
 # The download save path is derived from the FUSE mount: `<mountPoint>/downloads`.
-# There is no `downloadDir` option — qBittorrent is a fully-S3-backed
-# service in cococoir; non-S3 use cases should configure qBittorrent
-# outside this module.
+# The peer port (51413) and WebUI port (8080) match nixpkgs services.qbittorrent
+# defaults and are repeated in media-stack.nix where the VPN namespace + Caddy
+# vhost + firewall are configured. There is no `downloadDir` option — qBittorrent
+# is a fully-S3-backed service in cococoir; non-S3 use cases should configure
+# qBittorrent outside this module.
 {
   config,
   lib,
@@ -27,6 +27,7 @@
   cfg = config.cococoir.services.qbittorrent;
   mount = config.cococoir.storage.derived.mounts.${cfg.bucket} or null;
   downloadDir = "${mount.mountPoint}/downloads";
+  webuiPort = 8080;
 in {
   options.cococoir.services.qbittorrent = {
     enable = lib.mkEnableOption "qBittorrent BitTorrent client";
@@ -54,18 +55,6 @@ in {
       type = lib.types.path;
       description = "Path to the WireGuard configuration file for the VPN namespace.";
     };
-
-    peerPort = lib.mkOption {
-      type = lib.types.port;
-      default = 51413;
-      description = "Port used for incoming peer connections.";
-    };
-
-    webuiPort = lib.mkOption {
-      type = lib.types.port;
-      default = 8080;
-      description = "Port the qBittorrent WebUI listens on (inside the VPN namespace).";
-    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -88,12 +77,11 @@ in {
       enable = true;
       user = "jellyfin";
       group = "jellyfin";
-      webuiPort = cfg.webuiPort;
-      torrentingPort = cfg.peerPort;
+      webuiPort = webuiPort;
+      torrentingPort = 51413;
       openFirewall = false;
       serverConfig.Preferences = {
         Downloads.SavePath = downloadDir;
-        Connection.PortRangeMin = cfg.peerPort;
         WebUI.AuthSubnetWhitelist = "127.0.0.0/8";
         WebUI.AuthSubnetWhitelistEnabled = true;
         WebUI.HostHeaderValidationEnabled = false;

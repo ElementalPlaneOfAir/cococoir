@@ -18,12 +18,6 @@ in {
       '';
     };
 
-    controlPort = lib.mkOption {
-      type = lib.types.port;
-      default = 2333;
-      description = "Port for rathole control channel.";
-    };
-
     credentialsFile = lib.mkOption {
       type = lib.types.path;
       description = "Path to a TOML file containing rathole server service tokens.";
@@ -50,7 +44,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     networking.firewall = {
-      allowedTCPPorts = [cfg.controlPort 80 443] ++ cfg.extraTCPPorts;
+      allowedTCPPorts = [2333 80 443] ++ cfg.extraTCPPorts;
       allowedUDPPorts = [443] ++ cfg.extraUDPPorts;
     };
 
@@ -59,7 +53,7 @@ in {
       role = "server";
       settings = {
         server = {
-          bind_addr = "${cfg.bindAddress}:${toString cfg.controlPort}";
+          bind_addr = "${cfg.bindAddress}:2333";
         };
         server.services =
           {

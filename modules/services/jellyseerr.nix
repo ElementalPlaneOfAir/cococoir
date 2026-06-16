@@ -19,17 +19,6 @@ in {
       type = lib.types.bool;
       description = "Whether to allow public access to Jellyseerr.";
     };
-
-    configDir = lib.mkOption {
-      type = lib.types.path;
-      default = "/var/lib/jellyseerr";
-      defaultText = lib.literalExpression ''"/var/lib/jellyseerr"'';
-      description = ''
-        Where Jellyseerr stores its config + database. Defaults to
-        /var/lib/jellyseerr to preserve the original cococoir data path
-        for existing deployments.
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -37,7 +26,6 @@ in {
       enable = true;
       openFirewall = false;
       port = port;
-      configDir = cfg.configDir;
     };
 
     # Bind to localhost: nixpkgs' services.seerr listens on 0.0.0.0 by

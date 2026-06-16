@@ -1,3 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# cococoir/services/media-stack — shared infrastructure for the
+# media stack: the jellyfin user (also used by qBittorrent, since
+# qBittorrent runs as that user to share filesystem access to the
+# FUSE-mounted Garage bucket) and the /media/entertain/* tmpfiles
+# dirs (Jellyfin library roots + qBittorrent downloads).
+#
+# VPN namespace, Caddy vhost, and firewall for qBittorrent are also
+# configured here — they depend on the qbittorrent options declared
+# in modules/services/qbittorrent.nix.
 {
   config,
   lib,
@@ -7,11 +18,13 @@
 }: let
   cfg = config.cococoir.services;
   qbtEnabled = (cfg ? qbittorrent) && cfg.qbittorrent.enable;
-in {
-  options.cococoir.services = {};
 
+  # Hardcoded to match nixpkgs services.qbittorrent defaults; these are
+  # also hardcoded in modules/services/qbittorrent.nix.
+  qbtWebuiPort = 8080;
+  qbtPeerPort = 51413;
+in {
   config = lib.mkMerge [
-    # Shared media stack infrastructure
     (lib.mkIf qbtEnabled {
       users.groups.jellyfin = {};
       users.users.jellyfin = {
@@ -34,7 +47,6 @@ in {
       ];
     })
 
-    # VPN namespace + Caddy vhost + firewall for qBittorrent
     (lib.optionalAttrs (options ? vpnNamespaces) (lib.mkIf qbtEnabled {
       vpnNamespaces.wg = {
         enable = true;
@@ -42,13 +54,13 @@ in {
         accessibleFrom = ["127.0.0.1"];
         portMappings = [
           {
-            from = cfg.qbittorrent.webuiPort;
-            to = cfg.qbittorrent.webuiPort;
+            from = qbtWebuiPort;
+            to = qbtWebuiPort;
           }
         ];
         openVPNPorts = [
           {
-            port = cfg.qbittorrent.peerPort;
+            port = qbtPeerPort;
             protocol = "both";
           }
         ];
@@ -60,17 +72,17 @@ in {
       };
 
       networking.firewall = {
-        allowedTCPPorts = [cfg.qbittorrent.peerPort];
-        allowedUDPPorts = [cfg.qbittorrent.peerPort];
+        allowedTCPPorts = [qbtPeerPort];
+        allowedUDPPorts = [qbtPeerPort];
       };
 
       services.caddy.virtualHosts."${cfg.qbittorrent.domain}".extraConfig = config.lib.cococoir.withAuth (
         if cfg.qbittorrent.public
-        then ''reverse_proxy 192.168.15.1:${toString cfg.qbittorrent.webuiPort}''
+        then ''reverse_proxy 192.168.15.1:${toString qbtWebuiPort}''
         else ''
           @not_local not remote_ip ${lib.concatStringsSep " " config.cococoir.localNetworks}
           respond @not_local "Forbidden" 403
-          reverse_proxy 192.168.15.1:${toString cfg.qbittorrent.webuiPort}
+          reverse_proxy 192.168.15.1:${toString qbtWebuiPort}
         ''
       );
     }))
