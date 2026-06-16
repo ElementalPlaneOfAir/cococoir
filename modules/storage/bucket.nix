@@ -27,16 +27,34 @@
 
     mkdir -p "$COCOCOIR_BUCKETS_DIR" "$COCOCOIR_GLOBAL_KEY_DIR"
 
-    ADMIN="$GARAGE_ADMIN_URL"
-    GCALL() { $GARAGE_BIN --admin-address "$ADMIN" "$@"; }
+    # The garage CLI reads /etc/garage.toml by default and picks up
+    # rpc-host + rpc-secret from it, so no extra flags are needed.
+    # An earlier version of this script passed --admin-address (which
+    # does not exist on garage 2.x) and the resulting 1-exit poll loop
+    # timed out at 60s with no useful diagnostics.
+    GCALL() {
+      if ! OUT=$($GARAGE_BIN "$@" 2>&1); then
+        echo "garage CLI failed: $GARAGE_BIN $*" >&2
+        echo "$OUT" >&2
+        return 1
+      fi
+      printf '%s\n' "$OUT"
+    }
 
-    # Wait for admin API to be reachable (max 60s)
+    # Wait for admin API to be reachable (max 60s).
     for i in $(seq 1 60); do
-      if GCALL status >/dev/null 2>&1; then break; fi
+      if ERR=$($GARAGE_BIN status 2>&1); then
+        echo "garage admin API ready after ${i}s"
+        break
+      fi
+      if [ "$i" = "1" ] || [ "$((i % 10))" = "0" ]; then
+        echo "waiting for garage admin API (${i}s): $(echo "$ERR" | head -1)" >&2
+      fi
       sleep 1
     done
-    if ! GCALL status >/dev/null 2>&1; then
+    if ! $GARAGE_BIN status >/dev/null 2>&1; then
       echo "garage admin API not reachable after 60s" >&2
+      echo "last error: $($GARAGE_BIN status 2>&1 | head -3)" >&2
       exit 1
     fi
 
