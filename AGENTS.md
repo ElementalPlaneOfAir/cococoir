@@ -37,16 +37,23 @@ It is consumed as a flake input by downstream deployment repos (e.g. `amon-sul`)
 
 ### Service Modules
 
-Every service under `modules/services/` follows a **consistent pattern**:
+Every service under `modules/services/` follows a **consistent, opinionated pattern**. Service modules are intentionally minimal — deployers should not have to learn the upstream NixOS module's option surface to get a working service.
 
-1. **Options** under `cococoir.services.<name>`:
-   - `enable` — `mkEnableOption`
-   - `domain` — the external FQDN (e.g. `jellyfin.interdim.net`)
-   - `public` — if `true`, Caddy reverse-proxies to the service; if `false`, returns `403 Forbidden`
+1. **Options** under `cococoir.services.<name>`. The full set, no more:
+
+   | Option | Type | Required? | Purpose |
+   |--------|------|-----------|---------|
+   | `enable` | bool | yes | Opt-in toggle. |
+   | `domain` | str | yes | External FQDN for the Caddy vhost. |
+   | `public` | bool | yes | `true` → Caddy reverse-proxies to the service. `false` → Caddy returns `403`. |
+   | `bucket` | str | only for S3-using services | Name of the Garage bucket this service reads from or writes to. |
+
+   That's it. No `port`, `signupsAllowed`, `openFirewall`, `secretFile`, or VPN knob — the module picks sensible defaults, binds to `127.0.0.1`, and delegates to clan-core vars for secrets.
 
 2. **Config**:
    - Enables the upstream NixOS service (`services.<name>.enable = true`)
-   - Binds to `127.0.0.1:<port>` (or a VPN namespace address)
+   - Binds to `127.0.0.1:<hardcoded port>`
+   - For S3-using services, wires the native S3 backend (or, where the upstream lacks one, a FUSE-mounted `cococoir.storage.mounts.<name>` mountpoint on the bucket).
    - Registers a Caddy virtual host:
      ```nix
      services.caddy.virtualHosts."${cfg.domain}".extraConfig =
@@ -55,71 +62,31 @@ Every service under `modules/services/` follows a **consistent pattern**:
 
 | Service File | Service | Local Port | Notes |
 |--------------|---------|------------|-------|
-| `jellyfin.nix` | Jellyfin | `8096` | Creates `jellyfin` system user with `render`/`video` groups. |
-| `vaultwarden.nix` | Vaultwarden | `8222` | Has `signupsAllowed` option. |
-| `forgejo.nix` | Forgejo | `3121` | — |
+| `jellyfin.nix` | Jellyfin | `8096` | Creates `jellyfin` system user with `render`/`video` groups. Library lives on a FUSE-mounted Garage bucket. |
+| `jellyseerr.nix` | Jellyseerr (seerr) | `5055` | Unified movie/TV request UI. Points at Jellyfin + qBittorrent. Delegates to nixpkgs `services.seerr`. |
+| `qbittorrent.nix` | qBittorrent | `8080` (WebUI) | **VPN-confined** via `vpnNamespaces.wg`. Downloads land on a FUSE-mounted Garage bucket. Pairs with autobrr. |
+| `autobrr.nix` | autobrr | `7474` | Release automation. Hands matched releases to qBittorrent. |
 | `matrix.nix` | Matrix (Synapse) | `6167` | Also serves `.well-known/matrix/*` on the base domain. |
 | `mautrix-gmessages.nix` | mautrix-gmessages | `29336` | Matrix-Google Messages bridge. No Caddy vhost (appservice). Requires PostgreSQL. |
-| `cryptpad.nix` | CryptPad | `9123` | — |
-| `qbittorrent.nix` | qBittorrent | `8080` (WebUI) | **VPN-confined** via `vpnNamespaces.wg`. Requires `vpnConfigFile`. Pairs with autobrr. |
-| `autobrr.nix` | autobrr | `7474` | Release automation. Hands matched releases to qBittorrent. Requires `secretFile`. |
-| `jellyseerr.nix` | Jellyseerr (seerr) | `5055` | Unified movie/TV request UI. Points at Jellyfin + qBittorrent. Delegates to nixpkgs `services.seerr`. |
-| `octoprint.nix` | OctoPrint | `5321` | — |
-| `kavita.nix` | Kavita | `5001` | — |
+| `cryptpad.nix` | CryptPad | `9123` | `dataPath` lives on a FUSE-mounted Garage bucket. |
 | `custom.nix` | *(any)* | *(user-defined)* | Generic reverse-proxy for arbitrary systemd services. See [Live TV / Sports Streaming](#live-tv--sports-streaming) for a worked example (Threadfin + Jellyfin Live TV). |
 
 ## Adding a New First-Party Service
 
-For services that have a built-in NixOS module (Jellyfin, Vaultwarden, etc.), create a dedicated wrapper in `modules/services/<name>.nix` following the established pattern.
+For services that have a built-in NixOS module, create a dedicated wrapper in `modules/services/<name>.nix` following the pattern above. The four-option contract (`enable`, `domain`, `public`, `bucket`-if-S3-using) is the entire surface — don't expose more options than that, even if the upstream module does.
 
 ## Adding a Custom / Third-Party Service
 
-For services **without** an upstream NixOS module (e.g. a bespoke Go server), use the generic `custom` mechanism so Cococoir stays decoupled from project-specific code:
+For services **without** an upstream NixOS module (e.g. Threadfin), use the generic `custom` mechanism. This adds a Caddy vhost only — the upstream service (package, systemd unit, Nix module) is defined in the deployment repo, not cococoir.
 
 ```nix
 # In the downstream repo (e.g. amon-sul/config.nix)
 cococoir.services.custom.my-app = {
   enable = true;
   domain = "misc.interdim.net";
-  port = 8080;
+  port = 8080;                       # only option not in the standard 4
   public = true;
 };
-```
-
-The upstream systemd service, package, and module are defined **in the project's own flake** and imported directly by the deployment repo. Cococoir only handles the Caddy reverse-proxy virtual host.
-
-### Minimal Service Template (for Cococoir wrapper modules)
-
-```nix
-{ config, lib, ... }:
-let
-  cfg = config.cococoir.services.<name>;
-in
-{
-  options.cococoir.services.<name> = {
-    enable = lib.mkEnableOption "<description>";
-    domain = lib.mkOption {
-      type = lib.types.str;
-      description = "External domain for <name>.";
-    };
-    public = lib.mkOption {
-      type = lib.types.bool;
-      description = "Whether to allow public access to <name>.";
-    };
-  };
-
-  config = lib.mkIf cfg.enable {
-    services.<upstream> = {
-      enable = true;
-      # bind to localhost
-    };
-
-    services.caddy.virtualHosts."${cfg.domain}".extraConfig =
-      if cfg.public
-      then ''reverse_proxy localhost:<port>''
-      else ''respond "Forbidden" 403'';
-  };
-}
 ```
 
 ## Storage
@@ -277,10 +244,6 @@ Example (`flake-vars/storage-vars.nix`):
 }
 ```
 
-### Adding a New First-Party Service
-
-For services that have a built-in NixOS module (Jellyfin, Vaultwarden, etc.), create a dedicated wrapper in `modules/services/<name>.nix` following the established pattern. If the service needs secrets, also create `flake-vars/<service>-vars.nix` declaring `flake.modules.nixos.<service>Vars`.
-
 ## Live TV / Sports Streaming
 
 The *arr stack → Jellyfin pipeline handles movies and series well, but live sports isn't a "grab a release" problem — it's a "subscribe to a broadcast stream" problem. The equivalent pipeline is **Threadfin** (an M3U proxy) feeding **Jellyfin's built-in Live TV / DVR** so the same UI your dad already uses becomes a grid guide for live games.
@@ -336,33 +299,6 @@ Threadfin's Nix module (build from source, systemd unit, persistent `/var/lib/co
 Free M3U aggregators are volatile. Budget ~30 minutes/month to swap dead sources. Threadfin's filter groups and channel mapping persist across upstream changes, so the curation work compounds over time.
 
 Alternatives if Threadfin is stale: **xTeVe** (abandoned but still works), **Dispatcharr** (newer fork).
-
-## CLI Tool
-
-The `cli/` directory contains a Go-based CLI application for managing Cococoir deployments.
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `cococoir init [dir]` | Interactive wizard to scaffold a new project |
-| `cococoir add service` | Add a new service to an existing project |
-| `cococoir status` | Show deployment status (placeholder) |
-| `cococoir version` | Print version info |
-
-### Building
-
-```bash
-nix build .#default          # Build the CLI
-nix run .#default -- init    # Run directly
-nix develop                  # Enter dev shell with Go tooling
-```
-
-### Implementation
-
-- **Cobra** for command structure
-- **Huh** (Charm) for interactive forms
-- **Lipgloss** for terminal styling
 
 ## Infrastructure Provisioning
 

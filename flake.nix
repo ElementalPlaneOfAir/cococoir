@@ -1,5 +1,5 @@
 {
-  description = "Cococoir: declarative self-hosting for small office clusters. MIT-licensed.";
+  description = "Cococoir: declarative self-hosting for small office clusters. AGPL-3.0-or-later.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -33,37 +33,10 @@
         "x86_64-darwin"
       ];
 
-      perSystem = {
-        pkgs,
-        system,
-        ...
-      }: {
-        packages.default = pkgs.buildGoModule {
-          pname = "cococoir";
-          version = "0.1.0";
-          src = ./cli;
-          vendorHash = null;
-          subPackages = ["."];
-          ldflags = [
-            "-s"
-            "-w"
-            "-X github.com/cococoir/cli/cmd.version=0.1.0"
-          ];
-          postInstall = ''
-            mv $out/bin/cli $out/bin/cococoir
-          '';
-          meta = with pkgs.lib; {
-            description = "CLI for managing Cococoir homelab deployments";
-            license = licenses.mit;
-          };
-        };
-
+      perSystem = {pkgs, ...}: {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             opentofu
-            go
-            gopls
-            golangci-lint
           ];
         };
       };
