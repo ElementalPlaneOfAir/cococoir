@@ -161,12 +161,12 @@ Don't ship this machinery until a client needs it.
 | 0 | Commit/revert garage WIP for a clean baseline | **DONE** (commit `f6176f9` is the baseline; WIP was stashed and superseded) |
 | 1 | Pure deletions: Vaultwarden, Forgejo, Kavita, OctoPrint, cli/; AGENTS.md catalog trim; minimal-option contract codified | **DONE** (commit `5b3666a`) |
 | 2 | Replace legacy `modules/storage*` with `clan-services/garage/` clan.service (single-node, declarative FUSE, S3 key as clan var) | **DONE** (commit `5043dbe`) |
-| 3 | Add Nextcloud module (native `objectstore.s3`); flesh out Cryptpad (FUSE-mounted dataPath) | **IN PROGRESS** — Nextcloud module written, Cryptpad pending |
+| 3 | Add Nextcloud module (native `objectstore.s3`); flesh out Cryptpad (FUSE-mounted dataPath) | **DONE** (commits `f0f35b2` Nextcloud, this commit Cryptpad) |
 | 4 | Move `terraform/` + `modules/proxy/` to `tunnel/` directory (separate tech stack) | NOT STARTED |
 | 5 | Final `nix flake check` + AGENTS.md pass; ensure no orphan references to deleted services, rathole, CLI, multi-node garage | NOT STARTED |
 | 6 | Update `amon-sul` to use new cococoir shape | NOT STARTED (separate session) |
 
-## Current state (after commit `5043dbe`)
+## Current state (after Cryptpad lands; will be replaced with a commit hash on commit)
 
 ### What works
 - `nix flake check` passes.
@@ -178,32 +178,37 @@ Don't ship this machinery until a client needs it.
     clan.service. Consumers add this to their inventory.
   - `flake.lib.mkGarageDataDisko` — the disko helper.
   - `devShells.default` — `opentofu` + `jq`.
+- Service catalog: Jellyfin, qBittorrent, autobrr, Jellyseerr, Matrix,
+  mautrix-gmessages, **Nextcloud** (native S3), **CryptPad**
+  (FUSE-mounted dataPath), and the `custom` escape hatch. All 4-option
+  contract. All S3-backed (native or FUSE).
 
 ### What's uncommitted (in working tree, NOT yet committed)
-The Nextcloud work is in the working tree but uncommitted. Files:
-- `clan-services/garage/default.nix` — added `garage-global-s3-key`
-  clan var; updated `derived.buckets.<n>` to expose `host`, `port`,
-  `accessKeyIdFile`, `secretAccessKeyFile` from the clan var (not the
-  runtime-generated files).
-- `clan-services/garage/bucket-init.sh` — switched from `garage key
-  create` (runtime generation) to `garage key import` (reads the
-  pre-generated key from `$CLAN_VAR_S3_KEY_DIR`). Header now documents
-  the required env var.
-- `modules/services/nextcloud.nix` — new module, native
-  `objectstore.s3` backend, reads access key from clan var via
-  `builtins.readFile`, sets up Caddy vhost + admin-password clan var.
+The Cryptpad work is in the working tree but uncommitted. Files:
+- `clan-services/garage/default.nix` — added `derived.mounts` keyed by
+  bucket name, so service modules can resolve a FUSE mount point via
+  `cococoir.storage.derived.mounts.${cfg.bucket}.mountPoint`.
+- `modules/services/cryptpad.nix` — fleshed out from a 42-LOC stub to
+  a full 4-option module: `enable`/`domain`/`public`/`bucket`. Sets
+  `services.cryptpad.settings.filePath` to the derived mount point,
+  asserts the mount exists at eval time, disables telemetry
+  (`blockDailyCheck = true`), and creates the mount-point dir owned by
+  the `cryptpad` user via tmpfiles. Keeps the established
+  `localNetworks` 403 pattern for non-public deployments (matches 7/9
+  service modules; the only exception is nextcloud, which does its own
+  auth via an admin password).
 
-### What's in progress
-- **Cryptpad module** (`modules/services/cryptpad.nix`): the file
-  exists (42 LOC, just a Caddy vhost) but is not yet fleshed out.
-  Plan: enable nixpkgs `services.cryptpad`, set
-  `settings.filePath = <FUSE-mount-point>`, and assert the FUSE mount
-  is declared in the garage clan-service's `mounts.<name>`. Decision
-  pending: does the Cryptpad module own the FUSE mount, or does the
-  garage clan-service own all mounts and the Cryptpad module just
-  consumes the derived path? Recommended: garage owns mounts;
-  Cryptpad module asserts the mount exists via the `cococoir.storage.derived`
-  attrs and fails to evaluate if not.
+### Decisions logged this session
+- **FUSE mount ownership** (open question #1, resolved): garage owns
+  mounts; service modules consume the derived path. Concretely:
+  `cococoir.storage.derived.mounts` is keyed by bucket name (not mount
+  name), so a service that knows its `bucket` can resolve the mount
+  point with one attribute lookup. If the bucket has no mount, the
+  module fails to evaluate with a clear error pointing at the
+  `mounts.<name>` declaration the user needs to add. Same pattern
+  will apply to any future FUSE-backed service (e.g. jellyfin's
+  library, qBittorrent downloads — both currently lack a `bucket`
+  option, which is a follow-up).
 
 ### What's pending
 - **Phase 4** (move terraform + rathole to `tunnel/`).
@@ -211,6 +216,10 @@ The Nextcloud work is in the working tree but uncommitted. Files:
   references rathole, vaultwarden (deleted), the CLI section
   (removed), and the legacy storage module (removed)).
 - **Phase 6** (amon-sul consumer update).
+- **Follow-up (out of phase scope)**: jellyfin and qbittorrent
+  service modules should also take a `bucket` option and use the
+  derived mount path for their data / downloads dir. Same pattern as
+  cryptpad. This is a phase-5+ cleanup; not blocking phase 3.
 
 ## Key design notes
 
@@ -287,10 +296,9 @@ cococoir/
 
 ## Open questions
 
-1. **Cryptpad FUSE mount ownership**: does the Cryptpad module own
-   the FUSE mount, or does the garage clan-service own all mounts?
-   *Recommendation: garage owns mounts; Cryptpad module asserts the
-   mount exists via `cococoir.storage.derived`.*
+1. **FUSE mount ownership** *(RESOLVED)*: garage owns mounts; service
+   modules consume the derived path. `cococoir.storage.derived.mounts`
+   is keyed by bucket name. See "Decisions logged this session" above.
 2. **Tunnel project tech stack**: when we move rathole + terraform
    to `tunnel/`, what tech stack does the new project use?
    *Recommendation: keep OpenTofu (the existing `terraform/` is

@@ -180,7 +180,7 @@ in
                       size = "100%";
                       content = {
                         type = "filesystem";
-                        format = "ext4";
+                        format = "xfs";
                         mountpoint = me.dataDir;
                       };
                     };
@@ -305,7 +305,7 @@ in
                 };
               }) me.mounts;
 
-              # Derived config: what native-S3 clients consume.
+              # Derived config: what native-S3 and FUSE consumers read.
               cococoir.storage.derived.gatewayAddress = "127.0.0.1:${toString me.s3ApiPort}";
               cococoir.storage.derived.buckets = lib.mapAttrs (n: b: {
                 name = n;
@@ -316,6 +316,17 @@ in
                 accessKeyIdFile = config.clan.core.vars.generators.garage-global-s3-key.files.access-key-id.path;
                 secretAccessKeyFile = config.clan.core.vars.generators.garage-global-s3-key.files.secret-access-key.path;
               }) me.buckets;
+              # Mounts are keyed by bucket name (not mount name) so service
+              # modules that reference a bucket can resolve the mount point
+              # with `derived.mounts.${cfg.bucket}.mountPoint`. If the same
+              # bucket is mounted twice, the last declaration wins.
+              cococoir.storage.derived.mounts = lib.mapAttrs' (_: m: {
+                name = m.bucket;
+                value = {
+                  mountPoint = m.mountPoint;
+                  readOnly = m.readOnly;
+                };
+              }) me.mounts;
             };
           };
       };
