@@ -1,11 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {
   lib,
   config,
   ...
 }: let
-  cfg = config.cococoir.proxy.server;
+  cfg = config.tunnel.server;
 in {
-  options.cococoir.proxy.server = {
+  options.tunnel.server = {
     enable = lib.mkEnableOption "rathole tunnel server (accepts public ports and forwards them to clients)";
 
     bindAddress = lib.mkOption {
