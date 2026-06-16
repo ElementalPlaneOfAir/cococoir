@@ -162,41 +162,102 @@ Don't ship this machinery until a client needs it.
 | 1 | Pure deletions: Vaultwarden, Forgejo, Kavita, OctoPrint, cli/; AGENTS.md catalog trim; minimal-option contract codified | **DONE** (commit `5b3666a`) |
 | 2 | Replace legacy `modules/storage*` with `clan-services/garage/` clan.service (single-node, declarative FUSE, S3 key as clan var) | **DONE** (commit `5043dbe`) |
 | 3 | Add Nextcloud module (native `objectstore.s3`); flesh out Cryptpad (FUSE-mounted dataPath) | **DONE** (commits `f0f35b2` Nextcloud, this commit Cryptpad) |
-| 4 | Move `terraform/` + `modules/proxy/` to `tunnel/` directory (separate tech stack) | NOT STARTED |
+| 4 | Move `terraform/` + `modules/proxy/` to `tunnel/` directory (separate tech stack) | **DONE** (this commit — see "Phase 4 changes" below) |
 | 5 | Final `nix flake check` + AGENTS.md pass; ensure no orphan references to deleted services, rathole, CLI, multi-node garage | NOT STARTED |
 | 6 | Update `amon-sul` to use new cococoir shape | NOT STARTED (separate session) |
 
-## Current state (after Cryptpad lands; will be replaced with a commit hash on commit)
+## Current state (after phase 4 lands; will be replaced with a commit hash on commit)
+
+### Phase 4 changes
+
+- **`tunnel/` is now a separate sub-flake**, not a subdirectory of the
+  cococoir flake. It has its own `flake.nix` (depends on `nixpkgs`
+  only — no `clan-core`, no `vpn-confinement`) and its own
+  `flake.lock` once initialized. Lives in the same git repo
+  (monorepo) but is consumable as a separate input by deployment
+  repos (`tunnel.url = "path:./tunnel"` or
+  `github:.../cococoir?dir=tunnel`).
+- **`terraform/` → `tunnel/terraform/`**. All modules and the
+  `examples/basic/` worked example moved verbatim; relative paths
+  inside the terraform tree are unchanged.
+- **`modules/proxy/{client,server}.nix` → `tunnel/nix/{client,server}.nix`**.
+  Option namespace changed from `cococoir.proxy.{client,server}` to
+  `tunnel.{client,server}` (it was always a leaky namespace — the
+  proxy options never belonged under `cococoir.*`). This is a
+  **breaking change** for the amon-sul consumer, which currently sets
+  `cococoir.proxy.client.*`. The migration is on the phase-6 list
+  (update amon-sul).
+- **`sops/machines/ionos-vps/` → `tunnel/sops/machines/ionos-vps/`**.
+  The amon-sul sops keys stay where they are. Any deployment repo
+  that references the VPS age key by path needs to update the path.
+- **`tunnel/flake.nix` exposes** `nixosModules.client` and
+  `nixosModules.server` (the rathole modules) and a dev shell with
+  `opentofu` + `jq`.
+- **`tunnel/README.md`** documents the project structure and the
+  "monorepo with separate flake" rationale.
+- **`AGENTS.md`** was updated for the direct broken references (file
+  map's rathole entries, Infrastructure Provisioning section). The
+  full AGENTS.md pass (legacy storage section, CLI section, etc.)
+  is still phase 5.
 
 ### What works
 - `nix flake check` passes.
 - Cococoir flake exposes:
   - `nixosModules.default` — `import-tree ./modules` (auth, base,
-    core, caddy, services).
+    core, caddy, services). `import-tree` no longer picks up
+    `modules/proxy/` because that directory is gone.
+  - `nixosModules.{core,auth,base,caddy}` — individual modules.
+  - `clan.modules."cococoir-garage"` — the garage clan.service.
+    Consumers add this to their inventory.
+  - `flake.lib.mkGarageDataDisko` — the disko helper.
+  - `devShells.default` — `opentofu` + `jq` (kept for now; could
+    move to `tunnel/flake.nix` only — see phase 5 cleanup).
+- Tunnel flake (separate input) exposes:
+  - `nixosModules.client`, `nixosModules.server` — rathole modules.
+  - `devShells.<system>.default` — `opentofu` + `jq`.
+  - `terraform/` — OpenTofu modules, consumed directly (no flake).
+- Service catalog: Jellyfin, qBittorrent, autobrr, Jellyseerr, Matrix,
+  mautrix-gmessages, Nextcloud (native S3), CryptPad (FUSE-mounted
+  dataPath), and the `custom` escape hatch. All 4-option contract. All
+  S3-backed (native or FUSE).
+
+### What works
+- `nix flake check` passes.
+- Cococoir flake exposes:
+  - `nixosModules.default` — `import-tree ./modules` (auth, base,
+    core, caddy, services). `import-tree` no longer picks up
+    `modules/proxy/` because that directory is gone.
   - `nixosModules.{core,auth,base,caddy}` — individual modules.
   - `clan.modules."cococoir-garage"` (via `clan-services/garage/flake-module.nix`) — the
     clan.service. Consumers add this to their inventory.
   - `flake.lib.mkGarageDataDisko` — the disko helper.
-  - `devShells.default` — `opentofu` + `jq`.
+  - `devShells.default` — `opentofu` + `jq` (kept for now; could
+    move to `tunnel/flake.nix` only — see phase 5 cleanup).
+- Tunnel flake (separate input) exposes:
+  - `nixosModules.client`, `nixosModules.server` — rathole modules.
+  - `devShells.<system>.default` — `opentofu` + `jq`.
+  - `terraform/` — OpenTofu modules, consumed directly (no flake).
 - Service catalog: Jellyfin, qBittorrent, autobrr, Jellyseerr, Matrix,
-  mautrix-gmessages, **Nextcloud** (native S3), **CryptPad**
-  (FUSE-mounted dataPath), and the `custom` escape hatch. All 4-option
-  contract. All S3-backed (native or FUSE).
+  mautrix-gmessages, Nextcloud (native S3), CryptPad (FUSE-mounted
+  dataPath), and the `custom` escape hatch. All 4-option contract. All
+  S3-backed (native or FUSE).
 
 ### What's uncommitted (in working tree, NOT yet committed)
-The Cryptpad work is in the working tree but uncommitted. Files:
-- `clan-services/garage/default.nix` — added `derived.mounts` keyed by
-  bucket name, so service modules can resolve a FUSE mount point via
-  `cococoir.storage.derived.mounts.${cfg.bucket}.mountPoint`.
-- `modules/services/cryptpad.nix` — fleshed out from a 42-LOC stub to
-  a full 4-option module: `enable`/`domain`/`public`/`bucket`. Sets
-  `services.cryptpad.settings.filePath` to the derived mount point,
-  asserts the mount exists at eval time, disables telemetry
-  (`blockDailyCheck = true`), and creates the mount-point dir owned by
-  the `cryptpad` user via tmpfiles. Keeps the established
-  `localNetworks` 403 pattern for non-public deployments (matches 7/9
-  service modules; the only exception is nextcloud, which does its own
-  auth via an admin password).
+The phase 4 work is in the working tree but uncommitted. Files:
+- `terraform/` → `tunnel/terraform/` (renamed).
+- `modules/proxy/{client,server}.nix` → `tunnel/nix/{client,server}.nix`,
+  with the option namespace changed from `cococoir.proxy.*` to
+  `tunnel.*`. `modules/proxy/` is removed.
+- `sops/machines/ionos-vps/` → `tunnel/sops/machines/ionos-vps/`.
+  `sops/machines/amon-sul/` stays in place.
+- `tunnel/flake.nix` — new file; separate flake, nixpkgs-only input.
+- `tunnel/README.md` — new file; documents the project.
+- `tunnel/terraform/README.md` — updated to reflect the new path
+  (`cd examples/basic`, `tofu init`).
+- `AGENTS.md` — removed the rathole entries from the file map,
+  removed "VPN tunneling" from the description, added a pointer to
+  the tunnel/ sub-project, replaced the Infrastructure Provisioning
+  section with a one-liner pointing at tunnel/README.md.
 
 ### Decisions logged this session
 - **FUSE mount ownership** (open question #1, resolved): garage owns
@@ -209,17 +270,48 @@ The Cryptpad work is in the working tree but uncommitted. Files:
   will apply to any future FUSE-backed service (e.g. jellyfin's
   library, qBittorrent downloads — both currently lack a `bucket`
   option, which is a follow-up).
+- **Tunnel option namespace**: `tunnel.{client,server}` not
+  `cococoir.proxy.*`. Tunnel is its own project; the old namespace
+  was always a leak. Breaking change for amon-sul; that update is
+  on the phase-6 list.
+- **Tunnel as a separate flake inside the monorepo**: confirmed as
+  the right structure. Each sub-project gets its own inputs and
+  lockfile; the cococoir lockfile stays small (no opentofu noise
+  for cococoir-only consumers — though the cococoir dev shell
+  itself still has opentofu/jq, which is a phase-5+ cleanup item).
 
 ### What's pending
-- **Phase 4** (move terraform + rathole to `tunnel/`).
 - **Phase 5** (final flake check + AGENTS.md pass — AGENTS.md still
-  references rathole, vaultwarden (deleted), the CLI section
-  (removed), and the legacy storage module (removed)).
-- **Phase 6** (amon-sul consumer update).
-- **Follow-up (out of phase scope)**: jellyfin and qbittorrent
-  service modules should also take a `bucket` option and use the
-  derived mount path for their data / downloads dir. Same pattern as
-  cryptpad. This is a phase-5+ cleanup; not blocking phase 3.
+  references the legacy storage module and has a stale "Caddy dev
+  shell" line; the dev shell's opentofu/jq is now duplicated in
+  tunnel/flake.nix).
+- **Phase 6** (amon-sul consumer update — switch rathole from
+  `cococoir.proxy.*` to `tunnel.*`, add tunnel flake as an input,
+  add the new `bucket` options to jellyfin and qbittorrent).
+- **FUSE-backed jellyfin / qbittorrent follow-up** *(DONE this session)*.
+
+#### FUSE-backed jellyfin / qbittorrent follow-up — what changed
+
+- **`modules/services/jellyfin.nix`** now takes a `bucket` option.
+  The NixOS module does not actively use the bucket: Jellyfin's
+  library directories are configured at runtime in the admin UI.
+  The `bucket` option exists so the module can assert the FUSE
+  mount is declared in the cococoir/garage clan-service — if the
+  user forgets the mount, evaluation fails with a clear error
+  pointing at the declaration they need to add. The mount path
+  can then be referenced as the library root in the admin UI.
+- **`modules/services/qbittorrent.nix`** now takes a `bucket`
+  option. The download save path is derived as
+  `<mountPoint>/downloads`. The old `downloadDir` option is
+  removed — qBittorrent is a fully-S3-backed service in cococoir;
+  non-S3 use cases should configure qBittorrent outside this
+  module. The mount-existence assertion is the same pattern as
+  jellyfin / cryptpad.
+- **Torrent native-S3 investigation**: qBittorrent, Deluge,
+  Transmission, rTorrent — none have native S3 backends. They are
+  all file-based clients that write to a local filesystem path.
+  FUSE via `geesefs` is the only viable path. The user accepts
+  this.
 
 ## Key design notes
 
@@ -299,11 +391,11 @@ cococoir/
 1. **FUSE mount ownership** *(RESOLVED)*: garage owns mounts; service
    modules consume the derived path. `cococoir.storage.derived.mounts`
    is keyed by bucket name. See "Decisions logged this session" above.
-2. **Tunnel project tech stack**: when we move rathole + terraform
-   to `tunnel/`, what tech stack does the new project use?
-   *Recommendation: keep OpenTofu (the existing `terraform/` is
-   already OpenTofu-flavored); the Nix `modules/proxy/` modules
-   become a separate flake under `tunnel/nix/`.*
+2. **Tunnel project tech stack** *(RESOLVED)*: separate-flake
+   monorepo. `tunnel/flake.nix` depends on `nixpkgs` only and exposes
+   `nixosModules.{client,server}` + a dev shell. `tunnel/terraform/`
+   is consumed directly (no flake). See `tunnel/README.md` for
+   rationale and the consumer-side import pattern.
 3. **`vaultwarden` / `forgejo` / `kavita` / `octoprint` deletion
    audit**: any of these have client demand? If yes, bring them
    back as proper S3-backed modules. If no, deletion is final.

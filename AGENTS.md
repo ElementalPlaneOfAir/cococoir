@@ -2,7 +2,9 @@
 
 ## Overview
 
-Cococoir is a **declarative self-hosting library** written as a NixOS module system on top of [flake-parts](https://flake.parts) and [clan-core](https://clan.lol). It provides a unified namespace (`config.cococoir`) for configuring users, reverse-proxy networking, VPN tunneling, a **distributed S3-compatible object store** (Garage), and a growing catalog of web services.
+Cococoir is a **declarative self-hosting library** written as a NixOS module system on top of [flake-parts](https://flake.parts) and [clan-core](https://clan.lol). It provides a unified namespace (`config.cococoir`) for configuring users, reverse-proxy networking, a **distributed S3-compatible object store** (Garage), and a growing catalog of web services.
+
+The VPS + rathole front-end is a **separate tech stack** living at `tunnel/` (its own flake, its own lockfile, only depends on `nixpkgs`). See `tunnel/README.md`.
 
 It is consumed as a flake input by downstream deployment repos (e.g. `amon-sul`).
 
@@ -27,8 +29,6 @@ It is consumed as a flake input by downstream deployment repos (e.g. `amon-sul`)
 | `modules/auth.nix` | Re-exports clan-core secret generators that cococoir services need (e.g. Vaultwarden admin token, autobrr session). |
 | `modules/base.nix` | Baseline system settings: fish shell, OpenSSH (no passwords), Denver timezone, `net.ipv4.ip_unprivileged_port_start = 80`, and flake-enabled Nix. |
 | `modules/networking/caddy.nix` | Enables Caddy and opens UDP 443 for HTTP/3 (QUIC). |
-| `modules/proxy/client.nix` | Configures **rathole client** — tunnels local ports (80, 443) to a remote VPS via the rathole protocol. Expects a `credentialsFile` with service tokens. |
-| `modules/proxy/server.nix` | Configures **rathole server** — exposes public ports on a VPS and forwards them back to the client. |
 | `modules/storage.nix` | Top-level `cococoir.storage.*` option tree: cluster layout, node identity, bucket definitions, FUSE mounts, and the derived public view. |
 | `modules/storage/garage.nix` | `services.garage` config + secret-substitution `ExecStartPre` + `/etc/cococoir/garage.env` with run-time environment. |
 | `modules/storage/bucket.nix` | `garage-bucket-init` oneshot: generates/reads the cluster-wide global key, iterates enabled buckets, applies per-bucket RF (with clamp warning), allows the global key per bucket, sets quotas and website hosting. |
@@ -302,14 +302,9 @@ Alternatives if Threadfin is stale: **xTeVe** (abandoned but still works), **Dis
 
 ## Infrastructure Provisioning
 
-The `terraform/` directory contains reusable modules for provisioning the VPS and DNS records needed for a Cococoir deployment. Everything uses **Hetzner** (Cloud + DNS) so users only need a single account and API token.
-
-| Module | Provider | Purpose |
-|--------|----------|---------|
-| `terraform/modules/vps` | Hetzner Cloud | Server, firewall (22/80/443/2333), SSH key |
-| `terraform/modules/dns` | Hetzner DNS | Zone + A/AAAA records |
-
-The `terraform/examples/basic/` directory shows how to wire both modules together. It creates a server and points a domain (and wildcard) at it.
+VPS and DNS provisioning lives in the `tunnel/` sub-project (see
+`tunnel/README.md`). Everything uses **Hetzner** (Cloud + DNS) so users
+only need a single account and API token.
 
 ### Dev Shell
 
