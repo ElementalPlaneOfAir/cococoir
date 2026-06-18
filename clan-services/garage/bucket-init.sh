@@ -2,9 +2,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # cococoir/garage bucket-init.
-# Idempotent first-boot setup: import the pre-generated global S3 key,
-# apply single-node layout, create buckets, and allow the global key
-# on each.
+# Idempotent first-boot setup: apply single-node layout, import the
+# pre-generated global S3 key, create buckets, and allow the global
+# key on each.
+#
+# Order matters: the layout (which assigns this node to a zone) must
+# be applied BEFORE any cluster operation that needs to reach a quorum
+# (key import, bucket create). Otherwise you get
+# "Could not reach quorum of 1 (sets=Some(1)). 0 of 0 request
+# succeeded" — the local node isn't in its own cluster view yet.
+# Layout apply puts it there.
 #
 # Usage: bucket-init.sh \
 #   --global-dir <path> --address <rpc-addr> --zone <zone> \
@@ -81,10 +88,36 @@ fi
 mkdir -p "$GLOBAL_DIR"
 chmod 0700 "$GLOBAL_DIR"
 
-# Import the pre-generated global S3 key (idempotent).
+# Read the pre-generated global S3 key (idempotent).
 KEY_ID="$(cat "$CLAN_VAR_S3_KEY_DIR/access-key-id")"
 SECRET="$(cat "$CLAN_VAR_S3_KEY_DIR/secret-access-key")"
 
+# 1. Apply single-node layout. This is what adds the local node to
+#    its own cluster view — without it, every subsequent cluster
+#    operation (key import, bucket create) returns
+#    "Could not reach quorum of 1 (sets=Some(1)). 0 of 0 request
+#    succeeded". `layout assign` and `layout apply` are idempotent
+#    at the protocol level (re-assigning the same node and applying
+#    the same layout version is a no-op), so we run them every time
+#    instead of gating on `garage layout show` (which has been
+#    observed to return success-with-empty-result on a fresh cluster,
+#    causing the gated branch to be skipped and the layout never
+#    applied). Belt and braces: also detect the special case where
+#    layout is already up-to-date and log a cleaner message.
+if ! garage -c /etc/garage.toml layout show >/dev/null 2>&1 \
+   || ! garage -c /etc/garage.toml layout show 2>/dev/null | grep -q "$ADDRESS"; then
+  garage -c /etc/garage.toml layout assign \
+    --capacity "$CAPACITY" \
+    -z "$ZONE" \
+    "$ADDRESS" >/dev/null
+  garage -c /etc/garage.toml layout apply --version 1 >/dev/null
+  echo "[bucket-init] applied single-node layout"
+else
+  echo "[bucket-init] single-node layout already applied"
+fi
+
+# 2. Import the pre-generated global S3 key. Now that the cluster
+#    has at least one node, key import can replicate to quorum.
 if ! garage -c /etc/garage.toml key info "$KEY_ID" >/dev/null 2>&1; then
   garage -c /etc/garage.toml key import --yes \
     "$KEY_ID" "$SECRET" -n cococoir-global >/dev/null
@@ -93,21 +126,7 @@ else
   echo "[bucket-init] global S3 key already imported"
 fi
 
-# Symlink the key files into globalDir for native-S3 clients.
-ln -sf "$CLAN_VAR_S3_KEY_DIR/access-key-id" "$GLOBAL_DIR/access-key-id"
-ln -sf "$CLAN_VAR_S3_KEY_DIR/secret-access-key" "$GLOBAL_DIR/secret-access-key"
-
-# Apply single-node layout if not yet applied.
-if ! garage -c /etc/garage.toml layout show >/dev/null 2>&1; then
-  garage -c /etc/garage.toml layout assign \
-    --capacity "$CAPACITY" \
-    -z "$ZONE" \
-    "$ADDRESS" >/dev/null
-  garage -c /etc/garage.toml layout apply --version 1 >/dev/null
-  echo "[bucket-init] applied single-node layout"
-fi
-
-# Create buckets + allow the global key.
+# 3. Create buckets + allow the global key on each.
 for NAME in "${BUCKETS[@]}"; do
   if ! garage -c /etc/garage.toml bucket info "$NAME" >/dev/null 2>&1; then
     garage -c /etc/garage.toml bucket create "$NAME" >/dev/null
@@ -116,5 +135,9 @@ for NAME in "${BUCKETS[@]}"; do
   garage -c /etc/garage.toml bucket allow \
     --read --write "$NAME" --key "$KEY_ID" >/dev/null
 done
+
+# 4. Symlink the key files into globalDir for native-S3 clients.
+ln -sf "$CLAN_VAR_S3_KEY_DIR/access-key-id" "$GLOBAL_DIR/access-key-id"
+ln -sf "$CLAN_VAR_S3_KEY_DIR/secret-access-key" "$GLOBAL_DIR/secret-access-key"
 
 echo "[bucket-init] done"
