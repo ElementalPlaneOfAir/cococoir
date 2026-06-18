@@ -273,6 +273,20 @@ in {
                 metadata_dir = metaDir;
                 rpc_bind_addr = "0.0.0.0:${toString rpcPort}";
                 rpc_public_addr = me.address;
+                # `bootstrap_peers` is REQUIRED for single-node clusters.
+                # Without it, the local node enters the
+                # "Doing a bootstrap/discovery step (not_configured)"
+                # loop and never adds itself to its own cluster view.
+                # `garage layout assign` then fails with
+                # "0 nodes match '<self-addr>'". Setting the peer
+                # list to `[me.address]` makes the local node connect
+                # to itself on startup, exchange identities, and
+                # register the local node in its own cluster. For
+                # multi-node, this same option is used to list the
+                # OTHER nodes' rpc_public_addrs (the role interface
+                # documents "peers are auto-derived from other
+                # machines' `address` settings" for that case).
+                bootstrap_peers = [ me.address ];
                 s3_api.bind_addr = "127.0.0.1:${toString s3ApiPort}";
                 s3_api.s3_region = region;
                 admin.bind_addr = "127.0.0.1:${toString adminPort}";
