@@ -44,9 +44,12 @@ in
       hostName = cfg.domain;
       database.createLocally = true;
       https = false;
-      config = {
+      settings = {
         dbtype = "pgsql";
         adminpassFile = config.clan.core.vars.generators.nextcloud-admin-pass.files.admin-pass.path;
+        trusted_domains = [ cfg.domain ];
+      };
+      config = {
         objectstore.s3 = {
           enable = true;
           bucket = cfg.bucket;
@@ -59,7 +62,6 @@ in
           usePathStyle = true;
           verify_bucket_exists = false;
         };
-        trusted_domains = [ cfg.domain ];
       };
     };
 

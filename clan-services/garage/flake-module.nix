@@ -1,3 +1,3 @@
 { ... }: {
-  flake.modules.nixos."cococoir-garage" = ./default.nix;
+  clan.modules."cococoir-garage" = ./default.nix;
 }

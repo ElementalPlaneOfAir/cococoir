@@ -19,12 +19,15 @@
   outputs = inputs:
     inputs.flake-parts.lib.mkFlake {inherit inputs;} {
       imports =
+        [
+          inputs.clan-core.flakeModules.default
+        ]
         # Auto-import every clan-service module in ./clan-services/ by
         # picking up each subdir's `flake-module.nix`. The `default.nix`
         # files are the actual clan.service modules (class "clan.service"),
         # which cannot be imported as flake-parts modules — only their
         # `flake-module.nix` wrappers can.
-        let
+        ++ (let
           dirContents = builtins.readDir ./clan-services;
           validModuleDirs = builtins.filter (
             name:
@@ -33,7 +36,7 @@
             && builtins.pathExists (./clan-services + "/${name}/flake-module.nix")
           ) (builtins.attrNames dirContents);
         in
-        map (name: ./clan-services + "/${name}/flake-module.nix") validModuleDirs;
+        map (name: ./clan-services + "/${name}/flake-module.nix") validModuleDirs);
 
       systems = [
         "x86_64-linux"
@@ -60,6 +63,7 @@
       flake.nixosModules.default = {...}: {
         imports = [
           (inputs.import-tree ./modules)
+          ./storage/buckets.nix
         ];
       };
 

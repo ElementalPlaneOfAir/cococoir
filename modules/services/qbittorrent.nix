@@ -7,25 +7,28 @@
 #   enable         — opt-in toggle
 #   domain         — external FQDN for the Caddy vhost
 #   public         — true → Caddy reverse-proxies; false → localNetworks 403
-#   bucket         — name of the Garage bucket that backs the downloads
+#   bucket         — name of the Garage bucket (default "media", same
+#                    as jellyfin so a single bucket covers both)
 #
 # qBittorrent-specific option (not in the standard 4-option contract):
 #   vpnConfigFile  — required, WireGuard config for the namespace
 #
-# The download save path is derived from the FUSE mount: `<mountPoint>/downloads`.
-# The peer port (51413) and WebUI port (8080) match nixpkgs services.qbittorrent
-# defaults and are repeated in media-stack.nix where the VPN namespace + Caddy
-# vhost + firewall are configured. There is no `downloadDir` option — qBittorrent
-# is a fully-S3-backed service in cococoir; non-S3 use cases should configure
-# qBittorrent outside this module.
+# The download save path is derived from the FUSE mount:
+# `<mountPoint>/downloads`. The peer port (51413) and WebUI port
+# (8080) match nixpkgs services.qbittorrent defaults and are
+# repeated in media-stack.nix where the VPN namespace + Caddy vhost
+# + firewall are configured. There is no `downloadDir` option —
+# qBittorrent is a fully-S3-backed service in cococoir; non-S3 use
+# cases should configure qBittorrent outside this module.
 {
   config,
   lib,
-  pkgs,
   ...
 }: let
   cfg = config.cococoir.services.qbittorrent;
-  mount = config.cococoir.storage.derived.mounts.${cfg.bucket} or null;
+  defaultBucket = "media";
+  defaultMount = "/media/entertain";
+  mount = config.cococoir.storage.derived.mounts.${cfg.bucket};
   downloadDir = "${mount.mountPoint}/downloads";
   webuiPort = 8080;
 in {
@@ -44,10 +47,11 @@ in {
 
     bucket = lib.mkOption {
       type = lib.types.str;
+      default = defaultBucket;
       description = ''
-        Name of the Garage bucket that backs the qBittorrent downloads.
-        A FUSE mount for this bucket must be declared in the
-        cococoir/garage clan-service's `mounts.<name>`.
+        Name of the Garage bucket that backs the qBittorrent
+        downloads. Defaults to "${defaultBucket}" (same as jellyfin,
+        so both share a single bucket + mount).
       '';
     };
 
@@ -58,20 +62,11 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = mount != null;
-        message = ''
-          cococoir/services/qbittorrent: bucket "${cfg.bucket}" has no
-          FUSE mount declared in the cococoir/garage clan-service. Add
-          an entry to `roles.<role>.machines.<name>.settings.mounts`:
-            mounts.<name> = {
-              bucket = "${cfg.bucket}";
-              mountPoint = "/media/entertain";
-            };
-        '';
-      }
-    ];
+    cococoir.storage.buckets.${cfg.bucket} = { };
+    cococoir.storage.mounts.${cfg.bucket} = {
+      bucket = cfg.bucket;
+      mountPoint = defaultMount;
+    };
 
     services.qbittorrent = {
       enable = true;

@@ -12,3 +12,9 @@ terraform.tfstate.*.backup
 terraform.tfvars
 .terraform.lock.hcl
 *.tfplan
+
+# Runtime state — these belong in deployment repos (amon-sul, tunnel),
+# never in the cococoir source tree.
+sops/
+vars/
+inventory.json

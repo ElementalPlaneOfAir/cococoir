@@ -370,6 +370,52 @@ back.
 
 **`nix flake check` passes for both `path:.` and `path:tunnel`.**
 
+#### Second-pass audit — dead code removed *(DONE this session)*
+
+Going one step further. "Not rolled out to clients" means I can be
+more aggressive: any option that no consumer actually uses is
+maintenance liability, and the only consumer (amon-sul) is
+explicitly opting in to the trimmed surface.
+
+**`cococoir.users` (modules/core.nix):** removed. Only consumer
+uses `cococoir.adminUsers`. The "non-admin user with no root
+keys" shape was a future-proofing option with zero current
+consumers. Re-introduce (or unify with `adminUsers`) when a
+deployment needs it.
+
+**`lib/garage-data-disko.nix`:** entire file deleted. The flake
+didn't even export `cococoir.lib.mkGarageDataDisko` — references
+in the docstrings were aspirational. 100% dead code. The `lib/`
+directory is gone.
+
+**`garage.buckets.<name>.{enable,quotas,website}`:** removed. The
+submodule was three options deep with zero consumers. Now:
+`buckets.<name> = { }` declares a bucket. `bucket-init.sh`
+iterates over `builtins.attrNames me.buckets` instead of
+`to_entries[] | select(.value.enable)`. The script dropped from
+81 to 64 lines.
+
+**`garage.dataDevice`:** removed. No consumer used the inline
+disko path; amon-sul provisions the data drive via its own
+disko.nix. The `disko = lib.mkIf (me.dataDevice != null) { ... }`
+block is gone. The data drive must be provisioned out-of-band.
+
+**Kept (with reason):**
+
+- `cococoir.localNetworks` (default `192.168.0.0/16`) — only one
+  consumer uses the default, but it's a real concern for
+  non-192.168 networks. Not genericity.
+- `tunnel.server.bindAddress` (default `0.0.0.0`) — same: real
+  feature for multi-tenant VPSes.
+- `cococoir.services.mautrix-gmessages.{settings,environmentFile}` —
+  bridges are per-deployment config. The default `settings` is
+  sensible but real consumers will override.
+- `cococoir.services.qbittorrent.vpnConfigFile` — required
+  qbittorrent dependency, provides a validation point.
+- `mounts.<name>.readOnly` — real feature for read-only buckets.
+
+`nix flake check` passes for both `path:.` and `path:tunnel`.
+
 ## Key design notes
 
 ### clan.service import pattern
@@ -410,11 +456,9 @@ import-tree on `flake-vars/`.
 ```
 cococoir/
 ├── flake.nix
-├── lib/
-│   └── garage-data-disko.nix
 ├── clan-services/
 │   └── garage/
-│       ├── default.nix          # the clan.service (305 LOC)
+│       ├── default.nix          # the clan.service
 │       ├── bucket-init.sh       # the runtime script
 │       └── flake-module.nix     # registers clan.modules."cococoir-garage"
 ├── modules/
@@ -425,19 +469,19 @@ cococoir/
 │   │   └── caddy.nix
 │   └── services/
 │       ├── autobrr.nix
-│       ├── cryptpad.nix         # to be fleshed out (phase 3)
+│       ├── cryptpad.nix
 │       ├── custom.nix
 │       ├── jellyfin.nix
 │       ├── jellyseerr.nix
 │       ├── matrix.nix
 │       ├── mautrix-gmessages.nix
 │       ├── media-stack.nix
-│       ├── nextcloud.nix        # NEW (phase 3)
+│       ├── nextcloud.nix
 │       └── qbittorrent.nix
-├── tunnel/                      # NEW (phase 4)
+├── tunnel/                      # separate flake (phase 4)
 │   ├── README.md
-│   ├── terraform/               # moved from ./terraform/
-│   └── nix/                     # moved from ./modules/proxy/
+│   ├── terraform/
+│   └── nix/
 ├── AGENTS.md
 ├── THE_GREAT_SIMPLIFICATION.md  # this file
 └── LICENSE

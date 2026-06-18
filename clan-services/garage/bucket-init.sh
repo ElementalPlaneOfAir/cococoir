@@ -3,8 +3,8 @@
 #
 # cococoir/garage bucket-init.
 # Idempotent first-boot setup: import the pre-generated global S3 key,
-# apply single-node layout, create buckets, set per-bucket allow / quotas
-# / website.
+# apply single-node layout, create buckets, and allow the global key
+# on each.
 #
 # Usage: garage-bucket-init <buckets.json> <global-dir>
 #
@@ -57,25 +57,14 @@ if ! garage -c /etc/garage.toml layout show >/dev/null 2>&1; then
   echo "[bucket-init] applied single-node layout"
 fi
 
-# Create buckets + allow the global key, set quotas, enable website.
-jq -c '.buckets | to_entries[] | select(.value.enable)' "$BUCKETS_JSON" | while read -r entry; do
-  NAME="$(printf '%s' "$entry" | jq -r '.key')"
-  QUOTAS="$(printf '%s' "$entry" | jq -r '.value.quotas // empty')"
-  WEBSITE="$(printf '%s' "$entry" | jq -r '.value.website // false')"
-
+# Create buckets + allow the global key.
+jq -r '.buckets[]' "$BUCKETS_JSON" | while read -r NAME; do
   if ! garage -c /etc/garage.toml bucket info "$NAME" >/dev/null 2>&1; then
     garage -c /etc/garage.toml bucket create "$NAME" >/dev/null
     echo "[bucket-init] created bucket: $NAME"
   fi
   garage -c /etc/garage.toml bucket allow \
     --read --write "$NAME" --key "$KEY_ID" >/dev/null
-
-  if [ -n "$QUOTAS" ]; then
-    garage -c /etc/garage.toml bucket set-quota "$NAME" "$QUOTAS" >/dev/null || true
-  fi
-  if [ "$WEBSITE" = "true" ]; then
-    garage -c /etc/garage.toml bucket website "$NAME" --allow >/dev/null || true
-  fi
 done
 
 echo "[bucket-init] done"

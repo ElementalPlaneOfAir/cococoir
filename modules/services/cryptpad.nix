@@ -7,19 +7,22 @@
 #   enable    — opt-in toggle
 #   domain    — external FQDN for the Caddy vhost
 #   public    — true → Caddy reverse-proxies; false → localNetworks 403
-#   bucket    — name of the Garage bucket that backs the dataPath
+#   bucket    — name of the Garage bucket (default "cryptpad-data",
+#               override only to share a bucket with another service)
 #
-# FUSE mounts are owned by the cococoir/garage clan-service. The CryptPad
-# module asserts that a mount exists for the referenced bucket and
-# resolves the dataPath from `cococoir.storage.derived.mounts`. If the
-# bucket has no mount, evaluation fails with a clear error.
+# Enabling this service auto-declares its bucket + FUSE mount in
+# `cococoir.storage.*`, so the user does not need to wire up
+# storage separately. The cococoir/garage clan-service consumes
+# those declarations.
 {
   config,
   lib,
   ...
 }: let
   cfg = config.cococoir.services.cryptpad;
-  mount = config.cococoir.storage.derived.mounts.${cfg.bucket} or null;
+  defaultBucket = "cryptpad-data";
+  defaultMount = "/var/lib/cococoir/cryptpad";
+  mount = config.cococoir.storage.derived.mounts.${cfg.bucket};
 in {
   options.cococoir.services.cryptpad = {
     enable = lib.mkEnableOption "CryptPad collaborative office suite";
@@ -36,29 +39,21 @@ in {
 
     bucket = lib.mkOption {
       type = lib.types.str;
+      default = defaultBucket;
       description = ''
-        Name of the Garage bucket that backs the CryptPad dataPath. A
-        FUSE mount for this bucket must be declared in the
-        cococoir/garage clan-service's `mounts.<name>`.
+        Name of the Garage bucket that backs the CryptPad dataPath.
+        Defaults to "${defaultBucket}"; override only to share a
+        bucket with another service.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = mount != null;
-        message = ''
-          cococoir/services/cryptpad: bucket "${cfg.bucket}" has no FUSE
-          mount declared in the cococoir/garage clan-service. Add an
-          entry to `roles.<role>.machines.<name>.settings.mounts`:
-            mounts.<name> = {
-              bucket = "${cfg.bucket}";
-              mountPoint = "/var/lib/cryptpad";
-            };
-        '';
-      }
-    ];
+    cococoir.storage.buckets.${cfg.bucket} = { };
+    cococoir.storage.mounts.${cfg.bucket} = {
+      bucket = cfg.bucket;
+      mountPoint = defaultMount;
+    };
 
     services.cryptpad = {
       enable = true;

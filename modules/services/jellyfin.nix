@@ -6,15 +6,17 @@
 #   enable    — opt-in toggle
 #   domain    — external FQDN for the Caddy vhost
 #   public    — true → Caddy reverse-proxies; false → localNetworks 403
-#   bucket    — name of the Garage bucket that backs the media library
+#   bucket    — name of the Garage bucket (default "media", override
+#               only to use a non-default bucket name)
 #
-# The NixOS module does not actively use the bucket: Jellyfin's library
-# directories are configured at runtime in the admin UI. The `bucket`
-# option exists so the module can assert the FUSE mount is declared in
-# the cococoir/garage clan-service — if the user forgets the mount,
-# evaluation fails with a clear error pointing at the declaration they
-# need to add. The mount path can then be referenced as the library
-# root in the admin UI.
+# Enabling this service auto-declares its bucket + FUSE mount in
+# `cococoir.storage.*`, so the user does not need to wire up
+# storage separately. The NixOS module does not actively use the
+# bucket at evaluation time — Jellyfin's library directories are
+# configured at runtime in the admin UI, pointing at the FUSE
+# mount point. qBittorrent and other S3-backed media services
+# default to the same "media" bucket so they share a single
+# bucket + mount declaration.
 {
   config,
   lib,
@@ -22,7 +24,8 @@
   ...
 }: let
   cfg = config.cococoir.services.jellyfin;
-  mount = config.cococoir.storage.derived.mounts.${cfg.bucket} or null;
+  defaultBucket = "media";
+  defaultMount = "/media/entertain";
 in {
   options.cococoir.services.jellyfin = {
     enable = lib.mkEnableOption "Jellyfin media server";
@@ -39,32 +42,22 @@ in {
 
     bucket = lib.mkOption {
       type = lib.types.str;
+      default = defaultBucket;
       description = ''
-        Name of the Garage bucket that backs the Jellyfin media library.
-        A FUSE mount for this bucket must be declared in the
-        cococoir/garage clan-service's `mounts.<name>`. The mount path
-        is referenced in the Jellyfin admin UI as the library root.
+        Name of the Garage bucket that backs the Jellyfin media
+        library. Defaults to "${defaultBucket}"; override only to
+        use a non-default bucket. Add the FUSE mount point as a
+        library in the Jellyfin admin UI.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = mount != null;
-        message = ''
-          cococoir/services/jellyfin: bucket "${cfg.bucket}" has no FUSE
-          mount declared in the cococoir/garage clan-service. Add an
-          entry to `roles.<role>.machines.<name>.settings.mounts`:
-            mounts.<name> = {
-              bucket = "${cfg.bucket}";
-              mountPoint = "/media/entertain";
-            };
-          Then point each Jellyfin library at a subdirectory of the
-          mount path in the admin UI.
-        '';
-      }
-    ];
+    cococoir.storage.buckets.${cfg.bucket} = { };
+    cococoir.storage.mounts.${cfg.bucket} = {
+      bucket = cfg.bucket;
+      mountPoint = defaultMount;
+    };
 
     services.jellyfin = {
       enable = true;
