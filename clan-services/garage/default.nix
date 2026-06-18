@@ -397,8 +397,13 @@ in {
                 mode = "0440";
               };
               runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
+              # Garage's S3 access key ID is `GK` + 12 hex-encoded
+              # bytes = 24 hex chars + 2 = 26 chars total (strict
+              # server-side validation: "starts with GK, followed by
+              # 12 hex-encoded bytes"). 20 bytes (40 hex chars) is
+              # rejected at the admin API with "Invalid key format".
               script = ''
-                printf 'GK%s' "$(openssl rand -hex 20)" > "$out/access-key-id"
+                printf 'GK%s' "$(openssl rand -hex 12)" > "$out/access-key-id"
                 openssl rand -base64 -out "$out/secret-access-key" 32
               '';
             };
