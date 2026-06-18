@@ -277,21 +277,49 @@ in {
                 # single-node, the local node has no peers to
                 # bootstrap from at config time (we don't know the
                 # local node's full ID, which is `<hex-id>@<ip:port>`,
-                # until the daemon generates it from rpc_secret).
-                # Setting bootstrap_peers = ["<ip:port>"] is silently
-                # rejected by garage with "Unable to parse and/or
-                # resolve peer hostname" (garage 1.3.x requires the
-                # full `<hex-id>@<ip:port>` format). For multi-node,
-                # the per-instance role interface is responsible for
-                # deriving the OTHER nodes' full IDs and adding them
-                # to bootstrap_peers (NOT YET IMPLEMENTED — this
-                # branch only handles single-node).
+                # until the daemon generates it on first start and
+                # writes it to <meta_dir>/node_id — and the ID is
+                # derived from the metadata, NOT computed on the fly
+                # from rpc_secret+addr: `garage node id` requires
+                # the meta dir to exist). Setting bootstrap_peers
+                # = ["<ip:port>"] is silently rejected by garage
+                # with "Unable to parse and/or resolve peer
+                # hostname" (garage 1.3.x requires the full
+                # `<hex-id>@<ip:port>` format). For multi-node,
+                # the per-instance role interface is responsible
+                # for deriving the OTHER nodes' full IDs and
+                # adding them to bootstrap_peers (NOT YET
+                # IMPLEMENTED — this branch only handles
+                # single-node).
                 #
-                # Instead, `bucket-init.sh` calls
-                # `garage node connect <self-full-id>` after the
-                # daemon is up, to bring the local node into its own
-                # cluster view. This is the canonical way garage
-                # recommends bootstrapping an isolated node.
+                # Instead, `bucket-init.sh` (a oneshot running
+                # AFTER garage.service on first boot) writes
+                # `bootstrap_peers = ["<self-full-id>"]` to
+                # /etc/garage.toml, then calls `systemctl restart
+                # garage` to make the new config take effect,
+                # then polls `garage layout show` for the local
+                # node to appear in the cluster view (the
+                # self-bootstrap via the new bootstrap_peers is
+                # async). On second+ boots, the meta dir already
+                # has the node ID and /etc/garage.toml already
+                # has bootstrap_peers (from the previous run),
+                # so the script is a no-op.
+                #
+                # We tried `garage node connect <self-full-id>`
+                # from the script as an alternative, but in
+                # practice the CLI returns exit 0 without
+                # actually adding the local node to its own
+                # cluster view (the "connected" message is
+                # misleading — the cluster stays at 0 nodes, and
+                # `layout assign` still fails with "0 nodes
+                # match"). The canonical fix per the garage
+                # docs is to put the full ID in `bootstrap_peers`
+                # and restart.
+                #
+                # The bucket-init service uses `after =` (NOT
+                # `partOf` or `requires`) on garage.service, so
+                # the script can call `systemctl restart garage`
+                # without being cascade-killed.
                 #
                 # Also note: the sub-tables in garage 1.3.x use
                 # `api_bind_addr` (NOT `bind_addr`). Using `bind_addr`
@@ -332,19 +360,24 @@ in {
                 description = "cococoir/garage bucket init: global S3 key, layout, buckets";
                 wantedBy = [ "multi-user.target" ];
                 after = [ "garage.service" ];
-                # Use PartOf=, NOT Requires=. PartOf propagates
-                # start/stop events but NOT restart events. The
-                # bucket-init script calls `systemctl restart
+                # Use ONLY `after =`, NOT `partOf =` or
+                # `requires =`. Both `partOf` and `requires`
+                # propagate restart events to this unit, so when
+                # the bucket-init script calls `systemctl restart
                 # garage` to pick up the runtime-added
-                # bootstrap_peers, and with Requires= that restart
-                # would cascade and kill the bucket-init service
-                # mid-execution (we observed this: the script got
-                # SIGTERM'd after restarting garage, then systemd
-                # re-tried it 5 times in 10s and hit the start
-                # limit). PartOf= breaks the cascade while still
-                # ensuring bucket-init stops when garage stops and
-                # starts after garage starts.
-                partOf = [ "garage.service" ];
+                # bootstrap_peers, this service gets SIGTERM'd
+                # mid-execution (we observed this twice: with
+                # `requires` the script got killed, then systemd
+                # re-tried 5x in 10s and hit the start limit;
+                # same with `partOf` — `partOf` is bidirectional
+                # in systemd, contrary to a common misreading of
+                # the docs). `after =` is purely ordering: it
+                # makes this service start AFTER garage.service,
+                # but does not couple their lifecycles. So the
+                # script can restart garage and continue running
+                # through its "wait for cluster to form" poll
+                # loop without being cascade-killed.
+                #                               
                 # NixOS's systemd-lib adds a default `path` for all
                 # services (mkAfter, can't be overridden by an
                 # environment.PATH line — NixOS's default wins
