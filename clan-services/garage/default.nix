@@ -236,8 +236,19 @@ in {
                 # fuse.geesefs` ends up running with systemd's default
                 # minimal PATH and can't find `geesefs` in
                 # /run/current-system/sw/bin. Set PATH explicitly so
-                # mount.fuse3 can exec the FUSE helper.
-                environment.PATH = lib.makeBinPath [ pkgs.geesefs ];
+                # mount.fuse3 can exec the FUSE helper. NixOS's systemd
+                # module also defines a default PATH for mount units
+                # (system paths), but it's merged with this one at
+                # eval time and causes a conflict — so mkForce the
+                # union of system paths + geesefs.
+                environment.PATH = lib.mkForce (lib.makeBinPath ([
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.findutils
+                  pkgs.gnugrep
+                  pkgs.gnused
+                  pkgs.systemd
+                ] ++ [ pkgs.geesefs ]));
                 after =
                   [ "garage-bucket-init.service" ]
                   ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
