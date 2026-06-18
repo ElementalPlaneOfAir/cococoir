@@ -192,6 +192,18 @@ in {
                 wantedBy = [ "multi-user.target" ];
                 after = [ "garage.service" ];
                 requires = [ "garage.service" ];
+                # NixOS's systemd-lib adds a default `path` for all
+                # services (mkAfter, can't be overridden by an
+                # environment.PATH line — NixOS's default wins
+                # silently). Add our bins to NixOS's `path` list
+                # with mkAfter so they get appended to the rendered
+                # PATH=… line.
+                path = lib.mkAfter [
+                  pkgs.bash
+                  pkgs.garage
+                  pkgs.jq
+                  pkgs.gawk
+                ];
                 serviceConfig = {
                   Type = "oneshot";
                   RemainAfterExit = true;
@@ -201,18 +213,6 @@ in {
                   ExecStart = "${./bucket-init.sh} ${bucketInitJson} ${globalDir}";
                   Environment = [
                     "CLAN_VAR_S3_KEY_DIR=${s3KeyDir}"
-                  ];
-                  # NixOS's systemd-lib adds a default `path` for all
-                  # services (mkAfter, can't be overridden by an
-                  # environment.PATH line — NixOS's default wins
-                  # silently). Add our bins to NixOS's `path` list
-                  # with mkAfter so they get appended to the rendered
-                  # PATH=… line.
-                  path = lib.mkAfter [
-                    pkgs.bash
-                    pkgs.garage
-                    pkgs.jq
-                    pkgs.gawk
                   ];
                 };
               };
