@@ -161,6 +161,7 @@ in {
                 rpc_bind_addr = "0.0.0.0:${toString rpcPort}";
                 rpc_public_addr = me.address;
                 s3_api.bind_addr = "127.0.0.1:${toString s3ApiPort}";
+                s3_api.s3_region = region;
                 admin.bind_addr = "127.0.0.1:${toString adminPort}";
                 s3_api.root_domain = "s3.${region}.local";
               };
@@ -199,7 +200,7 @@ in {
                   WorkingDirectory = metaDir;
                   ExecStart = "${./bucket-init.sh} ${bucketInitJson} ${globalDir}";
                   Environment = [
-                    "PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.garage pkgs.jq pkgs.gnused pkgs.gawk ]}"
+                    "PATH=${lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.garage pkgs.jq pkgs.gnused pkgs.gawk ]}"
                     "CLAN_VAR_S3_KEY_DIR=${s3KeyDir}"
                   ];
                 };
@@ -229,6 +230,14 @@ in {
                 # directory at boot. The parent is a normal mount
                 # (btrfs / ext4 / etc.), so adding After= to it
                 # doesn't introduce a multi-user.target cycle.
+                #
+                # NixOS's fstab generator doesn't set Environment=PATH
+                # for auto-generated mount units, so `mount -t
+                # fuse.geesefs` ends up running with systemd's default
+                # minimal PATH and can't find `geesefs` in
+                # /run/current-system/sw/bin. Set PATH explicitly so
+                # mount.fuse3 can exec the FUSE helper.
+                environment.PATH = lib.makeBinPath [ pkgs.geesefs ];
                 after =
                   [ "garage-bucket-init.service" ]
                   ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
