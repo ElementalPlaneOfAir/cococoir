@@ -17,11 +17,14 @@
 #     bucket-init.sh so native-S3 clients can read it at eval time)
 #   - bucket-init oneshot: idempotent first-boot setup of the cluster
 #     layout, buckets, and access-key import. Script lives in
-#     ./bucket-init.sh; Nix just generates a buckets.json config
-#     from `config.cococoir.storage.buckets`.
-#   - FUSE mounts via `fileSystems.<path>.fsType = "fuse.geesefs"` —
-#     NixOS generates the mount units, we add After/Requires on the
-#     bucket-init service.
+#     ./bucket-init.sh; per-instance values (address, zone, capacity,
+#     bucket names) are passed as positional args, not a generated JSON
+#     file. The S3 access key is read directly from a file at
+#     $CLAN_VAR_S3_KEY_DIR (a SOPS-decrypted clan-core var) — no JSON
+#     round-trip.
+#   - FUSE mounts via per-mount systemd services (lxcfs.nix pattern),
+#     not `fileSystems` with `fuse.<path>` (which is broken — see
+#     NixOS/nixpkgs#21748).
 #   - cococoir.storage.derived.{gatewayAddress,buckets.<n>.{endpoint,
 #     accessKeyIdFile,secretAccessKeyFile},mounts.<bucket>} for
 #     native-S3 clients and service modules.
@@ -143,10 +146,15 @@ in {
             # The parent is a normal fileSystem in local-fs.target,
             # so After= on it is safe.
             #
-            # `wants` (not `requires`) on bucket-init: the FUSE
-            # service is soft-coupled to bucket-init. If
-            # bucket-init is delayed, FUSE waits and retries but
-            # does not block multi-user.target.
+            # `requires` (not `wants`) on bucket-init: the FUSE
+            # mount needs the bucket to exist in garage before
+            # geesefs can connect. `requires` makes the FUSE
+            # service wait until bucket-init is `active` — and
+            # for a `Type=oneshot, RemainAfterExit=true` unit,
+            # `active` means "exited with success", which is
+            # exactly the "bucket is ready" condition we want.
+            # If bucket-init fails permanently, FUSE fails too;
+            # both will be visible in `systemctl --failed`.
             #
             # `serviceConfig` notes:
             #   - `Type = simple`: the service is "active" while
@@ -176,7 +184,7 @@ in {
                 after =
                   [ "garage-bucket-init.service" ]
                   ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
-                wants = [ "garage-bucket-init.service" ];
+                requires = [ "garage-bucket-init.service" ];
                 serviceConfig = {
                   Type = "simple";
                   ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${m.mountPoint}";
@@ -206,11 +214,6 @@ in {
             bucketNames = builtins.attrNames config.cococoir.storage.buckets;
             mountNames = builtins.attrNames config.cococoir.storage.mounts;
             s3KeyDir = lib.dirOf config.clan.core.vars.generators.garage-global-s3-key.files.access-key-id.path;
-            bucketInitJson = pkgs.writeText "garage-buckets.json" (builtins.toJSON {
-              inherit (me) address capacity;
-              zone = instanceName;
-              buckets = bucketNames;
-            });
           in {
             assertions = [
               {
@@ -311,12 +314,19 @@ in {
                 # environment.PATH line — NixOS's default wins
                 # silently). Add our bins to NixOS's `path` list
                 # with mkAfter so they get appended to the rendered
-                # PATH=… line.
+                # PATH=… line. Only bash, garage, coreutils: bucket-init.sh
+                # used to parse a generated JSON config with jq, but the
+                # per-instance values (address, zone, capacity, bucket
+                # names) are now passed as CLI flags (--address,
+                # --zone, --capacity, --bucket) — the script has no
+                # JSON parser dependency. (The S3 key is read directly
+                # from a file at $CLAN_VAR_S3_KEY_DIR, which is itself
+                # a SOPS-decrypted clan-core var — the SOPS-direct
+                # pattern, no JSON round-trip.)
                 path = lib.mkAfter [
                   pkgs.bash
                   pkgs.garage
-                  pkgs.jq
-                  pkgs.gawk
+                  pkgs.coreutils
                 ];
                 serviceConfig = {
                   Type = "oneshot";
@@ -324,8 +334,32 @@ in {
                   User = "garage";
                   Group = "garage";
                   WorkingDirectory = metaDir;
-                  ExecStart = "${./bucket-init.sh} ${bucketInitJson} ${globalDir}";
+                  # Flag-based args: `--global-dir`, `--address`,
+                  # `--zone`, `--capacity` for the named per-instance
+                  # values, plus a `--bucket` flag per bucket name.
+                  # Flag-based (not positional) so the script is
+                  # self-documenting and order can't be confused.
+                  ExecStart = lib.concatMapStringsSep " " lib.escapeShellArg (
+                    [
+                      "${./bucket-init.sh}"
+                      "--global-dir" globalDir
+                      "--address" me.address
+                      "--zone" instanceName
+                      "--capacity" me.capacity
+                    ]
+                    ++ lib.concatMap (b: [ "--bucket" b ]) bucketNames
+                  );
+                  # The `garage` CLI calls (key import, layout, bucket)
+                  # hit the running daemon's admin API and need the same
+                  # RPC secret the daemon uses. Mirror the daemon's
+                  # LoadCredential + env so the CLI authenticates. Without
+                  # this, the CLI prints "Error: No RPC secret provided"
+                  # and exits 1.
+                  LoadCredential = [
+                    "rpc_secret:${config.clan.core.vars.generators.garage-rpc-secret.files.rpc-secret.path}"
+                  ];
                   Environment = [
+                    "GARAGE_RPC_SECRET_FILE=%d/rpc_secret"
                     "CLAN_VAR_S3_KEY_DIR=${s3KeyDir}"
                   ];
                 };
