@@ -169,7 +169,9 @@ in {
 
             # Systemd services: garage (with hardened LoadCredential +
             # static user), bucket-init (oneshot first-boot setup), and
-            # FUSE mount units (After/Requires on bucket-init).
+            # one FUSE service per cococoir.storage.mounts entry
+            # (lxcfs.nix pattern, see comment on the FUSE mapAttrs'
+            # below).
             systemd.services = {
               garage.serviceConfig = {
                 DynamicUser = lib.mkForce false;
@@ -187,6 +189,121 @@ in {
                   "GARAGE_METRICS_TOKEN_FILE=%d/metrics_token"
                 ];
               };
+              // (lib.mapAttrs' (name: m: {
+                name = "cococoir-fuse-${name}";
+                value = {
+                  # Per-mount FUSE service, modelled on
+                  # nixpkgs/nixos/modules/virtualisation/lxcfs.nix (the
+                  # canonical NixOS FUSE pattern, also recommended for
+                  # s3fs in the NixOS Discourse thread "How to setup
+                  # s3fs mount", post #2).
+                  #
+                  # Why a service, not `fileSystems` with
+                  # `fuse.<path-to-binary>`? `mount` deliberately
+                  # strips PATH before invoking FUSE helpers via
+                  # `/bin/sh -c '<binary> ...'`, and NixOS's /bin/sh
+                  # (bash) has `/no-such-path` compiled in as its
+                  # default PATH (pkgs/shells/bash/4.4.nix#L46). So
+                  # `fsType = "fuse.geesefs"` and even
+                  # `fsType = "fuse.${pkgs.geesefs}/bin/geesefs"`
+                  # silently fail at boot with
+                  # `geesefs: command not found`. See
+                  # NixOS/nixpkgs#21748 and the NixOS Discourse thread
+                  # #6283 for the long history. The symlink form
+                  # `fuse./run/current-system/sw/bin/<name>` works
+                  # (post #5-6) but requires the package in
+                  # environment.systemPackages and is fragile. The
+                  # service approach avoids both issues by invoking
+                  # the binary by absolute path with no shell
+                  # involved — `${pkgs.geesefs}/bin/geesefs` is in
+                  # the system closure, so the path is stable across
+                  # rebuilds.
+                  #
+                  # `wantedBy = multi-user.target` (NOT local-fs.target)
+                  # because the FUSE service is a service unit, not a
+                  # mount unit — local-fs.target is for fileSystems.
+                  # Keeping the FUSE service out of local-fs.target
+                  # means boot is not blocked if garage is down: the
+                  # FUSE service keeps retrying (Restart=on-failure,
+                  # RestartSec=10s), and consumer services that
+                  # `After=[cococoir-fuse-<bucket>.service]` will
+                  # also be delayed, but local-fs.target and the rest
+                  # of the system come up. The user can boot into a
+                  # working system even if garage is broken, then
+                  # debug garage.
+                  #
+                  # `after = [garage-bucket-init.service]`: the
+                  # bucket + global S3 key must exist in garage
+                  # before FUSE connects. The bucket-init service is
+                  # already a one-shot after garage.service, so by
+                  # transitive ordering through multi-user.target
+                  # this also implicitly waits for garage.
+                  #
+                  # `+ lib.optional parentMount`: if the mount point
+                  # is a subdirectory of another declared fileSystem
+                  # (e.g. /media/entertain under /media), we also
+                  # wait for the parent mount. Otherwise the FUSE
+                  # service races the parent and fails to find its
+                  # mount point directory. The parent is a normal
+                  # fileSystem in local-fs.target, so After= on it
+                  # is safe.
+                  #
+                  # `wants` (not `requires`) on bucket-init: the
+                  # FUSE service is soft-coupled to bucket-init. If
+                  # bucket-init is delayed, FUSE waits and retries
+                  # but does not block multi-user.target.
+                  #
+                  # `serviceConfig` notes:
+                  #   - `Type = simple`: the service is "active"
+                  #     while geesefs is running. The kernel
+                  #     registers the FUSE mount on the process's
+                  #     behalf.
+                  #   - `ExecStartPre = mkdir -p`: ensure the mount
+                  #     point dir exists before geesefs tries to
+                  #     mount there. Cheap, idempotent.
+                  #   - `ExecStart`: the FUSE binary in foreground
+                  #     mode. No `-f` flag because geesefs's default
+                  #     mode is foreground.
+                  #   - `ExecStopPost = fusermount3 -u`: cleanly
+                  #     unmount on stop. The `-` prefix means
+                  #     "ignore exit code" — the unmount may fail
+                  #     if the FS is already gone (e.g. crash),
+                  #     which is fine.
+                  #   - `KillMode = process`: only kill the main
+                  #     process, not children, so fusermount3 can
+                  #     do its job on stop.
+                  #   - `Restart = on-failure` + `RestartSec = 10s`:
+                  #     FUSE can drop on S3 transient errors.
+                  #     Restarting re-establishes the mount.
+                  description = "FUSE mount of Garage bucket '${m.bucket}' to ${m.mountPoint}";
+                  wantedBy = [ "multi-user.target" ];
+                  after =
+                    [ "garage-bucket-init.service" ]
+                    ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
+                  wants = [ "garage-bucket-init.service" ];
+                  serviceConfig = {
+                    Type = "simple";
+                    ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${m.mountPoint}";
+                    ExecStart = lib.concatMapStringsSep " " (s: lib.escapeShellArg s) [
+                      "${pkgs.geesefs}/bin/geesefs"
+                      m.bucket
+                      m.mountPoint
+                      "-o"
+                      (lib.concatStringsSep "," ([
+                        "allow_other"
+                        "default_permissions"
+                        "use_path_request_style"
+                        "url=http://127.0.0.1:${toString s3ApiPort}"
+                        "region=${region}"
+                      ] ++ lib.optional m.readOnly "ro"))
+                    ];
+                    ExecStopPost = "-${pkgs.fuse3}/bin/fusermount3 -u ${m.mountPoint}";
+                    Restart = "on-failure";
+                    RestartSec = "10s";
+                    KillMode = "process";
+                  };
+                };
+              }) config.cococoir.storage.mounts);
               garage-bucket-init = {
                 description = "cococoir/garage bucket init: global S3 key, layout, buckets";
                 wantedBy = [ "multi-user.target" ];
@@ -263,50 +380,6 @@ in {
               runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
               script = "openssl rand -base64 -out \"$out/metrics-token\" 32";
             };
-
-            # FUSE mounts: use systemd.mounts (not fileSystems /
-            # systemd-fstab-generator) so we control the rendered unit
-            # file directly. Two reasons:
-            #
-            # 1. PATH for the FUSE helper. systemd-fstab-generator
-            #    creates bare mount units with no Environment=, so the
-            #    `mount -t fuse.geesefs` invocation runs `mount.fuse3`
-            #    with an empty PATH, which can't find `geesefs`.
-            #    systemd.mounts units go through NixOS's systemd-lib
-            #    which renders our `unitConfig.Environment` into the
-            #    [Unit] section.
-            #
-            # 2. Ordering. We need Wants=/After= on
-            #    garage-bucket-init (so the bucket + key exist before
-            #    FUSE connects) and possibly After= on a parent mount
-            #    (e.g. /media for /media/entertain). Wants, not
-            #    Requires: a hard Requires creates a cycle with
-            #    local-fs.target → garage-bucket-init → garage
-            #    (multi-user.target) that drops the system to
-            #    emergency mode when garage is slow to start. With
-            #    Wants + the nofail mount option, the mount is
-            #    best-effort at boot and is re-attempted on later
-            #    activations.
-            systemd.mounts = map (m: {
-              what = m.bucket;
-              where = m.mountPoint;
-              type = "fuse.geesefs";
-              options = lib.concatStringsSep "," ([
-                "nofail"
-                "allow_other"
-                "default_permissions"
-                "use_path_request_style"
-                "url=http://127.0.0.1:${toString s3ApiPort}"
-                "region=${region}"
-              ] ++ lib.optional m.readOnly "ro");
-              wantedBy = [ "local-fs.target" ];
-              before = [ "local-fs.target" ];
-              after =
-                [ "garage-bucket-init.service" ]
-                ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
-              wants = [ "garage-bucket-init.service" ];
-              unitConfig.Environment = "PATH=${lib.makeBinPath [ pkgs.geesefs pkgs.bash ]}";
-            }) (lib.attrValues config.cococoir.storage.mounts);
 
             # Derived config: what native-S3 and FUSE consumers read.
             cococoir.storage.derived.gatewayAddress = "127.0.0.1:${toString s3ApiPort}";

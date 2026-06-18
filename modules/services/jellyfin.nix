@@ -65,6 +65,13 @@ in {
       user = "jellyfin";
     };
 
+    # The Jellyfin library lives on a FUSE mount managed by the
+    # cococoir/garage clan-service (`cococoir-fuse-<bucket>.service`).
+    # Wait for it to be active before starting Jellyfin — without
+    # this, Jellyfin may try to read its library before the FUSE
+    # mount is up, on a freshly-initialized cluster (first boot).
+    systemd.services.jellyfin.after = [ "cococoir-fuse-${cfg.bucket}.service" ];
+
     users.groups.jellyfin = {};
     users.users.jellyfin = {
       isSystemUser = true;

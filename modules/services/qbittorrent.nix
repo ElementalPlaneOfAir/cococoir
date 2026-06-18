@@ -82,5 +82,13 @@ in {
         WebUI.HostHeaderValidationEnabled = false;
       };
     };
+
+    # qBittorrent's download path lives on a FUSE mount managed by
+    # the cococoir/garage clan-service
+    # (`cococoir-fuse-<bucket>.service`). Wait for it to be active
+    # before starting qBittorrent — without this, qBittorrent may
+    # try to write to its download dir before the FUSE mount is up,
+    # on a freshly-initialized cluster (first boot).
+    systemd.services.qbittorrent.after = [ "cococoir-fuse-${cfg.bucket}.service" ];
   };
 }

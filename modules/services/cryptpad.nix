@@ -71,6 +71,13 @@ in {
       "d ${mount.mountPoint} 0750 cryptpad cryptpad - -"
     ];
 
+    # CryptPad's dataPath lives on a FUSE mount managed by the
+    # cococoir/garage clan-service (`cococoir-fuse-<bucket>.service`).
+    # Wait for it to be active before starting CryptPad — without
+    # this, CryptPad may try to read/write its dataPath before the
+    # FUSE mount is up, on a freshly-initialized cluster (first boot).
+    systemd.services.cryptpad.after = [ "cococoir-fuse-${cfg.bucket}.service" ];
+
     services.caddy.virtualHosts."${cfg.domain}".extraConfig =
       if cfg.public
       then ''reverse_proxy localhost:9123''
