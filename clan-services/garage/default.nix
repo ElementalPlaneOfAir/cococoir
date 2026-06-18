@@ -397,32 +397,33 @@ in {
                 mode = "0440";
               };
               runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
-              # Garage's S3 access key format is strict on BOTH halves:
+              # Garage's S3 access key format is strict on BOTH halves
+              # and the validation runs at `garage key import` time.
+              # If either is wrong, the import fails and the
+              # bucket-init script exits non-zero. The exact error
+              # messages, in order:
               #
-              #   access key ID: `GK` + 12 hex-encoded bytes
-              #                  = 24 hex chars + 2 = 26 chars total
-              #                  (server validates: "starts with GK,
-              #                  followed by 12 hex-encoded bytes")
+              #   access key ID:  "starts with `GK`, followed by 12
+              #                    hex-encoded bytes"
+              #                   = `GK` + 24 hex chars + 2 = 26 chars
+              #                    total
               #
-              #   secret access key: 40 chars of standard base64
-              #                       (= 30 raw bytes, 10 groups of
-              #                       3 bytes / 4 chars)
-              #                  (server validates: "the specified
-              #                  secret key is not a valid Garage
-              #                  secret key")
+              #   secret key:     "composed of 32 hex-encoded bytes"
+              #                   = 64 hex chars, no `GK` prefix,
+              #                    no base64 — same encoding as the
+              #                    rpc_secret
               #
-              # Both are validated at `garage key import` time. If
-              # either is wrong the import fails and the script exits
-              # non-zero. The 32-bytes (44 chars) / 20-bytes (40 hex
-              # chars) defaults that feel "more random" both get
-              # rejected — Garage is specifically looking for 12/30.
+              # `openssl rand -hex N` is the right primitive for both
+              # (NOT `-base64`). For the access key ID, N=12 (we
+              # prepend `GK` ourselves with printf). For the secret
+              # key, N=32.
               #
               # If you change either size, also rotate
               # `clan vars regenerate garage-global-s3-key` so the
               # on-disk file is regenerated.
               script = ''
                 printf 'GK%s' "$(openssl rand -hex 12)" > "$out/access-key-id"
-                openssl rand -base64 -out "$out/secret-access-key" 30
+                openssl rand -hex -out "$out/secret-access-key" 32
               '';
             };
             clan.core.vars.generators.garage-admin-token = {
