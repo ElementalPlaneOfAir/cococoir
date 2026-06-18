@@ -200,8 +200,19 @@ in {
                   WorkingDirectory = metaDir;
                   ExecStart = "${./bucket-init.sh} ${bucketInitJson} ${globalDir}";
                   Environment = [
-                    "PATH=${lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.garage pkgs.jq pkgs.gnused pkgs.gawk ]}"
                     "CLAN_VAR_S3_KEY_DIR=${s3KeyDir}"
+                  ];
+                  # NixOS's systemd-lib adds a default `path` for all
+                  # services (mkAfter, can't be overridden by an
+                  # environment.PATH line — NixOS's default wins
+                  # silently). Add our bins to NixOS's `path` list
+                  # with mkAfter so they get appended to the rendered
+                  # PATH=… line.
+                  path = lib.mkAfter [
+                    pkgs.bash
+                    pkgs.garage
+                    pkgs.jq
+                    pkgs.gawk
                   ];
                 };
               };
@@ -231,24 +242,13 @@ in {
                 # (btrfs / ext4 / etc.), so adding After= to it
                 # doesn't introduce a multi-user.target cycle.
                 #
-                # NixOS's fstab generator doesn't set Environment=PATH
-                # for auto-generated mount units, so `mount -t
-                # fuse.geesefs` ends up running with systemd's default
-                # minimal PATH and can't find `geesefs` in
-                # /run/current-system/sw/bin. Set PATH explicitly so
-                # mount.fuse3 can exec the FUSE helper. NixOS's systemd
-                # module also defines a default PATH for mount units
-                # (system paths), but it's merged with this one at
-                # eval time and causes a conflict — so mkForce the
-                # union of system paths + geesefs.
-                environment.PATH = lib.mkForce (lib.makeBinPath ([
-                  pkgs.bash
-                  pkgs.coreutils
-                  pkgs.findutils
-                  pkgs.gnugrep
-                  pkgs.gnused
-                  pkgs.systemd
-                ] ++ [ pkgs.geesefs ]));
+                # NixOS's systemd-lib adds a default `path` for all
+                # services (mkAfter, can't be overridden by an
+                # environment.PATH line — NixOS's default wins
+                # silently). Add our bins to NixOS's `path` list
+                # with mkAfter so they get appended to the rendered
+                # PATH=… line.
+                path = lib.mkAfter [ pkgs.geesefs ];
                 after =
                   [ "garage-bucket-init.service" ]
                   ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
