@@ -10,6 +10,7 @@
     enable = true;
     settings.PasswordAuthentication = false;
   };
+  environment.systemPackages = with pkgs; [geesefs];
 
   time.timeZone = lib.mkDefault "America/Denver";
   i18n.defaultLocale = lib.mkDefault "en_US.UTF-8";
