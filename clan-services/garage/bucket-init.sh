@@ -13,10 +13,10 @@
 #      metadata dir).
 #   2. check if local node is in the cluster. If NOT, this is
 #      first boot: write `bootstrap_peers = [<self-full-id>]`
-#      to /etc/garage.toml and `systemctl restart garage`. The
-#      restart triggers a re-run of this service (via
-#      Requires=garage.service); the re-run sees the cluster has
-#      1 node and proceeds to step 3.
+#      to /etc/garage.toml, `systemctl restart garage`, and
+#      wait for the local node to self-bootstrap via the new
+#      bootstrap_peers (poll `garage layout show` for up to
+#      60s). Then fall through to step 3.
 #   3. apply single-node layout (assigns this node to its zone).
 #   4. import the pre-generated global S3 key.
 #   5. create buckets + allow the global key on each.
@@ -25,22 +25,32 @@
 # needed: garage 1.3.x requires `bootstrap_peers` to include the
 # local node's full `<hex-id>@<ip:port>` ID for the daemon to
 # self-bootstrap. We don't know the local node's ID at NixOS
-# config evaluation time (it's generated on first start), so the
-# cococoir config deliberately omits bootstrap_peers. We tried
-# `garage node connect <self-id>` from this script as an
-# alternative, but in practice the CLI returns exit 0 without
-# actually adding the local node to its own cluster view (the
-# "connected" message is misleading — the cluster stays at 0
-# nodes, and `layout assign` still fails with "0 nodes match").
-# The canonical fix per the garage docs is to put the full ID
-# in `bootstrap_peers` and restart. Note: this edit to
-# /etc/garage.toml is NOT persisted across `nixos-rebuild
-# switch` invocations (the cococoir config doesn't carry
-# bootstrap_peers), so this script will re-add it after every
-# rebuild. The local node's ID is stable (stored in the
-# metadata dir), so on the second+ runs the cluster rejoins
-# automatically from the stored cluster state and the script
-# skips step 2.
+# config evaluation time (it's generated from `rpc_secret` on
+# first start), so the cococoir config deliberately omits
+# bootstrap_peers. We tried `garage node connect <self-id>` from
+# this script as an alternative, but in practice the CLI returns
+# exit 0 without actually adding the local node to its own
+# cluster view (the "connected" message is misleading — the
+# cluster stays at 0 nodes, and `layout assign` still fails with
+# "0 nodes match"). The canonical fix per the garage docs is to
+# put the full ID in `bootstrap_peers` and restart.
+#
+# The cococoir unit uses PartOf=garage.service (NOT Requires=)
+# because the script calls `systemctl restart garage` from
+# inside this service. Requires= would cascade a restart back
+# to this service and kill it mid-execution (we observed this:
+# SIGTERM after restart, then start-limit-hit after 5 retries).
+# PartOf= propagates start/stop but NOT restart, so the script
+# can restart garage and keep running through the cluster-form
+# wait and the rest of the init in the same invocation.
+#
+# Note: this edit to /etc/garage.toml is NOT persisted across
+# `nixos-rebuild switch` invocations (the cococoir config
+# doesn't carry bootstrap_peers), so this script will re-add
+# it after every rebuild. The local node's ID is stable
+# (stored in the metadata dir), so on the second+ runs the
+# cluster rejoins automatically from the stored cluster state
+# and the script skips step 2.
 #
 # Usage: bucket-init.sh \
 #   --global-dir <path> --address <rpc-addr> --zone <zone> \
@@ -154,10 +164,9 @@ echo "[bucket-init] local node ID: $local_id"
 # 2. Check if the local node is in the cluster. If YES, skip to
 #    step 3 (layout apply). If NO, this is first boot (or a
 #    post-nixos-rebuild fresh start): write bootstrap_peers to
-#    /etc/garage.toml, restart garage, and exit. The restart
-#    triggers a re-run of this service (via
-#    Requires=garage.service) which will see the cluster has 1
-#    node and proceed.
+#    /etc/garage.toml, restart garage, wait for the new
+#    garage.service to come up and self-bootstrap via the new
+#    bootstrap_peers, then fall through to step 3.
 if ! garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
   echo "[bucket-init] local node not in cluster; adding bootstrap_peers to /etc/garage.toml"
   if grep -q '^bootstrap_peers' /etc/garage.toml; then
@@ -169,12 +178,29 @@ if ! garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; 
   fi
   echo "[bucket-init] restarting garage.service to pick up bootstrap_peers"
   systemctl restart garage
-  # The restart will trigger a re-run of this service (via
-  # Requires=garage.service). Exit cleanly so the re-run can
-  # proceed (it will see the cluster has 1 node and apply the
-  # layout, import the key, and create the buckets).
-  echo "[bucket-init] garage restarted, exiting to allow re-run"
-  exit 0
+
+  # Wait for the new garage.service to come up and the local
+  # node to join its own cluster via the newly-added
+  # bootstrap_peers. The self-bootstrap (local node connecting
+  # to itself) is async, so we poll the admin API. We use
+  # PartOf= (not Requires=) for this service so the restart
+  # above doesn't cascade-kill this script — we want to keep
+  # running through the cluster-form wait and the rest of
+  # the script in the same invocation.
+  echo "[bucket-init] waiting for cluster to form after restart..."
+  formed=0
+  for _ in $(seq 1 30); do
+    if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
+      formed=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$formed" -ne 1 ]; then
+    echo "[bucket-init] cluster did not form within 60s after restart" >&2
+    exit 1
+  fi
+  echo "[bucket-init] cluster formed"
 fi
 
 echo "[bucket-init] local node in cluster, proceeding"

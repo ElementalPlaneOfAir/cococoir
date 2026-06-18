@@ -332,7 +332,19 @@ in {
                 description = "cococoir/garage bucket init: global S3 key, layout, buckets";
                 wantedBy = [ "multi-user.target" ];
                 after = [ "garage.service" ];
-                requires = [ "garage.service" ];
+                # Use PartOf=, NOT Requires=. PartOf propagates
+                # start/stop events but NOT restart events. The
+                # bucket-init script calls `systemctl restart
+                # garage` to pick up the runtime-added
+                # bootstrap_peers, and with Requires= that restart
+                # would cascade and kill the bucket-init service
+                # mid-execution (we observed this: the script got
+                # SIGTERM'd after restarting garage, then systemd
+                # re-tried it 5 times in 10s and hit the start
+                # limit). PartOf= breaks the cascade while still
+                # ensuring bucket-init stops when garage stops and
+                # starts after garage starts.
+                partOf = [ "garage.service" ];
                 # NixOS's systemd-lib adds a default `path` for all
                 # services (mkAfter, can't be overridden by an
                 # environment.PATH line — NixOS's default wins
