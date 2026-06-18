@@ -7,20 +7,40 @@
 # global S3 key, create buckets, and allow the global key on each.
 #
 # Order matters:
-#   0. wait for admin API + run `garage node connect <self-full-id>`
-#      so the local node is in the cluster view. garage 1.3.x does
-#      NOT self-bootstrap in the config (we can't put the local
-#      node's full `<hex-id>@<ip:port>` ID in `bootstrap_peers`
-#      at config time because the ID is derived from `rpc_secret`
-#      at first start).
-#   1. apply single-node layout (assigns this node to its zone).
-#   2. import the pre-generated global S3 key.
-#   3. create buckets + allow the global key on each.
+#   0. wait for admin API.
+#   1. get local node's full ID (no admin API needed; the ID is
+#      derived from rpc_secret on first start and stored in the
+#      metadata dir).
+#   2. check if local node is in the cluster. If NOT, this is
+#      first boot: write `bootstrap_peers = [<self-full-id>]`
+#      to /etc/garage.toml and `systemctl restart garage`. The
+#      restart triggers a re-run of this service (via
+#      Requires=garage.service); the re-run sees the cluster has
+#      1 node and proceeds to step 3.
+#   3. apply single-node layout (assigns this node to its zone).
+#   4. import the pre-generated global S3 key.
+#   5. create buckets + allow the global key on each.
 #
-# Skipping step 0 produces "Error: Internal error: 0 nodes match
-# '<self-addr>'" from `layout assign`. Skipping step 1 produces
-# "Could not reach quorum of 1 (sets=Some(1)). 0 of 0 request
-# succeeded" from `key import` / `bucket create`.
+# Why step 2's "edit /etc/garage.toml + restart" approach is
+# needed: garage 1.3.x requires `bootstrap_peers` to include the
+# local node's full `<hex-id>@<ip:port>` ID for the daemon to
+# self-bootstrap. We don't know the local node's ID at NixOS
+# config evaluation time (it's generated on first start), so the
+# cococoir config deliberately omits bootstrap_peers. We tried
+# `garage node connect <self-id>` from this script as an
+# alternative, but in practice the CLI returns exit 0 without
+# actually adding the local node to its own cluster view (the
+# "connected" message is misleading — the cluster stays at 0
+# nodes, and `layout assign` still fails with "0 nodes match").
+# The canonical fix per the garage docs is to put the full ID
+# in `bootstrap_peers` and restart. Note: this edit to
+# /etc/garage.toml is NOT persisted across `nixos-rebuild
+# switch` invocations (the cococoir config doesn't carry
+# bootstrap_peers), so this script will re-add it after every
+# rebuild. The local node's ID is stable (stored in the
+# metadata dir), so on the second+ runs the cluster rejoins
+# automatically from the stored cluster state and the script
+# skips step 2.
 #
 # Usage: bucket-init.sh \
 #   --global-dir <path> --address <rpc-addr> --zone <zone> \
@@ -120,19 +140,10 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-# 0b. Ensure the local node is in the cluster view. For single-node
-#     deployments, the daemon does not self-bootstrap (we don't set
-#     `bootstrap_peers` in the config, since we don't know the local
-#     node's full `<hex-id>@<ip:port>` ID at config time). The
-#     canonical way to bring an isolated node into the cluster is
-#     `garage node connect <self-full-id>` — this makes the local
-#     node connect to itself, exchange identities, and register in
-#     its own cluster view.
-#
-#     Get the local node's full ID first (this command does NOT
-#     require the admin API — it just reads the local config and
-#     prints the ID), then run `node connect` only if the local
-#     node isn't already in the layout.
+# 1. Get the local node's full ID. This command does NOT require
+#    the admin API — it just reads the local config and prints the
+#    ID (derived from rpc_secret on first start, then stored in
+#    the metadata dir; stable across restarts).
 local_id="$(garage -c /etc/garage.toml node id 2>/dev/null || true)"
 if [ -z "$local_id" ]; then
   echo "[bucket-init] could not get local node ID" >&2
@@ -140,30 +151,39 @@ if [ -z "$local_id" ]; then
 fi
 echo "[bucket-init] local node ID: $local_id"
 
-if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
-  echo "[bucket-init] local node already in cluster layout"
-else
-  echo "[bucket-init] local node not in cluster; running 'node connect' to self-register"
-  connected=0
-  for attempt in 1 2 3 4 5; do
-    if garage -c /etc/garage.toml node connect "$local_id" >/dev/null 2>&1; then
-      connected=1
-      break
-    fi
-    sleep 2
-  done
-  if [ "$connected" -ne 1 ]; then
-    echo "[bucket-init] 'node connect $local_id' failed after 5 attempts" >&2
-    exit 1
+# 2. Check if the local node is in the cluster. If YES, skip to
+#    step 3 (layout apply). If NO, this is first boot (or a
+#    post-nixos-rebuild fresh start): write bootstrap_peers to
+#    /etc/garage.toml, restart garage, and exit. The restart
+#    triggers a re-run of this service (via
+#    Requires=garage.service) which will see the cluster has 1
+#    node and proceed.
+if ! garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
+  echo "[bucket-init] local node not in cluster; adding bootstrap_peers to /etc/garage.toml"
+  if grep -q '^bootstrap_peers' /etc/garage.toml; then
+    sed -i "s|^bootstrap_peers = .*|bootstrap_peers = [\"$local_id\"]|" /etc/garage.toml
+  else
+    { printf 'bootstrap_peers = ["%s"]\n' "$local_id"; cat /etc/garage.toml; } \
+      > /etc/garage.toml.new
+    mv /etc/garage.toml.new /etc/garage.toml
   fi
-  echo "[bucket-init] local node connected to cluster"
+  echo "[bucket-init] restarting garage.service to pick up bootstrap_peers"
+  systemctl restart garage
+  # The restart will trigger a re-run of this service (via
+  # Requires=garage.service). Exit cleanly so the re-run can
+  # proceed (it will see the cluster has 1 node and apply the
+  # layout, import the key, and create the buckets).
+  echo "[bucket-init] garage restarted, exiting to allow re-run"
+  exit 0
 fi
 
-# 1. Apply single-node layout. Now that the local node is in the
-#    cluster view, `layout assign` will find it. `layout assign` and
-#    `layout apply --version 1` are idempotent at the protocol level
-#    (re-assigning the same node and applying the same layout version
-#    is a no-op), so we run them every time.
+echo "[bucket-init] local node in cluster, proceeding"
+
+# 3. Apply single-node layout. `layout assign` and `layout apply
+#    --version 1` are idempotent at the protocol level
+#    (re-assigning the same node and applying the same layout
+#    version is a no-op), so we run them every time. The layout
+#    gate on `layout show` is for cleaner log output.
 if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
   echo "[bucket-init] single-node layout already applied"
 else
