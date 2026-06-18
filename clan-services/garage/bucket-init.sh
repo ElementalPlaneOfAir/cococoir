@@ -7,11 +7,12 @@
 # global S3 key, create buckets, and allow the global key on each.
 #
 # Order matters:
-#   0. wait for admin API + run `garage node connect <self-addr>` so
-#      the local node is in the cluster view (the daemon's
-#      `bootstrap_peers = [self]` self-bootstrap is timing-dependent
-#      and has been observed to not complete by the time this
-#      oneshot runs).
+#   0. wait for admin API + run `garage node connect <self-full-id>`
+#      so the local node is in the cluster view. garage 1.3.x does
+#      NOT self-bootstrap in the config (we can't put the local
+#      node's full `<hex-id>@<ip:port>` ID in `bootstrap_peers`
+#      at config time because the ID is derived from `rpc_secret`
+#      at first start).
 #   1. apply single-node layout (assigns this node to its zone).
 #   2. import the pre-generated global S3 key.
 #   3. create buckets + allow the global key on each.
@@ -103,12 +104,12 @@ SECRET="$(cat "$CLAN_VAR_S3_KEY_DIR/secret-access-key")"
 # 0. Wait for the garage admin API to be ready. The systemd unit
 #    `After=garage.service` only guarantees the daemon process is
 #    up, not that the admin socket on 127.0.0.1:3903 is accepting
-#    connections. Poll `garage node list` (a cheap, idempotent call)
-#    until it succeeds or we time out.
+#    connections. Poll `garage status` (a cheap, idempotent admin
+#    API call) until it succeeds or we time out.
 echo "[bucket-init] waiting for garage admin API..."
 ready=0
 for _ in $(seq 1 30); do
-  if garage -c /etc/garage.toml node list >/dev/null 2>&1; then
+  if garage -c /etc/garage.toml status >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -120,29 +121,39 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 # 0b. Ensure the local node is in the cluster view. For single-node
-#     deployments, the daemon's self-bootstrap via `bootstrap_peers =
-#     [me.address]` is timing-dependent and has been observed to
-#     not complete by the time this oneshot runs (symptom: subsequent
-#     `layout assign` returns "0 nodes match '<self-addr>'").
-#     `garage node connect <self-addr>` is the authoritative way to
-#     make the local node join its own cluster — it's idempotent
-#     (re-running on an already-connected node is a no-op) and works
-#     regardless of `bootstrap_peers` configuration. Skip if the
-#     node is already known.
-if garage -c /etc/garage.toml node list 2>/dev/null | grep -qF "$ADDRESS"; then
-  echo "[bucket-init] local node already in cluster"
+#     deployments, the daemon does not self-bootstrap (we don't set
+#     `bootstrap_peers` in the config, since we don't know the local
+#     node's full `<hex-id>@<ip:port>` ID at config time). The
+#     canonical way to bring an isolated node into the cluster is
+#     `garage node connect <self-full-id>` — this makes the local
+#     node connect to itself, exchange identities, and register in
+#     its own cluster view.
+#
+#     Get the local node's full ID first (this command does NOT
+#     require the admin API — it just reads the local config and
+#     prints the ID), then run `node connect` only if the local
+#     node isn't already in the layout.
+local_id="$(garage -c /etc/garage.toml node id 2>/dev/null || true)"
+if [ -z "$local_id" ]; then
+  echo "[bucket-init] could not get local node ID" >&2
+  exit 1
+fi
+echo "[bucket-init] local node ID: $local_id"
+
+if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
+  echo "[bucket-init] local node already in cluster layout"
 else
   echo "[bucket-init] local node not in cluster; running 'node connect' to self-register"
   connected=0
   for attempt in 1 2 3 4 5; do
-    if garage -c /etc/garage.toml node connect "$ADDRESS" >/dev/null 2>&1; then
+    if garage -c /etc/garage.toml node connect "$local_id" >/dev/null 2>&1; then
       connected=1
       break
     fi
     sleep 2
   done
   if [ "$connected" -ne 1 ]; then
-    echo "[bucket-init] 'node connect $ADDRESS' failed after 5 attempts" >&2
+    echo "[bucket-init] 'node connect $local_id' failed after 5 attempts" >&2
     exit 1
   fi
   echo "[bucket-init] local node connected to cluster"
@@ -152,18 +163,14 @@ fi
 #    cluster view, `layout assign` will find it. `layout assign` and
 #    `layout apply --version 1` are idempotent at the protocol level
 #    (re-assigning the same node and applying the same layout version
-#    is a no-op), so we run them every time. The previous version of
-#    this script gated on `garage layout show`, but that's been
-#    observed to return success-with-empty-result on a fresh cluster,
-#    causing the gated branch to be skipped and `layout assign` to
-#    fail with "0 nodes match" before node connect was added.
-if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$ADDRESS"; then
+#    is a no-op), so we run them every time.
+if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
   echo "[bucket-init] single-node layout already applied"
 else
   garage -c /etc/garage.toml layout assign \
     --capacity "$CAPACITY" \
     -z "$ZONE" \
-    "$ADDRESS" >/dev/null
+    "$local_id" >/dev/null
   garage -c /etc/garage.toml layout apply --version 1 >/dev/null
   echo "[bucket-init] applied single-node layout"
 fi

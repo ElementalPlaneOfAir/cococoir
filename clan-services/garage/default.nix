@@ -273,23 +273,33 @@ in {
                 metadata_dir = metaDir;
                 rpc_bind_addr = "0.0.0.0:${toString rpcPort}";
                 rpc_public_addr = me.address;
-                # `bootstrap_peers` is REQUIRED for single-node clusters.
-                # Without it, the local node enters the
-                # "Doing a bootstrap/discovery step (not_configured)"
-                # loop and never adds itself to its own cluster view.
-                # `garage layout assign` then fails with
-                # "0 nodes match '<self-addr>'". Setting the peer
-                # list to `[me.address]` makes the local node connect
-                # to itself on startup, exchange identities, and
-                # register the local node in its own cluster. For
-                # multi-node, this same option is used to list the
-                # OTHER nodes' rpc_public_addrs (the role interface
-                # documents "peers are auto-derived from other
-                # machines' `address` settings" for that case).
-                bootstrap_peers = [ me.address ];
-                s3_api.bind_addr = "127.0.0.1:${toString s3ApiPort}";
+                # NOTE: do NOT set `bootstrap_peers` here. For
+                # single-node, the local node has no peers to
+                # bootstrap from at config time (we don't know the
+                # local node's full ID, which is `<hex-id>@<ip:port>`,
+                # until the daemon generates it from rpc_secret).
+                # Setting bootstrap_peers = ["<ip:port>"] is silently
+                # rejected by garage with "Unable to parse and/or
+                # resolve peer hostname" (garage 1.3.x requires the
+                # full `<hex-id>@<ip:port>` format). For multi-node,
+                # the per-instance role interface is responsible for
+                # deriving the OTHER nodes' full IDs and adding them
+                # to bootstrap_peers (NOT YET IMPLEMENTED — this
+                # branch only handles single-node).
+                #
+                # Instead, `bucket-init.sh` calls
+                # `garage node connect <self-full-id>` after the
+                # daemon is up, to bring the local node into its own
+                # cluster view. This is the canonical way garage
+                # recommends bootstrapping an isolated node.
+                #
+                # Also note: the sub-tables in garage 1.3.x use
+                # `api_bind_addr` (NOT `bind_addr`). Using `bind_addr`
+                # silently doesn't bind the port — the s3_api and
+                # admin sections need `api_bind_addr`.
+                s3_api.api_bind_addr = "127.0.0.1:${toString s3ApiPort}";
                 s3_api.s3_region = region;
-                admin.bind_addr = "127.0.0.1:${toString adminPort}";
+                admin.api_bind_addr = "127.0.0.1:${toString adminPort}";
                 s3_api.root_domain = "s3.${region}.local";
               };
             };
