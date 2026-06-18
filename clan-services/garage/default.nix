@@ -397,14 +397,32 @@ in {
                 mode = "0440";
               };
               runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
-              # Garage's S3 access key ID is `GK` + 12 hex-encoded
-              # bytes = 24 hex chars + 2 = 26 chars total (strict
-              # server-side validation: "starts with GK, followed by
-              # 12 hex-encoded bytes"). 20 bytes (40 hex chars) is
-              # rejected at the admin API with "Invalid key format".
+              # Garage's S3 access key format is strict on BOTH halves:
+              #
+              #   access key ID: `GK` + 12 hex-encoded bytes
+              #                  = 24 hex chars + 2 = 26 chars total
+              #                  (server validates: "starts with GK,
+              #                  followed by 12 hex-encoded bytes")
+              #
+              #   secret access key: 40 chars of standard base64
+              #                       (= 30 raw bytes, 10 groups of
+              #                       3 bytes / 4 chars)
+              #                  (server validates: "the specified
+              #                  secret key is not a valid Garage
+              #                  secret key")
+              #
+              # Both are validated at `garage key import` time. If
+              # either is wrong the import fails and the script exits
+              # non-zero. The 32-bytes (44 chars) / 20-bytes (40 hex
+              # chars) defaults that feel "more random" both get
+              # rejected — Garage is specifically looking for 12/30.
+              #
+              # If you change either size, also rotate
+              # `clan vars regenerate garage-global-s3-key` so the
+              # on-disk file is regenerated.
               script = ''
                 printf 'GK%s' "$(openssl rand -hex 12)" > "$out/access-key-id"
-                openssl rand -base64 -out "$out/secret-access-key" 32
+                openssl rand -base64 -out "$out/secret-access-key" 30
               '';
             };
             clan.core.vars.generators.garage-admin-token = {
