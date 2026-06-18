@@ -216,45 +216,7 @@ in {
                   ];
                 };
               };
-            }
-            // (lib.mapAttrs' (_: m: {
-              name = "${lib.replaceStrings [ "/" ] [ "-" ] m.mountPoint}.mount";
-              value = {
-                # Wants, not Requires: the mount should wait for
-                # bucket-init (so the bucket + key exist before FUSE
-                # connects) but must not block local-fs.target if
-                # bucket-init is delayed. local-fs.target transitively
-                # pulls garage.service (via Requires= on
-                # garage-bucket-init), which lives in multi-user.target
-                # — a hard Requires on the FUSE mount would create a
-                # cycle that drops the system to emergency mode when
-                # garage is slow to start. With Wants, the mount is
-                # attempted after bucket-init comes up; if it fails
-                # (e.g. garage not running), the nofail mount option
-                # keeps boot moving.
-                #
-                # If the mount point is a subdirectory of another
-                # declared fileSystem (e.g. /media/entertain is under
-                # /media), we also After= that parent mount so the
-                # parent comes up first. Without this, the FUSE mount
-                # races the parent and fails to find its mount point
-                # directory at boot. The parent is a normal mount
-                # (btrfs / ext4 / etc.), so adding After= to it
-                # doesn't introduce a multi-user.target cycle.
-                #
-                # NixOS's systemd-lib adds a default `path` for all
-                # services (mkAfter, can't be overridden by an
-                # environment.PATH line — NixOS's default wins
-                # silently). Add our bins to NixOS's `path` list
-                # with mkAfter so they get appended to the rendered
-                # PATH=… line.
-                path = lib.mkAfter [ pkgs.geesefs ];
-                after =
-                  [ "garage-bucket-init.service" ]
-                  ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
-                wants = [ "garage-bucket-init.service" ];
-              };
-            }) config.cococoir.storage.mounts);
+            };
 
             # Clan vars: rpc-secret and the global S3 key are shared
             # (cluster-wide); admin and metrics tokens are per-node.
@@ -269,8 +231,22 @@ in {
             };
             clan.core.vars.generators.garage-global-s3-key = {
               share = true;
-              files.access-key-id = { };
-              files.secret-access-key = { };
+              # The bucket-init service runs as the static `garage` user
+              # and needs to read these files. Set the generator output
+              # to be owned by garage:garage with mode 0440 so the
+              # service can read them without further LoadCredential
+              # gymnastics. Mode 0440 (not 0444) is intentional: the
+              # secret access key should still be group-restricted.
+              files.access-key-id = {
+                owner = "garage";
+                group = "garage";
+                mode = "0440";
+              };
+              files.secret-access-key = {
+                owner = "garage";
+                group = "garage";
+                mode = "0440";
+              };
               runtimeInputs = [ pkgs.coreutils pkgs.openssl ];
               script = ''
                 printf 'GK%s' "$(openssl rand -hex 20)" > "$out/access-key-id"
@@ -288,34 +264,49 @@ in {
               script = "openssl rand -base64 -out \"$out/metrics-token\" 32";
             };
 
-            # Make sure the geesefs binary is on PATH for the FUSE mount.
-            environment.systemPackages = [ pkgs.geesefs ];
-
-            # FUSE mounts: declarative fileSystems, NixOS generates the
-            # mount units. The `nofail` option is critical for boot
-            # safety: the mount unit is in local-fs.target, which
-            # transitively depends on garage.service (via the
-            # garage-bucket-init → garage chain). If garage is slow or
-            # broken at boot, the FUSE mount would block local-fs.target
-            # and drop the system to emergency mode. With `nofail`, the
-            # mount is best-effort at boot and is re-attempted on
-            # later activations (e.g. after a manual
-            # `systemctl start garage`).
-            fileSystems = lib.mapAttrs' (_: m: {
-              name = m.mountPoint;
-              value = {
-                device = m.bucket;
-                fsType = "fuse.geesefs";
-                options = [
-                  "nofail"
-                  "allow_other"
-                  "default_permissions"
-                  "use_path_request_style"
-                  "url=http://127.0.0.1:${toString s3ApiPort}"
-                  "region=${region}"
-                ] ++ lib.optional m.readOnly "ro";
-              };
-            }) config.cococoir.storage.mounts;
+            # FUSE mounts: use systemd.mounts (not fileSystems /
+            # systemd-fstab-generator) so we control the rendered unit
+            # file directly. Two reasons:
+            #
+            # 1. PATH for the FUSE helper. systemd-fstab-generator
+            #    creates bare mount units with no Environment=, so the
+            #    `mount -t fuse.geesefs` invocation runs `mount.fuse3`
+            #    with an empty PATH, which can't find `geesefs`.
+            #    systemd.mounts units go through NixOS's systemd-lib
+            #    which renders our `unitConfig.Environment` into the
+            #    [Unit] section.
+            #
+            # 2. Ordering. We need Wants=/After= on
+            #    garage-bucket-init (so the bucket + key exist before
+            #    FUSE connects) and possibly After= on a parent mount
+            #    (e.g. /media for /media/entertain). Wants, not
+            #    Requires: a hard Requires creates a cycle with
+            #    local-fs.target → garage-bucket-init → garage
+            #    (multi-user.target) that drops the system to
+            #    emergency mode when garage is slow to start. With
+            #    Wants + the nofail mount option, the mount is
+            #    best-effort at boot and is re-attempted on later
+            #    activations.
+            systemd.mounts = map (m: {
+              what = m.bucket;
+              where = m.mountPoint;
+              type = "fuse.geesefs";
+              options = lib.concatStringsSep "," ([
+                "nofail"
+                "allow_other"
+                "default_permissions"
+                "use_path_request_style"
+                "url=http://127.0.0.1:${toString s3ApiPort}"
+                "region=${region}"
+              ] ++ lib.optional m.readOnly "ro");
+              wantedBy = [ "local-fs.target" ];
+              before = [ "local-fs.target" ];
+              after =
+                [ "garage-bucket-init.service" ]
+                ++ lib.optional (hasParentMount config.fileSystems m.mountPoint) "${parentMountUnit m.mountPoint}";
+              wants = [ "garage-bucket-init.service" ];
+              unitConfig.Environment = "PATH=${lib.makeBinPath [ pkgs.geesefs pkgs.bash ]}";
+            }) (lib.attrValues config.cococoir.storage.mounts);
 
             # Derived config: what native-S3 and FUSE consumers read.
             cococoir.storage.derived.gatewayAddress = "127.0.0.1:${toString s3ApiPort}";
