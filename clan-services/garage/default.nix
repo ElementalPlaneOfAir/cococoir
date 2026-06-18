@@ -355,8 +355,19 @@ in {
                 serviceConfig = {
                   Type = "oneshot";
                   RemainAfterExit = true;
-                  User = "garage";
-                  Group = "garage";
+                  # Run as ROOT (no User= / Group=) so the script can
+                  # write bootstrap_peers to /etc/garage.toml and run
+                  # `systemctl restart garage`. /etc/ is owned by
+                  # root and the bucket-init script needs to replace
+                  # /etc/garage.toml (a symlink to a nix-store path
+                  # which is read-only) with a writable copy that
+                  # includes the locally-discovered full node ID in
+                  # `bootstrap_peers`. The `garage` CLI authentication
+                  # still works because GARAGE_RPC_SECRET_FILE is
+                  # supplied per-service via LoadCredential (not
+                  # per-user) and the admin API on 127.0.0.1:3903 is
+                  # bound to localhost regardless of which user calls
+                  # it.
                   WorkingDirectory = metaDir;
                   # Flag-based args: `--global-dir`, `--address`,
                   # `--zone`, `--capacity` for the named per-instance
