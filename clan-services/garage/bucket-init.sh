@@ -247,9 +247,20 @@ echo "[bucket-init] local node in cluster, proceeding"
 #    --version 1` are idempotent at the protocol level
 #    (re-assigning the same node and applying the same layout
 #    version is a no-op), so we run them every time. The gate
-#    on `garage status` (looking for "NO ROLE ASSIGNED" in
-#    the healthy-nodes table) is for cleaner log output and
-#    uses an ID-format-independent criterion.
+#    on `garage layout show` (looking at the cluster layout
+#    version) is for cleaner log output.
+#
+#    IMPORTANT: use `layout show` (NOT `status` "NO ROLE
+#    ASSIGNED") for the "already applied" check. `status`
+#    shows STAGED roles in the healthy-nodes table, but
+#    staged roles don't make the local node a storage node
+#    yet — `key import` (a write op) would fail with
+#    "Could not reach quorum of 1" because there are 0
+#    storage nodes. The "applied vs staged" distinction
+#    only shows up in `layout show`'s "Current cluster
+#    layout version" line (version 0 = no layout applied,
+#    version >= 1 = layout committed). We grep for
+#    `version: [1-9]` to detect an applied layout.
 #
 #    IMPORTANT: `garage layout assign` expects the SHORT hex
 #    ID (e.g. `673e85...`), NOT the full `<hex>@<ip:port>`.
@@ -261,7 +272,9 @@ echo "[bucket-init] local node in cluster, proceeding"
 #    ID column in `status` is truncated to 16 hex chars for
 #    display. The cluster's authoritative node key is the
 #    full 64-char short hex.)
-if garage -c /etc/garage.toml status 2>/dev/null | grep -qF "NO ROLE ASSIGNED"; then
+if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qE 'layout version: [1-9]'; then
+  echo "[bucket-init] single-node layout already applied"
+else
   local_id_short="${local_id%@*}"
   garage -c /etc/garage.toml layout assign \
     --capacity "$CAPACITY" \
@@ -269,8 +282,6 @@ if garage -c /etc/garage.toml status 2>/dev/null | grep -qF "NO ROLE ASSIGNED"; 
     "$local_id_short" >/dev/null
   garage -c /etc/garage.toml layout apply --version 1 >/dev/null
   echo "[bucket-init] applied single-node layout"
-else
-  echo "[bucket-init] single-node layout already applied"
 fi
 
 # 4. Import the pre-generated global S3 key. Now that the cluster
