@@ -16,8 +16,14 @@
 #      first boot: write `bootstrap_peers = [<self-full-id>]`
 #      to /etc/garage.toml, `systemctl restart garage`, and
 #      wait for the local node to self-bootstrap via the new
-#      bootstrap_peers (poll `garage layout show` for up to
-#      60s). Then fall through to step 3.
+#      bootstrap_peers. We poll `garage status` (not `layout
+#      show`) for the local node's SHORT hex ID, because the
+#      cluster has formed when the node is in the HEALTHY
+#      NODES list (it shows up there with "NO ROLE ASSIGNED"
+#      before we apply the layout), whereas `layout show` only
+#      lists nodes that have a role and would return "No nodes
+#      currently have a role" forever. Then fall through to
+#      step 3.
 #   3. apply single-node layout (assigns this node to its zone).
 #   4. import the pre-generated global S3 key.
 #   5. create buckets + allow the global key on each.
@@ -191,15 +197,25 @@ if ! garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; 
   # Wait for the new garage.service to come up and the local
   # node to join its own cluster via the newly-added
   # bootstrap_peers. The self-bootstrap (local node connecting
-  # to itself) is async, so we poll the admin API. We use
-  # `after =` (not `partOf` or `requires`) for this service so
-  # the restart above doesn't cascade-kill this script — we
-  # want to keep running through the cluster-form wait and the
-  # rest of the script in the same invocation.
+  # to itself) is async, so we poll the admin API.
+  #
+  # IMPORTANT: use `garage status` and grep for the SHORT hex
+  # ID (the part before `@`), NOT `garage layout show` and
+  # grep for the full `<hex>@<ip:port>`. The cluster HAS
+  # formed when the local node shows up in `status` (HEALTHY
+  # NODES section), but `layout show` only lists nodes that
+  # have a role in the current layout, and the local node has
+  # no role until we apply the layout in step 3 — so
+  # `layout show` would return "No nodes currently have a
+  # role in the cluster" forever, and the grep would never
+  # match. `status` lists the node as "NO ROLE ASSIGNED"
+  # but it's still a cluster member, and that's what we
+  # need to detect.
   echo "[bucket-init] waiting for cluster to form after restart..."
+  local_id_short="${local_id%@*}"
   formed=0
   for _ in $(seq 1 30); do
-    if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
+    if garage -c /etc/garage.toml status 2>/dev/null | grep -qF "$local_id_short"; then
       formed=1
       break
     fi
@@ -218,7 +234,10 @@ echo "[bucket-init] local node in cluster, proceeding"
 #    --version 1` are idempotent at the protocol level
 #    (re-assigning the same node and applying the same layout
 #    version is a no-op), so we run them every time. The layout
-#    gate on `layout show` is for cleaner log output.
+#    gate on `layout show` (for the full ID this time, since
+#    after `layout apply` the node DOES appear in `layout show`
+#    with its full `<hex>@<ip:port>` ID) is for cleaner log
+#    output.
 if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
   echo "[bucket-init] single-node layout already applied"
 else
