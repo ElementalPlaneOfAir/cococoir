@@ -246,20 +246,31 @@ echo "[bucket-init] local node in cluster, proceeding"
 # 3. Apply single-node layout. `layout assign` and `layout apply
 #    --version 1` are idempotent at the protocol level
 #    (re-assigning the same node and applying the same layout
-#    version is a no-op), so we run them every time. The layout
-#    gate on `layout show` (for the full ID this time, since
-#    after `layout apply` the node DOES appear in `layout show`
-#    with its full `<hex>@<ip:port>` ID) is for cleaner log
-#    output.
-if garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; then
-  echo "[bucket-init] single-node layout already applied"
-else
+#    version is a no-op), so we run them every time. The gate
+#    on `garage status` (looking for "NO ROLE ASSIGNED" in
+#    the healthy-nodes table) is for cleaner log output and
+#    uses an ID-format-independent criterion.
+#
+#    IMPORTANT: `garage layout assign` expects the SHORT hex
+#    ID (e.g. `673e85...`), NOT the full `<hex>@<ip:port>`.
+#    Passing the full ID gives "Internal error: 0 nodes
+#    match '<full-id>'" because the cluster's internal
+#    node lookup is by short hex. (The full ID is used in
+#    OTHER contexts: `garage node connect`, `bootstrap_peers`
+#    config, the `garage status` Address column — but the
+#    ID column in `status` is truncated to 16 hex chars for
+#    display. The cluster's authoritative node key is the
+#    full 64-char short hex.)
+if garage -c /etc/garage.toml status 2>/dev/null | grep -qF "NO ROLE ASSIGNED"; then
+  local_id_short="${local_id%@*}"
   garage -c /etc/garage.toml layout assign \
     --capacity "$CAPACITY" \
     -z "$ZONE" \
-    "$local_id" >/dev/null
+    "$local_id_short" >/dev/null
   garage -c /etc/garage.toml layout apply --version 1 >/dev/null
   echo "[bucket-init] applied single-node layout"
+else
+  echo "[bucket-init] single-node layout already applied"
 fi
 
 # 4. Import the pre-generated global S3 key. Now that the cluster
