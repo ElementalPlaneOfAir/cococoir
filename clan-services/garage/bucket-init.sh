@@ -17,13 +17,15 @@
 #      to /etc/garage.toml, `systemctl restart garage`, and
 #      wait for the local node to self-bootstrap via the new
 #      bootstrap_peers. We poll `garage status` (not `layout
-#      show`) for the local node's SHORT hex ID, because the
-#      cluster has formed when the node is in the HEALTHY
-#      NODES list (it shows up there with "NO ROLE ASSIGNED"
-#      before we apply the layout), whereas `layout show` only
-#      lists nodes that have a role and would return "No nodes
-#      currently have a role" forever. Then fall through to
-#      step 3.
+#      show`) for `$ADDRESS` (the rpc_public_addr), because
+#      `status` lists the local node as "HEALTHY" with "NO
+#      ROLE ASSIGNED" once it's a cluster member (which is
+#      what we need to detect), whereas `layout show` only
+#      lists nodes that have a role and would return "No
+#      nodes currently have a role" forever. The Address
+#      column in `status` is shown in full (not truncated
+#      like the ID column), so it's a stable grep target.
+#      Then fall through to step 3.
 #   3. apply single-node layout (assigns this node to its zone).
 #   4. import the pre-generated global S3 key.
 #   5. create buckets + allow the global key on each.
@@ -199,23 +201,34 @@ if ! garage -c /etc/garage.toml layout show 2>/dev/null | grep -qF "$local_id"; 
   # bootstrap_peers. The self-bootstrap (local node connecting
   # to itself) is async, so we poll the admin API.
   #
-  # IMPORTANT: use `garage status` and grep for the SHORT hex
-  # ID (the part before `@`), NOT `garage layout show` and
-  # grep for the full `<hex>@<ip:port>`. The cluster HAS
-  # formed when the local node shows up in `status` (HEALTHY
-  # NODES section), but `layout show` only lists nodes that
-  # have a role in the current layout, and the local node has
-  # no role until we apply the layout in step 3 — so
-  # `layout show` would return "No nodes currently have a
-  # role in the cluster" forever, and the grep would never
-  # match. `status` lists the node as "NO ROLE ASSIGNED"
-  # but it's still a cluster member, and that's what we
-  # need to detect.
+  # IMPORTANT: use `garage status` (NOT `garage layout show`),
+  # and grep for `$ADDRESS` (the rpc_public_addr, e.g.
+  # `192.168.0.7:3901`), NOT the local node's hex ID.
+  #
+  # Two reasons for `status` over `layout show`:
+  #   - `layout show` only lists nodes that have a role in the
+  #     current layout. The local node has no role until we
+  #     apply the layout in step 3, so `layout show` returns
+  #     "No nodes currently have a role" forever, and the
+  #     grep never matches.
+  #   - `status` lists the local node as "HEALTHY" (with
+  #     "NO ROLE ASSIGNED") as soon as it's a cluster member.
+  #     That's exactly the state we want to detect: the
+  #     cluster has formed, the node is a member, but the
+  #     layout hasn't been applied yet (that's step 3).
+  #
+  # And for `$ADDRESS` over the hex ID: the ID column in
+  # `status` is TRUNCATED to 16 hex chars (e.g.
+  # `673e859031db3a24`), but the full short ID is 64 hex
+  # chars. Grepping for the 64-char string would never match
+  # the 16-char cell. The Address column shows the FULL
+  # `ip:port` (not truncated), and it's unique to this node.
+  # We already have it in `$ADDRESS` from the `--address`
+  # argument.
   echo "[bucket-init] waiting for cluster to form after restart..."
-  local_id_short="${local_id%@*}"
   formed=0
   for _ in $(seq 1 30); do
-    if garage -c /etc/garage.toml status 2>/dev/null | grep -qF "$local_id_short"; then
+    if garage -c /etc/garage.toml status 2>/dev/null | grep -qF "$ADDRESS"; then
       formed=1
       break
     fi
