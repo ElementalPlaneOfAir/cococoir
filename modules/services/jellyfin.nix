@@ -53,7 +53,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    cococoir.storage.buckets.${cfg.bucket} = { };
+    cococoir.storage.buckets.${cfg.bucket} = {};
     cococoir.storage.mounts.${cfg.bucket} = {
       bucket = cfg.bucket;
       mountPoint = defaultMount;
@@ -61,16 +61,18 @@ in {
 
     services.jellyfin = {
       enable = true;
-      openFirewall = false;
+      openFirewall = true;
       user = "jellyfin";
     };
+
+    networking.firewall.allowedTCPPorts = [8096];
 
     # The Jellyfin library lives on a FUSE mount managed by the
     # cococoir/garage clan-service (`cococoir-fuse-<bucket>.service`).
     # Wait for it to be active before starting Jellyfin — without
     # this, Jellyfin may try to read its library before the FUSE
     # mount is up, on a freshly-initialized cluster (first boot).
-    systemd.services.jellyfin.after = [ "cococoir-fuse-${cfg.bucket}.service" ];
+    systemd.services.jellyfin.after = ["cococoir-fuse-${cfg.bucket}.service"];
 
     users.groups.jellyfin = {};
     users.users.jellyfin = {
