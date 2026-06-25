@@ -26,7 +26,8 @@ It is consumed as a flake input by downstream deployment repos (e.g. `amon-sul`)
 | File | Purpose |
 |------|---------|
 | `modules/core.nix` | Defines `cococoir.domain`, `cococoir.adminUsers`, and `cococoir.users`. Handles user creation with SSH keys and wheel group membership. |
-| `modules/auth.nix` | Re-exports clan-core secret generators that cococoir services need (e.g. Vaultwarden admin token, autobrr session). |
+| `modules/auth.nix` | `cococoir.adminAuth` (basicauth via Caddy) and the `cococoir.lib.cococoir.withAuth` Caddy vhost helper. Used by services that don't have native OIDC. |
+| `modules/auth/pocketid.nix` | **PocketID OIDC provider** — base-layer auth. Always-on, no `enable` toggle. Wraps nixpkgs `services.pocket-id` and adds a oneshot (`pocket-id-secret-init.service`) that generates `/var/lib/pocket-id/secrets.env` (ENCRYPTION_KEY + STATIC_API_KEY) on first boot. |
 | `modules/base.nix` | Baseline system settings: fish shell, OpenSSH (no passwords), Denver timezone, `net.ipv4.ip_unprivileged_port_start = 80`, and flake-enabled Nix. |
 | `modules/networking/caddy.nix` | Enables Caddy and opens UDP 443 for HTTP/3 (QUIC). |
 | `modules/storage.nix` | Top-level `cococoir.storage.*` option tree: cluster layout, node identity, bucket definitions, FUSE mounts, and the derived public view. |
@@ -34,6 +35,26 @@ It is consumed as a flake input by downstream deployment repos (e.g. `amon-sul`)
 | `modules/storage/bucket.nix` | `garage-bucket-init` oneshot: generates/reads the cluster-wide global key, iterates enabled buckets, applies per-bucket RF (with clamp warning), allows the global key per bucket, sets quotas and website hosting. |
 | `modules/storage/fuse.nix` | Per-mount systemd service + mount unit pair using `geesefs` to expose S3 buckets as local filesystems. |
 | `modules/services/custom.nix` | Generic reverse-proxy for arbitrary systemd services. Does **not** enable any upstream service; only creates Caddy virtual hosts based on `cococoir.services.custom.<name>` entries. |
+
+## Base-Layer Auth (PocketID)
+
+PocketID is the OIDC provider for the entire cococoir stack. It is **always-on base infrastructure** (like `cococoir/garage`) — never opt-in, never behind a `services.pocket-id.enable` toggle. The user configures it under `cococoir.auth.pocketid.*`:
+
+```nix
+cococoir.auth.pocketid = {
+  domain = "auth.example.com";   # required
+  public = true;                 # default true; Caddy reverse-proxies
+  signupMode = "disabled";       # disabled / withToken / open
+};
+```
+
+**Why always-on**: every cococoir service that supports OIDC (Jellyfin, Jellyseerr, autobrr, Synapse, Nextcloud) and every service that uses Caddy forward_auth (qBittorrent) eventually needs an OIDC provider. Shipping one is a precondition for the unified auth story.
+
+**Secret model**: PocketID is single-instance (not a cluster), so the secrets (`ENCRYPTION_KEY`, `STATIC_API_KEY`) are stored plaintext at `/var/lib/pocket-id/secrets.env` (mode 0640, owned by `pocket-id:pocket-id`). Disk encryption (LUKS) protects them at rest — same model PocketID itself uses in its docker-compose examples. `pocket-id-secret-init.service` generates this file idempotently on first boot.
+
+**Per-service OIDC wiring (Phase 2)**: each service module will expose `cococoir.services.<name>.oidc = { enable = true; }`. A `pocket-id-oidc-init.service` oneshot (deferred) uses the STATIC_API_KEY to call PocketID's API and create an OIDC client per service, writing client_id + client_secret to per-service runtime files that the service modules consume.
+
+**Caddy forward_auth for non-native services (Phase 2)**: qBittorrent and (optionally) CryptPad will be gated by Caddy's `caddy-security` plugin, using PocketID as the OIDC provider. This requires a custom Caddy build (one-time).
 
 ### Service Modules
 
