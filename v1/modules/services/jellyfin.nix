@@ -91,4 +91,4 @@ in {
         reverse_proxy localhost:8096
       '';
   };
-}
+
