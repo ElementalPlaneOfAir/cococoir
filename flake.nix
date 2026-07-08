@@ -21,8 +21,19 @@
         ];
       };
 
-      perSystem = {pkgs, system, ...}: {
-        checks.${system} = (import ./nix/tests {inherit pkgs;}).placeholder;
+      # Test machine configurations. The nixosConfiguration output is
+      # what makes the manual VM loop work:
+      #   nix build .#nixosConfigurations.test-single-tenant.config.system.build.vm
+      #   ./result/bin/run-test-single-tenant-vm
+      flake.nixosConfigurations.test-single-tenant = inputs.nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          ./nixosConfigurations/test-single-tenant.nix
+        ];
+      };
+
+      perSystem = {pkgs, ...}: {
+        checks = import ./nix/tests {inherit pkgs;};
       };
     };
 }

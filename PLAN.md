@@ -84,13 +84,14 @@ cococoir.tenant.alice.services.cryptpad.domain = "cryptpad.${cfg.domain}";
 ```
 
 The customer can:
-- **Turn off** services they don't want (`cococoir.tenant.alice.services.qbittorrent.enable = false`)
-- **Override** individual subdomains if they want non-standard naming
+- (nothing yet — see ADR-011 and ADR-012)
 
 The customer **cannot**:
 - Add their own services (cococoir decides what's available)
 - Configure service internals (cococoir picks ports, buckets, settings)
 - Bring their own domain in v0 (deferred to v1; v0 is hosted-only)
+- Override derived values like subdomains or bucket names (cococoir owns the namespace)
+- Opt out of individual services (deferred — see ADR-012)
 
 ### Components in v0
 
@@ -379,6 +380,42 @@ These are the architectural decisions we've made. Each is final unless explicitl
 **Decision:** `cococoir/v1/` for old code, `cococoir/` (root) for v2. amon-sul updates its flake input to `?dir=v1`.
 **Consequence:** One repo, two trees. v2 is the "intended future" (at root); v1 is the "current reality" (in subdir). Migration is one URL change.
 **Revisit when:** v2 is ready to migrate; v1's `?dir=v1` URL gets dropped from amon-sul.
+
+### ADR-010: v2 does not depend on clan-core
+
+**Context:** v1 uses clan-core for secret generators, service modules, and inventory. Clan is a heavy dependency with its own concepts (vars, machines, services) and a different release cadence than nixpkgs. v2 is a rewrite; the question is whether to keep clan or shed it.
+**Decision:** v2's flake does not include `clan-core` as an input. Secrets come from sops-nix (or whatever the deployer chooses) and are passed as `path` values into cococoir options. Service modules are plain NixOS modules; no `clan.service` class.
+**Consequence:** Lighter dependency tree. Easier to reason about. We lose clan's per-machine secret generation; sops-nix covers the use case. v1 keeps clan (it works); v2 doesn't take the dependency. If we later want clan's inventory for fleet management, we evaluate that as a separate decision.
+**Revisit when:** A real fleet management need appears that sops + NixOS modules don't cover (probably v1+).
+
+### ADR-011: cococoir picks, customer accepts
+
+**Context:** Every configuration option exposed to the customer is a test surface, a documentation burden, and a way to misconfigure. The 3-input model (ADR-008) sets the floor, but a natural temptation is to add "useful" knobs (per-service enable, subdomain overrides, bucket names, port choices).
+**Decision:** Cococoir owns everything except the 3 inputs. All subdomains, bucket names, ports, FUSE mountpoints, OIDC client names, etc. are cococoir's choices, declared `readOnly = true` so the customer literally cannot set them. The customer config is the 3 inputs and nothing more (modulo per-service opt-out if/when ADR-012 says so).
+**Consequence:** A non-technical customer with a 5-minute debrief can fill out the customer config. Test surface is bounded. Documentation is small. Onboarding is "fill in 3 fields."
+**Revisit when:** A real, repeated customer pattern demands a knob (not a one-off). Bring data, not a hypothetical.
+
+### ADR-012: options on request
+
+**Context:** ADR-011 sets the rule for derived values. The next question is about per-service behavior: should the customer be able to opt out of a service (e.g. "alice doesn't want cryptpad")? Should they be able to enable a service not in the default set?
+**Decision:** Don't expose `services.<name>.enable` until a real customer asks for it. Every customer gets every known service (v0: jellyfin + cryptpad). Adding a service in v0.1 gives it to every customer — they can opt out only after a real demand appears. Same principle as ADR-011 applied forward in time: don't add the option preemptively.
+**Consequence:** Smaller option tree. Customers get the full v0 experience by default. If a customer says "I don't want cryptpad," we add `services.cryptpad.enable` (default true). Until then, no option.
+**Revisit when:** A customer asks to turn off a service. At that point, add the option, set default to `true` (opt-out, not opt-in), and ship.
+
+---
+
+## Design principles
+
+These are the working principles for the v2 codebase. They generalize ADRs 011 and 012 and apply to every option we ever consider adding.
+
+- **Wine-mom config.** A non-technical customer with a 5-minute debrief can fill out the customer config. Every option is a test surface, a doc burden, and a way to misconfigure. Optimize for the 99% case.
+- **Cococoir picks.** Cococoir owns the namespace. Subdomains, bucket names, ports, paths, OIDC client names — all cococoir's choice. The customer fills in 3 fields.
+- **Options on request.** Don't expose a knob until a real, repeated customer pattern demands it. Default to the most useful behavior. Revisit only with data.
+- **Tests are leverage.** The test framework (L1 option tree, L2 VM boot, L3 customer journey) is the highest-leverage artifact in this project. Every module change ships with a test. A test failure is a bug, not a flake.
+
+---
+
+## Decisions still pending
 
 ---
 
