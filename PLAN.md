@@ -23,9 +23,15 @@ This plan answers: *what do we build, in what order, to make this a product that
 
 ### Current state
 
-- v1 cococoir (the current repo at `cococoir/`) is post-MVP: the 4-option service contract works, garage is running on amon-sul, OIDC Phase 1 (PocketID as base layer) just shipped. But there are gaps: no tests, no offsite backup, no observability, OIDC service wiring deferred, no multi-tenant model, the rathole-based tunnel is a real liability at scale.
-- 1 customer is waiting (the nonprofit). Nicole hasn't felt comfortable deploying more customers until reliability improves.
-- `amon-sul` is the personal test rig. The customer's data is on it. Reliability work on amon-sul directly benefits the customer.
+- v2 lives at `cococoir/` (root). v1 is frozen at `cococoir/v1/`. amon-sul still consumes v1 via `?dir=v1`; the customer (the nonprofit) is on v1.
+- v0 build progress:
+  - Project skeleton + v1 freeze: **done**
+  - Tenant module (3 inputs + derived subdomains): **done**
+  - Go edge service (L4 forwarder): **in progress** — Go binary + Nix module + test fixtures written; nixosTest not yet wired
+  - PocketID, Garage, Caddy: pending
+  - First end-to-end customer-journey test: pending
+  - Control plane service: deferred (after v0 ships)
+- The current state of cococoir the codebase: piecemeal, v1 frozen, v2 growing. The first migration (v1 → v2) is gated on v0 shipping.
 
 ---
 
@@ -50,13 +56,9 @@ This is a strangler-fig pattern. v1 code is not deleted; it's moved to `cococoir
 
 Piecemeal migrations stall. **At the end of week 4, if v2 hasn't reached "tenant + PocketID + Garage + 1 service + OIDC working in a customer-journey VM test," abandon v2 and apply the testing infrastructure to v1 instead.** Better to have tested v1 than untested v2. The test harness is the highest-leverage thing; it benefits v1 even if v2 never ships.
 
-### The 2-week goal (aspirational, not a deadline)
+### The v0 goal
 
-Nicole's stretch goal: ship a working v0 (first v2 release, minimum lovable) in 2 weeks. v0 is defined in the "v0 Architecture" section below. The 2-week number is motivation, not a hard deadline. Realistic v0 is 2-4 weeks. The honest milestones:
-
-- **Week 2** (stretch): `nix flake check` passes the full customer-journey test.
-- **Week 4** (realistic): v0 is feature-equivalent to v1's must-haves (PocketID + Garage + 1-2 services + OIDC for those services).
-- **Week 6** (definite): v0 is feature-equivalent to v1. v1 freezes (bug fixes only). Customer migration begins.
+Nicole's goal: ship a working v0 (first v2 release, minimum lovable). v0 is defined in the "v0 architecture" section below. The implementation backlog (also below) lists the work in build order. The 2-week number from the original plan was motivation, not a deadline. Realistic v0 is however long the backlog takes.
 
 ---
 
@@ -172,145 +174,164 @@ This is the test that matters: **"given 3 inputs, can the system boot, serve Poc
 
 ---
 
-## v0 build plan: the 2-week sprint
+## v1+ architecture: the control plane
 
-This is the day-by-day build. Each day has a deliverable, a test, and a verification step. The plan is aspirational; real delivery is probably 2-4 weeks. If we're not at "garage + pocketid + 1 service + OIDC working in a VM" by end of week 4, we hit the kill criterion and pivot.
+v0 ships with `cococoir.tenant.<name>` as a typed submodule in the Nix flake and the customer onboarding workflow is "operator edits a Nix attrset, adds an IP to the VPS, runs `nixos-rebuild`." This works for 1-20 customers. Past that, it doesn't.
 
-### Day 1-2: project skeleton + v1 move
+The control plane is the piece that replaces "operator edits git" with a real backend. It is the source of truth for customer records, subscriptions, usage, and infrastructure state. Nix is the deployment mechanism (NixOS modules consume the database state via a small config generator).
 
-**Goal:** Two parallel things. A clean v2 project, and v1 moved to a subdirectory so amon-sul keeps working.
+```
+┌─────────────────────────────────────┐         ┌─────────────────────────────────┐
+│ Customer Box                        │         │ Cococoir Cloud                  │
+│ (Orange Pi + HDD)                   │  WG     │  ┌───────────────────────────┐  │
+│                                     │ tunnel  │  │ Go edge service          │  │
+│ NixOS + PocketID (OIDC)             │ <─────> │  │ (L4 TCP/UDP forwarder)  │  │ <─ public internet
+│ Garage (S3)                         │         │  │ stateless, JSON config  │  │   (per-customer IPv4)
+│ Caddy (TLS + reverse proxy)         │         │  └───────────────────────────┘  │
+│ WireGuard client                    │         │                                  │
+│ Services: jellyfin, cryptpad        │         │  ┌───────────────────────────┐  │
+└─────────────────────────────────────┘         │  │ Control plane (v1+)      │  │ <─ operators, customers
+                                                │  │ Go service + Postgres    │  │   (web UI, API)
+                                                │  │ - customer records       │  │
+                                                │  │ - subscriptions          │  │
+                                                │  │ - IP provisioning        │  │
+                                                │  │ - DNS provisioning       │  │
+                                                │  │ - usage tracking         │  │
+                                                │  └───────────────────────────┘  │
+                                                │                                  │
+                                                │  ┌───────────────────────────┐  │
+                                                │  │ Nix flake                 │  │
+                                                │  │ (deployment mechanism)    │  │
+                                                │  │ reads from Postgres       │  │
+                                                │  └───────────────────────────┘  │
+                                                └──────────────────────────────────┘
+```
 
-- Create `cococoir/v2/` directory (or `cococoir-v2/` repo; decision below) with:
-  - `flake.nix` — flake-parts, minimal inputs (nixpkgs + flake-parts + import-tree)
-  - `nix/nixos-modules/default.nix` — aggregator
-  - `nix/nixos-modules/cococoir.nix` — placeholder module that just defines `options.cococoir.tenant.<name>` as a freeform attrset (no logic yet)
-  - `nix/tests/default.nix` — one placeholder test
-  - `nix/lib/` — empty for now
-  - `scripts/` — empty for now
-  - `PLAN.md` — this document (move the old one to `cococoir/v1/PLAN-OLD.md` or delete it)
-- Move existing cococoir content to `cococoir/v1/` via `git mv` (preserves history)
-- Update `amon-sul/flake.nix`: change `cococoir.url = "github:ElementalPlaneOfAir/cococoir"` to `cococoir.url = "github:ElementalPlaneOfAir/cococoir?dir=v1"`. Verify `nix flake check` still works.
-- `nix flake check` on the new v2: passes (one trivial test).
+**Why a database, not git, as the source of truth:** customer onboarding is "click button → new customer" with auto-provisioned IP, DNS, subscription record, and usage quota. That's runtime state that mutates without going through git. The control plane writes to Postgres; a Nix-config-generator reads from Postgres and emits attrsets; NixOS rebuilds on each machine. v0's git workflow is the initial state; v1's control plane owns the state going forward.
 
-**Test:** `nix flake check` passes in both `cococoir/` (v2) and `amon-sul/` (v1).
+**Why Postgres, not MongoDB or Redis:** cococoir's data is naturally relational (customers → machines, customers → subscriptions, customers → usage records). Strong consistency matters (a subscription is active or not — we cannot tolerate eventual consistency). ACID transactions matter (activating a subscription must atomically update the customer record, the subscription record, the quota, and the active machines list). Single-instance Postgres + hot standby handles 1000+ customers trivially. The "B-tree / distributed hashmap" reasoning in the business plan applies to sharded geo-distributed systems, not to single Postgres. If we ever need to scale out, CockroachDB (Postgres-compatible, distributed) is the migration path — not MongoDB.
 
-**Verification:** I can spin up a VM from the v2 flake and it boots.
+**Why per-customer IPv4 is the routing primitive:** cococoir's network design has three properties that have to hold:
+- (a) Web traffic accessible from a normal browser over IPv4 (some clients are IPv4-only)
+- (b) Proxy box doesn't have a dedicated IPv4 per customer
+- (c) HTTP/3 encryption, keys on device, proxy doesn't decrypt
 
-### Day 3-4: tenant module
+(a)+(c) together rule out (b). The proxy cannot demux encrypted traffic to the right customer without per-customer routing primitives. Per-customer IPv4 is the only working answer. The control plane calls the VPS provider's API to allocate IPv4s as customers come online.
 
-**Goal:** `cococoir.tenant.<name>` is a real option tree. The 3 inputs work. Subdomain derivation works.
+**Cluster topology:** per-customer IP per VPS. Each customer is pinned to a single VPS (`cococoir.tenant.<name>.edgeHost`). The Go service on that VPS holds a slice of the customer list. No shared runtime state between VPSes. The Go service is cluster-ready from day 1 (it's stateless — given a config, it just runs). Failover is manual: operator edits `edgeHost`, rebuilds the affected VPSes, updates DNS. WireGuard's built-in endpoint roaming re-handshakes automatically within keepalive cycles.
 
-- `nix/nixos-modules/tenant.nix`:
-  - `cococoir.tenant.<name>.domain` (str, required)
-  - `cococoir.tenant.<name>.adminUser` (str, required)
-  - `cococoir.tenant.<name>.adminPasswordFile` (path, required)
-  - Derived: `cococoir.tenant.<name>.pocketidDomain = "auth.${domain}"`
-  - Derived: `cococoir.tenant.<name>.services.<name>.domain = "${name}.${domain}"` for each known service
-- `nix/lib/derive-subdomains.nix`: helper that, given a tenant config, produces all the derived options
-- `nix/nixos-modules/services/<name>.nix`: placeholders for jellyfin and cryptpad (just option definitions, no real config yet)
-- Test: `cococoir.tenant.alice.domain = "alice.untitledbusiness.info"` evaluates; all derived subdomains are correct.
+This is formalized in ADR-013, ADR-014, ADR-015, ADR-016 below.
 
-**Test:** NixOS test that evaluates a tenant config and asserts each derived subdomain is correct.
+---
 
-**Verification:** `nix eval` shows the right values.
+## Implementation backlog
 
-### Day 5-6: PocketID with admin-creation flow
+The work, in build order. No dates. Each item: what it produces, what test verifies it. "Done" = shipped, tested, and committed. "In progress" = work started, not yet verified. "Pending" = in the queue, not started. "Deferred" = not on the immediate path; built later when the trigger arrives.
 
-**Goal:** PocketID runs in a VM, the admin user (from sops) is created at first boot, the customer can log in.
+The trigger for moving from "pending" to "in progress" is the previous item shipping. The trigger for moving from "deferred" to "pending" is operator pain at scale (10-20 customers for the control plane, 50-100 for the cluster).
 
-- `nix/nixos-modules/pocketid.nix`:
-  - Wraps nixpkgs `services.pocket-id`
-  - Sets `APP_URL`, `TRUST_PROXY = true`, `ALLOW_USER_SIGNUPS = "disabled"`
-  - `environmentFile` for secrets
-- `nix/nixos-modules/services/pocketid-secret-init.service`:
-  - Generates `ENCRYPTION_KEY` + `STATIC_API_KEY` if missing
-  - Idempotent
-  - Mode 0640, owned by `pocket-id:pocket-id`
-- `nix/nixos-modules/services/pocketid-admin-init.service` (NEW):
-  - Waits for PocketID to be healthy (polls `APP_URL/api/health`)
-  - Uses `STATIC_API_KEY` to call PocketID's API
-  - Creates the real human admin user (username + password from sops)
-  - Idempotent: if admin exists, do nothing
-  - Optional: rotates / disables the static key after admin creation
-- Test: VM with PocketID, run admin-init, verify the admin user exists in the DB, can log in via API.
+### Project skeleton + v1 freeze — done
 
-**Test:** Full PocketID lifecycle in a VM.
+- v2 at `cococoir/` root, v1 frozen at `cococoir/v1/`
+- amon-sul flake input updated to `?dir=v1`
+- `nix flake check` passes on both
 
-**Verification:** `curl -X POST $APP_URL/api/auth/login` with admin creds returns a session.
+### Tenant module — done
 
-### Day 7-8: Go edge service v0
+- `cococoir.tenant.<name>` typed submodule with 3 inputs
+- Derived subdomains (`auth.${domain}`, `<service>.${domain}`)
+- L1 (option tree) test evaluates correctly
+- L2 (VM boot) test runs a single-tenant NixOS VM
 
-**Goal:** Go service that forwards TCP + UDP from a VPS IP to a customer box over WireGuard. Tested with 2 VMs.
+### Go edge service — in progress
 
-- `nix/packages/edge/`:
-  - `main.go` — Go program: `socat`-style TCP/UDP forwarder, configured via a TOML or JSON file
-  - `go.mod` — Go module
-  - `default.nix` — `pkgs.buildGoModule`
-- `nix/nixos-modules/edge.nix`:
-  - `services.cococoir-edge` systemd service
-  - Reads `/etc/cococoir/edge.toml`
-  - Configures WireGuard interface via `networking.wireguard.interfaces.wg0` (kernel does crypto/auth)
-  - Hot-reload on SIGHUP (re-reads config)
-- Test: 2 VMs. One runs `services.cococoir-edge`. The other connects via WireGuard, sends a TCP packet to a known port, verifies the packet reaches a service on the edge side.
+Replaces v1's rathole tunnel. Stateless L4 forwarder. Cluster-ready from day 1: no shared state, config-driven, no coordination between VPSes. The customer-side WireGuard credential bootstrap is unsolved (CGNAT story) and is deferred — for v0 the test uses hardcoded keys.
 
-**Test:** End-to-end packet forwarding through the edge service.
+- `nix/packages/edge/`: Go binary, stdlib-only (no external deps)
+- `nix/nixos-modules/edge.nix`: minimal systemd module (`enable` + `configFile`)
+- `nix/tests/edge/`: 2-VM nixosTest (edge + client over WireGuard)
+- Test: `curl http://127.0.0.1:80/` from the edge VM returns the client's HTTP response, proving the L4 forwarder + WireGuard tunnel work end-to-end
 
-**Verification:** `tcpdump` shows the packet on both sides of the tunnel.
+What's left in this item:
+- `nix/tests/edge/default.nix` — 2-VM nixosTest
+- `nix/tests/edge/fixtures/edge.json` — test forwards
+- Wire into `nix/tests/default.nix` aggregator
+- `nix flake check` to verify
 
-### Day 9-10: Garage module
+### PocketID module — pending
 
-**Goal:** Port v1's garage to v2. Single-tenant cluster per customer.
+OIDC provider for the customer's services. Bootstrap the admin user via STATIC_API_KEY + API call (idempotent).
 
-- `nix/nixos-modules/garage.nix`: copy/adapt from `cococoir/v1/modules/storage/garage.nix`
-- `nix/nixos-modules/garage-bucket-init.nix`: copy/adapt from `cococoir/v1/clan-services/garage/bucket-init.sh`
-- Test: 1-VM garage, single-tenant cluster, write a file, read it back.
+- `nix/nixos-modules/pocketid.nix`: wraps nixpkgs `services.pocket-id`
+- `pocketid-secret-init.service`: generates ENCRYPTION_KEY + STATIC_API_KEY on first boot
+- `pocketid-admin-init.service`: creates the human admin via API, idempotent
+- Test: VM with PocketID, run admin-init, verify admin can log in via API
 
-**Test:** Garage single-node smoke test.
+### Garage module — pending
 
-**Verification:** `mc ls` (or `s3cmd`) reads the bucket.
+S3 storage. Per-customer cluster (matches v1). Decide later if shared topology is needed.
 
-### Day 11-12: Caddy module with ACME DNS-01
+- `nix/nixos-modules/garage.nix`: port from v1
+- `nix/nixos-modules/garage-bucket-init.nix`: port from v1
+- Test: 1-VM garage, write a file, read it back
 
-**Goal:** Caddy on the customer box serves HTTPS for `*.${domain}` with a real cert from Let's Encrypt (staging env for tests).
+### Caddy module — pending
 
-- `nix/nixos-modules/caddy.nix`:
-  - Enables Caddy
-  - Opens UDP 443 (HTTP/3)
-  - Configures a vhost for `*.${domain}` that uses ACME DNS-01 with the Hetzner DNS module
-  - DNS API token from sops
-- Test: VM with Caddy, request `*.test.example`, get a cert from Let's Encrypt staging, serve HTTPS.
+TLS terminator on the customer box. ACME DNS-01 via Hetzner DNS. UDP 443 for HTTP/3.
 
-**Test:** Caddy + ACME DNS-01 in a VM.
+- `nix/nixos-modules/caddy.nix`: enable Caddy, opens UDP 443, ACME DNS-01
+- Test: VM with Caddy, request `*.test.example` from Let's Encrypt staging, serve HTTPS
 
-**Verification:** `curl https://jellyfin.${domain}` returns a real cert (not self-signed).
+### First end-to-end customer-journey test — pending
 
-### Day 13-14: first end-to-end customer-journey test
+The whole thing in one VM, validated by `nix flake check`.
 
-**Goal:** `nix flake check` runs a test that exercises the full customer journey in a VM. The 3 inputs are enough.
+- 1 VM with tenant config + PocketID + Garage + Caddy + 1 service
+- Test script: boot, wait for PocketID, run admin-init, log in, make HTTPS request, verify reachable
+- `nix flake check` is the single source of truth
 
-- One VM with all 4 components: tenant config, PocketID, Garage, Caddy
-- VM is configured with `cococoir.tenant.testcustomer.{domain, adminUser, adminPasswordFile}`
-- Test script:
-  1. Boot VM
-  2. Wait for PocketID to be healthy
-  3. Run pocketid-admin-init
-  4. Log in to PocketID with the admin creds
-  5. Verify a session is returned
-  6. Make a request to `jellyfin.${domain}` over HTTPS
-  7. Verify Jellyfin is reachable and accepts the (eventual) OIDC token
-- `nix flake check` runs this and asserts pass.
+### Migrate amon-sul to v2 — pending
 
-**Test:** Full customer journey in a single VM.
+Cut over the customer (the nonprofit) from v1 to v2. v1 freezes after this.
 
-**Verification:** `nix flake check` is the single source of truth.
+- Update amon-sul flake input (remove `?dir=v1`)
+- `nixos-rebuild switch`
+- Verify: services up, customer can log in, garage data intact
+- v1 → v2 service migration: jellyseerr, qbittorrent, autobrr, matrix, mautrix-gmessages, nextcloud, custom (these are services running on v1 today that need to be ported)
 
-### Post-2-weeks (if we got here)
+### Control plane service — deferred
 
-- Migrate amon-sul to v2 (change flake input from `?dir=v1` to root)
-- Cut over the customer (the nonprofit)
-- v1 freezes
-- v1 → v2 service migration: jellyseerr, qbittorrent, autobrr, matrix, mautrix-gmessages, nextcloud, custom
-- Phase 2 begins: multi-tenant on a VPS pool
+Replaces "operator edits git + manual Hetzner API calls" with a real backend. Triggered when the operator workflow gets painful at 10-20 customers.
+
+- Go service (1-3 months of one person's work)
+- Postgres database (single instance + hot standby)
+- HTTP API for customer/operator actions
+- Web UI for customers + operators
+- Auto-provisions IPv4 on VPS via Hetzner API
+- Auto-provisions DNS via Hetzner DNS API
+- Tracks per-customer bandwidth (edge service reports periodically)
+- Tracks subscription status
+- Optional: Stripe integration, self-serve backup management, self-serve multi-machine customers
+
+The control plane is the source of truth. Nix is the deployment mechanism (a Nix-config-generator reads from Postgres and emits attrsets, NixOS rebuilds on each machine). This is the K8s model.
+
+### Cluster expansion — deferred
+
+Multiple VPSes, each holding a slice of customers. Triggered when N > 50-100 customers, or when geographic distribution becomes a hard requirement.
+
+- `cococoir.edge.hosts.<name>` option tree for VPS records
+- `cococoir.tenant.<name>.edgeHost` for the assignment
+- Per-VPS NixOS configurations, each filtering the tenant list by edgeHost
+- Failover: WireGuard endpoint roaming + manual runbook
+- Auto-failover: deferred (heartbeat + automatic tenant migration)
+
+### What we are explicitly not building
+
+- A "BYO domain" path. v0-v1 is hosted-only (`*.untitledbusiness.info`). Customer brings their own domain in v1+ if we ever support it.
+- Per-tenant service enable/disable. Every customer gets every known service. ADR-012.
+- A control plane UI before v0 ships. The control plane is a separate project; building it before the v0 components work would be premature.
+- BGP / anycast. Defer until geographic distribution or scale demands it.
+- Multi-region. Single region for the foreseeable future.
 
 ---
 
@@ -402,6 +423,51 @@ These are the architectural decisions we've made. Each is final unless explicitl
 **Consequence:** Smaller option tree. Customers get the full v0 experience by default. If a customer says "I don't want cryptpad," we add `services.cryptpad.enable` (default true). Until then, no option.
 **Revisit when:** A customer asks to turn off a service. At that point, add the option, set default to `true` (opt-out, not opt-in), and ship.
 
+### ADR-013: Nix is the deployment mechanism, not the source of truth
+
+**Context:** Cococoir v2 has Nix configs for each machine (customer box, VPS, edge service). The question is: where does the source of truth for customer records live?
+
+**Decision:** For v0 (1-20 customers), git is the source of truth. Operator edits a Nix attrset, runs `nixos-rebuild`. This is fine for the first stage.
+
+For v1+ (after the control plane ships), the control plane is the source of truth. The control plane writes to Postgres; a Nix-config-generator reads from Postgres and emits attrsets; NixOS rebuilds on each machine. Nix is the deployment mechanism, not the source of truth.
+
+**Consequence:** Two distinct workflows: v0 (git + manual rebuild) and v1+ (control plane + automatic). The transition is "introduce the control plane; treat the existing git state as the initial database."
+
+**Revisit when:** v0 ships and we hit 10-20 customers.
+
+### ADR-014: per-customer IPv4 is required (the "impossible triangle")
+
+**Context:** Three properties the network design has to hold:
+- (a) Web traffic accessible from a normal browser over IPv4 (some clients are IPv4-only)
+- (b) Proxy box doesn't have a dedicated IPv4 per customer
+- (c) HTTP/3 encryption, keys on device, proxy doesn't decrypt
+
+**Decision:** Property (b) is incompatible with (a)+(c). The proxy cannot demux encrypted traffic to the right customer without per-customer routing primitives. Per-customer IPv4 is the only working answer. The proxy box on the VPS has N customer IPs attached, each pinned to a specific customer; incoming traffic to IP X is forwarded to customer X's box over WireGuard.
+
+**Consequence:** Each customer = 1 IPv4 address on the VPS. At 1000 customers we need a /22 or so of IPv4 space, distributed across multiple VPSes. The provisioning system (control plane) calls the VPS provider's API to allocate IPv4s as customers come online. The cluster topology (ADR-016) gives us the per-VPS slice.
+
+**Revisit when:** Never. This is a physical constraint of the protocol design.
+
+### ADR-015: Postgres is the control plane database
+
+**Context:** What database backs the control plane (v1)?
+
+**Decision:** Postgres. Single instance + hot standby + pg_dump/WAL archiving for backups. v1 scale (~1000 customers) is well within single-instance Postgres. Migration path to CockroachDB (Postgres-compatible, distributed SQL) at v2+ if we need to scale out.
+
+**Consequence:** Standard SQL, ACID, joins, indexes. The data model is naturally relational (customers → machines, customers → subscriptions, customers → usage). Don't use Redis or MongoDB as the source of truth. The "B-tree / distributed hashmap" reasoning in the business plan applies to sharded geo-distributed systems, not to single Postgres. If we ever need to scale out, CockroachDB is the migration path — not MongoDB.
+
+**Revisit when:** v2+ if we hit Postgres scaling limits (unlikely for years). Or earlier if we want geo-distributed.
+
+### ADR-016: cluster topology is per-customer IP per VPS, manual failover
+
+**Context:** How do we scale the edge service beyond 1 VPS?
+
+**Decision:** Per-customer IP per VPS. Each customer is pinned to a single VPS (`cococoir.tenant.<name>.edgeHost`). The Go service on that VPS holds a slice of the customer list. No shared runtime state between VPSes. Failover is manual: operator edits `edgeHost`, rebuilds the affected VPSes, updates DNS. WireGuard's built-in endpoint roaming re-handshakes automatically within keepalive cycles.
+
+**Consequence:** The Go service is cluster-ready from day 1 (it's stateless — given a config, it just runs). The cluster story is a Nix option tree (`cococoir.edge.hosts.<name>`) + per-VPS NixOS configurations that filter the tenant list by `edgeHost`. No BGP, no anycast, no shared state. At 1000 customers, this means 50-100 VPSes, each with 10-20 customers (per-customer IP cost ~$1/mo on Hetzner, VPS cost ~$5/mo shared).
+
+**Revisit when:** Operator workflow for manual failover gets painful at 50+ customers (build auto-failover then). Or when geographic distribution becomes a hard requirement (consider anycast).
+
 ---
 
 ## Design principles
@@ -417,70 +483,69 @@ These are the working principles for the v2 codebase. They generalize ADRs 011 a
 
 ## Decisions still pending
 
----
+Open questions for the next phases. Flagged so they don't get forgotten; not blockers for v0.
 
-## Decisions still pending
+### Pending: control plane feature scope
 
-These are the open questions for the next phases. They are flagged here so they don't get forgotten, but they are *not* blockers for v0.
+What does the v1 control plane include? Must-haves:
+- Customer onboarding (web form or API)
+- IPv4 provisioning (Hetzner API)
+- DNS provisioning (Hetzner DNS API)
+- Subscription status (manual or Stripe)
+- Bandwidth tracking (edge service reports periodically)
+- Web UI for customers + operators
 
-### Pending: IPv4 allocation strategy (Phase 2)
+Optional / later:
+- Stripe integration
+- Self-serve backup management
+- Self-serve multi-machine customers
+- Customer-facing analytics
+- Public status page
 
-How do we get 1000 IPv4 addresses?
+**Decision criterion:** Build the must-haves first. Add the optional items when customers ask.
 
-Options:
-- Hetzner Cloud: each VM has 1 IPv4 + 1 IPv6 by default; additional IPv4 is €0.50/month each. A single VM with 10 IPv4 = €5/month.
-- Hetzner Cloud /28 network: 13 IPv4 in a subnet, €0/month (free with /28).
-- Multiple VPS instances, each with a /28 or /27.
-- Alternative providers (BuyVM has cheap IPv4; OVH has /24 available; Vultr, DigitalOcean, etc.).
+### Pending: cluster failover automation
 
-**Research needed:** Cost comparison, IP availability, geographic distribution, BGP considerations (if any).
+v1: manual runbook. Operator edits `edgeHost`, rebuilds, updates DNS.
+v2+: automate. Heartbeat + automatic customer migration.
 
-### Pending: Storage topology at scale (Phase 2)
+**Decision criterion:** Defer until manual workflow is painful at 50+ customers.
 
-One big Garage cluster shared by all customers, or per-customer Garage clusters?
+### Pending: bandwidth tracking implementation
 
-- Per-customer: simpler isolation, easier reasoning, but N× the operational cost.
-- Shared with quotas: scales better, but per-customer isolation requires careful bucket policies.
+How does the Go edge service report per-customer bandwidth to the control plane?
+- Option A: per-customer counter in the Go service, exposed via HTTP API
+- Option B: VPS-level network accounting (iptables bytes counter per IP)
+- Option C: tcpdump sampling at the VPS level
 
-**Research needed:** Garage's quota and policy features. Performance under many buckets.
+**Decision criterion:** whichever is least invasive and gives accurate numbers. Likely Option A.
 
-### Pending: Customer name registry (Phase 2)
+### Pending: subscription billing
 
-How do we track that `alice.untitledbusiness.info` is taken?
+v1: manual invoicing (operator generates invoices, customer pays via bank transfer)
+v2+: Stripe (or similar) for self-serve
 
-- v0: git-tracked file (`customers.txt` or a JSON file in the cococoir repo).
-- v1: a proper tool with conflict detection, possibly a tiny web UI.
-- v2: a database.
+**Decision criterion:** Defer until manual workflow is painful.
 
-**Research needed:** What fits the sales workflow.
+### Pending: storage topology at scale
 
-### Pending: Cert strategy at scale (Phase 1+)
+Per-customer Garage (v0) vs shared Garage with quotas (v1+). Defer until we have data on operational cost of per-customer.
 
-When we have 50+ customers, Let's Encrypt rate limits become real. Options:
+### Pending: cert strategy at scale
 
-- Wildcard per customer: `*.alice.untitledbusiness.info` (one cert per customer, rate-limited at 50/week for the apex).
-- Single wildcard for the apex: `*.untitledbusiness.info` (one cert, but compromised if any subdomain is compromised).
-- SAN cert: one cert with multiple subdomains (LE has separate rate limits for SAN).
+When 50+ customers, Let's Encrypt rate limits become real. Options:
 
-**Research needed:** What's the actual bottleneck at 100, 500, 1000 customers. What's the security model if we go single-wildcard.
+- Wildcard per customer: `*.alice.untitledbusiness.info`
+- Single wildcard for the apex: `*.untitledbusiness.info`
+- SAN cert with multiple subdomains
 
-### Pending: Drop clan-core? (Day 1-2 decision)
+**Decision criterion:** Defer until we have data. The decision is security-model-vs-rate-limit tradeoffs, and we don't have enough customers to know which one bites first.
 
-The user has questioned whether clan is the right tool. v0's Day 1-2 might be a good time to evaluate:
+### Pending: company name
 
-- Plain sops-nix + a deploy script (matches what `tunnel/` does today).
-- Colmena (similar model to clan, smaller surface area).
-- Stay with clan-core.
+`untitledbusiness.info` is a placeholder. Replace when the cooperative picks a real name. One config option, no other code changes.
 
-**Decision criterion:** After v0's testing harness is working, evaluate. Decide with data, not in the abstract.
-
-### Pending: WireGuard mesh topology (Day 7-8)
-
-- Star (each customer → 1 VPS): simplest, scales to N VPS with customer routing tables.
-- Full mesh (customer ↔ customer): not needed for v0; defer.
-- Per-customer VPS: each customer is on their own VPS. Limits scale, increases cost. Probably wrong for 1000 customers.
-
-**Decision:** Star, for v0. Revisit when N > 50 per VPS.
+(Resolved: clan-core decision is in ADR-010; WireGuard mesh topology is in ADR-016.)
 
 ---
 
@@ -488,7 +553,7 @@ The user has questioned whether clan is the right tool. v0's Day 1-2 might be a 
 
 The customer (the nonprofit, using v1 on amon-sul) and amon-sul itself stay on v1 until v2 has earned the migration. Earned means:
 
-1. v0 ships (Day 13-14, or whenever).
+1. v0 ships (when the implementation backlog's pending items are all done and verified).
 2. v0 has run on a real box (not just VM tests) for at least 1 week with no critical issues.
 3. The customer-journey test continues to pass.
 4. Offsite backup works (added in v0.5 or wherever — see risks below).
@@ -506,7 +571,7 @@ If migration fails, the rollback is: change the URL back, `nix flake update`, `n
 
 This is a v0 risk. v1 has no offsite backup (per the original tech-debt analysis). v2 should add offsite backup *before* the customer migrates to v2, so the customer gets backup as a side effect of the upgrade.
 
-**Recommendation:** Add a Day 14.5 task: "offsite backup to Hetzner Storage Box." This is 1-2 days of work. Backup before the customer migrates, not after.
+**Recommendation:** Add an "offsite backup" item to the implementation backlog before the customer migration. This is 1-2 days of work. Backup before the customer migrates, not after.
 
 ---
 
@@ -527,14 +592,34 @@ This is a v0 risk. v1 has no offsite backup (per the original tech-debt analysis
 **Severity:** Medium. If `untitledbusiness.info` has a DNS outage, every customer is down.
 **Mitigation:** Use Hetzner DNS's SLA + consider a fallback DNS provider (secondary NS). Defer to v1+.
 
+### Risk: operator workflow doesn't scale past 10-20 customers
+
+**Severity:** Medium. v0 is git + manual operator workflow. At 10-20 customers, the operator (Nicole) hits the wall: "I can't add another customer tonight, I'm behind on X." This is the trigger to build the control plane.
+**Mitigation:** Plan for the control plane from the start. Don't pretend manual will scale.
+
+### Risk: control plane is a large project
+
+**Severity:** High. 1-3 months of one person's work. v0 ships before the control plane exists; the control plane is its own milestone. Don't try to build it before v0 ships.
+**Mitigation:** Treat the control plane as a separate project. Scope it tightly. Defer the optional features (Stripe, multi-machine self-serve) until the must-haves (customer records, IP provisioning, subscription) are working.
+
+### Risk: data model might need rework as we learn
+
+**Severity:** Medium. The first version of the control plane's data model will get things wrong. Migrations are real.
+**Mitigation:** Start small. Add tables as we need them. Postgres handles schema changes well; use migrations from day 1 (even a hand-rolled `ALTER TABLE` script is fine).
+
+### Risk: PostgreSQL single point of failure (until hot standby exists)
+
+**Severity:** Low for v1. Single-instance Postgres is fine; loss of the DB is recoverable from backups.
+**Mitigation:** Hot standby from v1 day 1. pg_dump + WAL archiving for offsite backups. Document the recovery procedure.
+
 ### Risk: the 4-week kill criterion
 
 **Severity:** Medium-high. If v2 stalls, we need to apply the testing infra to v1 instead.
-**Mitigation:** The test harness is built in v2 with the explicit goal of "can be applied to v1." Day 1-2 has verification step: "the test harness works against v1 modules too."
+**Mitigation:** The test harness is built in v2 with the explicit goal of "can be applied to v1." The skeleton task includes a verification step: "the test harness works against v1 modules too."
 
 ### Risk: PocketID admin-creation flow is fragile
 
-**Severity:** Medium. The PocketID API for user creation is thin on documentation. Day 5-6 might stretch.
+**Severity:** Medium. The PocketID API for user creation is thin on documentation. The PocketID item in the implementation backlog might stretch.
 **Mitigation:** Fallback plan: `signupMode = "withToken"` and have a one-time signup token in sops. Less elegant, but works.
 
 ### Risk: customer can't wait
@@ -554,92 +639,37 @@ This is a v0 risk. v1 has no offsite backup (per the original tech-debt analysis
 
 ### Risk: I (the AI agent) am not actually doing the work
 
-**Severity:** Real. The plan assumes Nicole is writing code. I'm writing the plan and asking questions. The Day 1-2 work needs Nicole to actually sit down and start. The 2-week goal is for *her*, not for me.
+**Severity:** Real. The plan assumes Nicole is writing code. I'm writing the plan and asking questions. The skeleton + tenant module work shipped because Nicole sat down and did it. The current next action (Go edge service completion) is the next thing Nicole needs to drive.
 **Mitigation:** Be honest about who does what. I help with design, code review, debugging, and writing the trickier bits. Nicole does the integration, the testing, the deployment. I don't pretend to be her.
 
 ---
 
-## Day 1-2: the next action
+## Current next action: complete the Go edge service
 
-The first 48 hours of v0. This is the next concrete work.
+What's left to finish the in-progress item in the implementation backlog:
 
-### Step 1: Create the v2 project skeleton
+1. `nix/tests/edge/default.nix` — 2-VM nixosTest (edge + client over WireGuard). Edge runs `cococoir-edge` + WireGuard server (wg0 = 10.10.0.1/24). Client runs WireGuard client (wg0 = 10.10.0.2/24) + a `python3 -m http.server 80` listener.
+2. `nix/tests/edge/fixtures/edge.json` — the test forwards: TCP 80 → 10.10.0.2:80, TCP 443 → 10.10.0.2:443, UDP 443 → 10.10.0.2:443.
+3. Wire into `nix/tests/default.nix` aggregator as `edge-forward` check.
+4. `nix flake check` to verify; `nix build .#checks.x86_64-linux.edge-forward --no-link` to run.
+5. Update `AGENTS.md` with Day 7-8 status.
+6. Clean up the stale `result` symlink at the cococoir root (left over from earlier Day 3-4 manual VM build).
+7. Commit, push not required (user directive: "don't push until we have made more progress").
 
-`cococoir/` (root) becomes v2. Create the following structure:
+**Verification:** `nix flake check` passes. The `edge-forward` check runs the 2-VM QEMU+KVM test (needs `/dev/kvm`), starts WireGuard on both VMs, starts `cococoir-edge` on the edge VM, and asserts `edge.succeed("curl -sf http://127.0.0.1:80/")` returns the client's HTTP response.
 
-```
-cococoir/
-├── flake.nix                 # flake-parts, minimal inputs
-├── nix/
-│   ├── nixos-modules/
-│   │   └── default.nix       # aggregator
-│   ├── tests/
-│   │   └── default.nix       # one placeholder test
-│   └── lib/                  # empty for now
-├── scripts/                  # empty for now
-├── PLAN.md                   # this document
-├── AGENTS.md                 # new, replacing v1's AGENTS.md
-└── v1/                       # old code, moved via git mv
-    └── ...                   # everything from the current cococoir/
-```
+**Why this test design:** the L2 test exercises the full L4-forwarder-over-WireGuard path. `curl http://127.0.0.1:80/` on the edge VM goes: loopback ingress → cococoir-edge (TCP forward) → 10.10.0.2:80 over WireGuard → python httpd on the client → response back through the same path. No per-IP gymnastics needed; v0 binds 0.0.0.0 in the test. Real per-customer-IP binding is exercised by the cluster topology (ADR-016), deferred to v1+.
 
-### Step 2: Write `flake.nix` for v2
+**What's deliberately out of scope for v0:**
+- A `cococoir.edge.hosts.<name>` option tree for multi-VPS clusters. Defer until cluster expansion.
+- Per-customer-IP forwarding (each customer = 1 IP, the Go service binds to 0.0.0.0 in the test). Defer to cluster expansion.
+- Hot-reload of the edge config (no SIGHUP; `systemd restart` on NixOS rebuild). Defer to v1+ if needed.
+- The customer-side WireGuard credential bootstrap (CGNAT story). Hardcoded test keys for now.
 
-Minimal flake-parts flake. Inputs: nixpkgs, flake-parts, import-tree. Outputs: `nixosModules.default` (aggregates `nix/nixos-modules/`), `tests.<name>` (aggregates `nix/tests/`).
-
-### Step 3: Write the placeholder test
-
-A nixosTest that imports the empty cococoir module and asserts the system evaluates. No services enabled. Just proves the flake is wired correctly.
-
-### Step 4: Move v1 to `cococoir/v1/`
-
-```bash
-cd cococoir
-git mv modules v1/modules
-git mv flake-vars v1/flake-vars
-git mv clan-services v1/clan-services
-git mv storage v1/storage
-git mv tunnel v1/tunnel
-git mv AGENTS.md v1/AGENTS.md
-git mv PLAN.md v1/PLAN-OLD.md  # keep the old plan for reference
-```
-
-(Don't move `flake.nix` — that's getting rewritten.)
-
-### Step 5: Update amon-sul
-
-In `amon-sul/flake.nix`:
-```nix
-cococoir = {
--  url = "github:ElementalPlaneOfAir/cococoir";
-+  url = "github:ElementalPlaneOfAir/cococoir?dir=v1";
-   inputs.nixpkgs.follows = "nixpkgs";
-};
-```
-
-### Step 6: Verify both build
-
-```bash
-# v2 skeleton works
-cd cococoir
-nix flake check
-
-# v1 still works
-cd /home/nicole/Documents/amon-sul
-nix flake check
-```
-
-Both should pass. If either fails, debug before moving on.
-
-### Verification
-
-- `cococoir/nix flake check` passes (v2 skeleton works).
-- `amon-sul/nix flake check` passes (v1 is still operational through the `?dir=v1` URL).
-- The cococoir repo has the new structure (v2 at root, v1 in subdir, PLAN.md rewritten).
-
-### After Day 1-2
-
-Move to Day 3-4: tenant module. The plan in this document is the source of truth; update it as decisions change.
+**After this:**
+- Either: continue with PocketID (the next pending item), or skip to Garage.
+- Defer the control plane until v0 ships.
+- Eventually: cut over the customer (the nonprofit) from v1 to v2.
 
 ---
 
@@ -656,17 +686,19 @@ Move to Day 3-4: tenant module. The plan in this document is the source of truth
 
 When these come up, write a new ADR and link it from here. Don't let the open-questions list grow without decisions.
 
-- IPv4 allocation strategy at 1000 customers.
-- Storage topology: shared vs per-customer.
-- Customer name registry implementation.
-- Cert strategy at scale.
-- Drop clan-core or keep it.
-- WireGuard mesh topology beyond star.
-- The "company name" decision.
-- Multi-region (v2+).
-- Self-service customer onboarding (v2+).
-- Backup and DR policy (v0.5).
-- Observability stack (v0.5).
-- Runbooks (v0.5).
-- Release discipline (v0.5).
-- Public status page (v0.5).
+- Storage topology: shared vs per-customer (still open; v0 = per-customer, defer decision).
+- The "company name" decision (placeholder `untitledbusiness.info`).
+- Multi-region (deferred to v2+; not a v0 blocker).
+- Self-service customer onboarding (deferred to v2+; v0-v1 is operator-driven via git / control plane).
+- Backup and DR policy (v0.5 / v1).
+- Observability stack (v0.5 / v1).
+- Runbooks (v0.5 / v1).
+- Release discipline (v0.5 / v1).
+- Public status page (v1 / v2+).
+- Cert strategy at scale (50+ customers).
+- Customer-side WireGuard credential bootstrap (CGNAT story; the customer needs to get the WG public key onto their box somehow, and "send them a file" doesn't work if they're behind CGNAT with no inbound access).
+
+Resolved (now in ADRs):
+- IPv4 allocation strategy: ADR-014 (per-customer IPv4 required) + ADR-016 (per-VPS cluster).
+- Drop clan-core: ADR-010 (v2 doesn't depend on clan-core).
+- WireGuard mesh topology: ADR-016 (star with per-customer IP per VPS).

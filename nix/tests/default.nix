@@ -14,6 +14,7 @@
 {pkgs}:
 let
   lib = pkgs.lib;
+  edgeTests = import ./edge {inherit pkgs;};
 in {
   # ── L1: option tree ──────────────────────────────────────────────
   # Evaluates the cococoir module with a known tenant config and
@@ -22,10 +23,20 @@ in {
   #
   # Why runCommand for the output: nix flake check needs a derivation
   # at this path. The asserts have already run by the time we get here.
+  #
+  # Why only tenant.nix is imported (not the full cococoir.nix): the
+  # L1 test uses lib.evalModules, a pure option-tree evaluator with
+  # no NixOS option tree in scope. cococoir-edge.nix and
+  # cococoir-client.nix reference `services.systemd.*` and
+  # `pkgs.callPackage`, which only resolve under a full NixOS
+  # evaluation. tenant.nix is self-contained (config + lib only) and
+  # is what the L1 test is actually about: the customer-facing
+  # 3-input config and its derived values. The full module is
+  # covered by the L2 VM tests below.
   tenant-options = let
     eval = lib.evalModules {
       modules = [
-        (import ../nixos-modules)
+        (import ../nixos-modules/tenant.nix)
         {
           cococoir.tenant.testcustomer = {
             domain = "test.local";
@@ -79,4 +90,10 @@ in {
       machine.wait_for_unit("multi-user.target")
     '';
   };
-}
+
+  # ── L2: edge <-> client over WireGuard ───────────────────────────
+  # 2-VM nixosTest. Exercises the full L4-forwarder-over-WG path:
+  # cococoir-edge (VPS) -> WireGuard tunnel -> cococoir-client (box)
+  # -> 127.0.0.1:80 (python http server, Caddy stand-in). See
+  # nix/tests/edge/default.nix for the full design.
+} // edgeTests

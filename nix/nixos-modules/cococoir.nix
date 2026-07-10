@@ -13,6 +13,8 @@
 {
   imports = [
     ./tenant.nix
+    ./edge.nix
+    ./client.nix
     ./services/jellyfin.nix
     ./services/cryptpad.nix
   ];
