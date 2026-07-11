@@ -7,11 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 func TestNew_EmptyForwards(t *testing.T) {
 	_, err := New(Config{Forwards: nil})
@@ -25,6 +30,13 @@ func TestNew_UnknownProto(t *testing.T) {
 	if err == nil {
 		t.Fatal("New with unknown proto: expected error, got nil")
 	}
+	var ce *ConfigError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ConfigError, got %T: %v", err, err)
+	}
+	if ce.Index != 0 {
+		t.Errorf("ConfigError.Index = %d, want 0", ce.Index)
+	}
 }
 
 func TestNew_MissingFields(t *testing.T) {
@@ -32,13 +44,18 @@ func TestNew_MissingFields(t *testing.T) {
 		name string
 		fwd  Forward
 	}{
-		{"empty listen", Forward{Proto: "tcp", DestAddr: "127.0.0.1:1"}},
-		{"empty dest", Forward{Proto: "tcp", ListenAddr: "127.0.0.1:1"}},
+		{"empty listen", Forward{Proto: ProtoTCP, DestAddr: "127.0.0.1:1"}},
+		{"empty dest", Forward{Proto: ProtoTCP, ListenAddr: "127.0.0.1:1"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := New(Config{Forwards: []Forward{c.fwd}}); err == nil {
+			_, err := New(Config{Forwards: []Forward{c.fwd}})
+			if err == nil {
 				t.Fatal("expected error for missing field, got nil")
+			}
+			var ce *ConfigError
+			if !errors.As(err, &ce) {
+				t.Errorf("expected *ConfigError, got %T: %v", err, err)
 			}
 		})
 	}
@@ -58,7 +75,7 @@ func TestRun_TCPForward(t *testing.T) {
 		Proto:      "tcp",
 		ListenAddr: fmt.Sprintf("127.0.0.1:%d", fwdPort),
 		DestAddr:   upstream.Addr().String(),
-	}}})
+	}}, Logger: discardLogger()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -88,7 +105,7 @@ func TestRun_UDPForward(t *testing.T) {
 		Proto:      "udp",
 		ListenAddr: fmt.Sprintf("127.0.0.1:%d", fwdPort),
 		DestAddr:   upstream.LocalAddr().String(),
-	}}})
+	}}, Logger: discardLogger()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -108,6 +125,7 @@ func TestRun_GracefulShutdownNoInflight(t *testing.T) {
 	f, err := New(Config{
 		Forwards:        []Forward{{Proto: "tcp", ListenAddr: fmt.Sprintf("127.0.0.1:%d", fwdPort), DestAddr: "127.0.0.1:1"}},
 		ShutdownTimeout: 2 * time.Second,
+		Logger:          discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -123,6 +141,7 @@ func TestRun_RetryUntilContextCancel(t *testing.T) {
 			DestAddr:   "127.0.0.1:80",
 		}},
 		BindTimeout: 30 * time.Second,
+		Logger:      discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

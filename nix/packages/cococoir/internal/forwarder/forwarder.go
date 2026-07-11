@@ -9,6 +9,12 @@
 // blocks until ctx is cancelled, then performs graceful shutdown
 // (close listeners, wait for in-flight conns to drain with a timeout).
 // No background goroutines leak on shutdown.
+//
+// Logging: the forwarder uses log/slog for structured event output.
+// Callers pass a *slog.Logger in Config.Logger. If nil, slog.Default()
+// is used (writes to stderr in text format at Info level). The cmd
+// entry points configure the logger (component field, optional JSON
+// handler) before calling New. See internal/logger.
 package forwarder
 
 import (
@@ -16,7 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -28,38 +34,54 @@ const (
 	udpExpireCheckInterval = 60 * time.Second
 )
 
-// Config is the input to New. Forwards is required; the timeouts and
-// the UDP flow idle duration fall back to the Default* values when
-// zero, so callers can leave them unset.
+// Proto is the L4 protocol of a Forward. The string-typed enum
+// pattern keeps the JSON config schema human-readable
+// (`{"proto": "tcp"}`) while making invalid values a compile
+// error in any code that uses the constants directly. New()
+// rejects values that aren't ProtoTCP or ProtoUDP.
+type Proto string
+
+const (
+	ProtoTCP Proto = "tcp"
+	ProtoUDP Proto = "udp"
+)
+
 type Config struct {
 	Forwards        []Forward
 	ShutdownTimeout time.Duration
 	BindTimeout     time.Duration
 	UDPFlowIdle     time.Duration
+	Logger          *slog.Logger
 }
 
-// Forward is one L4 forwarding rule. ListenAddr is host:port; for
-// the edge it is typically a public IP:port, for the client it is
-// typically the WireGuard interface IP:port. DestAddr is host:port
-// of the upstream (for the edge, the customer's box over WG; for the
-// client, 127.0.0.1:<port> where local Caddy terminates TLS).
 type Forward struct {
 	ListenAddr string `json:"listen_addr"`
-	Proto      string `json:"proto"`
+	Proto      Proto  `json:"proto"`
 	DestAddr   string `json:"dest_addr"`
 }
 
-// Forwarder is the live L4 forwarder. Construct with New, drive with
-// Run, never reuse after Run returns.
+// ConfigError is returned by New when a Forward in cfg fails
+// validation. The Index field identifies which forward failed,
+// and Unwrap exposes the underlying validation message. Callers
+// can use errors.As to inspect; the cmd entry points just log.
+type ConfigError struct {
+	Index int
+	Err   error
+}
+
+func (e *ConfigError) Error() string {
+	return fmt.Sprintf("forwarder: forwards[%d]: %v", e.Index, e.Err)
+}
+
+func (e *ConfigError) Unwrap() error { return e.Err }
+
 type Forwarder struct {
 	cfg       Config
+	log       *slog.Logger
 	listeners []io.Closer
 	wg        sync.WaitGroup
 }
 
-// New validates cfg and returns a *Forwarder. It does not bind any
-// listeners; binding happens in Run so a failed bind is reported via
-// Run's return value rather than New.
 func New(cfg Config) (*Forwarder, error) {
 	if len(cfg.Forwards) == 0 {
 		return nil, errors.New("forwarder: no forwards in config")
@@ -73,26 +95,32 @@ func New(cfg Config) (*Forwarder, error) {
 	if cfg.UDPFlowIdle == 0 {
 		cfg.UDPFlowIdle = DefaultUDPFlowIdle
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
 	for i, fwd := range cfg.Forwards {
-		if fwd.ListenAddr == "" {
-			return nil, fmt.Errorf("forwarder: forwards[%d]: empty listen_addr", i)
-		}
-		if fwd.DestAddr == "" {
-			return nil, fmt.Errorf("forwarder: forwards[%d]: empty dest_addr", i)
-		}
-		switch fwd.Proto {
-		case "tcp", "udp":
-		default:
-			return nil, fmt.Errorf("forwarder: forwards[%d]: unknown proto %q (want tcp or udp)", i, fwd.Proto)
+		if err := validateForward(fwd); err != nil {
+			return nil, &ConfigError{Index: i, Err: err}
 		}
 	}
-	return &Forwarder{cfg: cfg}, nil
+	return &Forwarder{cfg: cfg, log: cfg.Logger}, nil
 }
 
-// Run binds every forward in cfg, then blocks until ctx is cancelled,
-// then performs graceful shutdown. Returns nil on a clean shutdown, an
-// error if any listener failed to bind within BindTimeout, or ctx.Err()
-// if ctx was cancelled mid-bind.
+func validateForward(fwd Forward) error {
+	if fwd.ListenAddr == "" {
+		return errors.New("empty listen_addr")
+	}
+	if fwd.DestAddr == "" {
+		return errors.New("empty dest_addr")
+	}
+	switch fwd.Proto {
+	case ProtoTCP, ProtoUDP:
+		return nil
+	default:
+		return fmt.Errorf("unknown proto %q (want %q or %q)", fwd.Proto, ProtoTCP, ProtoUDP)
+	}
+}
+
 func (f *Forwarder) Run(ctx context.Context) error {
 	for _, fwd := range f.cfg.Forwards {
 		if err := f.start(ctx, fwd); err != nil {
@@ -100,40 +128,40 @@ func (f *Forwarder) Run(ctx context.Context) error {
 			return fmt.Errorf("forwarder: start %s %s: %w", fwd.Proto, fwd.ListenAddr, err)
 		}
 	}
-	log.Printf("forwarder: running %d forward(s)", len(f.cfg.Forwards))
+	f.log.Info("forwarder running", "count", len(f.cfg.Forwards))
 	<-ctx.Done()
-	log.Printf("forwarder: shutting down (drain timeout %v)", f.cfg.ShutdownTimeout)
+	f.log.Info("forwarder shutting down", "drain_timeout", f.cfg.ShutdownTimeout)
 	return f.shutdown()
 }
 
 func (f *Forwarder) start(ctx context.Context, fwd Forward) error {
 	switch fwd.Proto {
-	case "tcp":
+	case ProtoTCP:
 		ln, err := retryListen(ctx, f.cfg.BindTimeout, "tcp", fwd.ListenAddr)
 		if err != nil {
 			return err
 		}
 		f.listeners = append(f.listeners, ln)
-		log.Printf("forwarder: tcp %s -> %s", fwd.ListenAddr, fwd.DestAddr)
+		f.log.Info("tcp forward bound", "listen_addr", fwd.ListenAddr, "dest_addr", fwd.DestAddr)
 		f.wg.Add(1)
 		go func() {
 			defer f.wg.Done()
-			serveTCP(ln, fwd.DestAddr)
+			serveTCP(ln, fwd.DestAddr, f.log)
 		}()
-	case "udp":
+	case ProtoUDP:
 		conn, err := retryListenPacket(ctx, f.cfg.BindTimeout, "udp", fwd.ListenAddr)
 		if err != nil {
 			return err
 		}
 		f.listeners = append(f.listeners, conn)
-		log.Printf("forwarder: udp %s -> %s", fwd.ListenAddr, fwd.DestAddr)
+		f.log.Info("udp forward bound", "listen_addr", fwd.ListenAddr, "dest_addr", fwd.DestAddr)
 		f.wg.Add(1)
 		go func() {
 			defer f.wg.Done()
-			serveUDP(conn, fwd.DestAddr, f.cfg.UDPFlowIdle)
+			serveUDP(conn, fwd.DestAddr, f.cfg.UDPFlowIdle, f.log)
 		}()
 	default:
-		return fmt.Errorf("unknown proto %q", fwd.Proto)
+		return fmt.Errorf("unknown proto %q (impossible: validated in New)", fwd.Proto)
 	}
 	return nil
 }
@@ -152,9 +180,9 @@ func (f *Forwarder) shutdown() error {
 	}()
 	select {
 	case <-drained:
-		log.Printf("forwarder: drained cleanly")
+		f.log.Info("forwarder drained")
 	case <-time.After(f.cfg.ShutdownTimeout):
-		log.Printf("forwarder: drain timed out after %v, exiting anyway", f.cfg.ShutdownTimeout)
+		f.log.Error("forwarder drain timed out", "drain_timeout", f.cfg.ShutdownTimeout)
 	}
 	return firstCloseErr
 }

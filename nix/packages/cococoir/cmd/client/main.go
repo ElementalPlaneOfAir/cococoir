@@ -9,12 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"log"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/ElementalPlaneOfAir/cococoir/nix/packages/cococoir/internal/forwarder"
+	"github.com/ElementalPlaneOfAir/cococoir/nix/packages/cococoir/internal/logger"
 )
 
 type configFile struct {
@@ -23,27 +24,37 @@ type configFile struct {
 
 func main() {
 	configPath := flag.String("config", "/etc/cococoir-client.json", "path to cococoir-client config JSON")
+	logFormat := flag.String("log-format", "text", "log format: text or json")
 	flag.Parse()
 
-	log.SetPrefix("cococoir-client ")
+	format, err := logger.ParseFormat(*logFormat)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	lg := format.Build("cococoir-client")
 
 	data, err := os.ReadFile(*configPath)
 	if err != nil {
-		log.Fatalf("read config %q: %v", *configPath, err)
+		lg.Error("read config failed", "path", *configPath, "err", err)
+		os.Exit(1)
 	}
 	var cfg configFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		log.Fatalf("parse config: %v", err)
+		lg.Error("parse config failed", "err", err)
+		os.Exit(1)
 	}
 
-	f, err := forwarder.New(forwarder.Config{Forwards: cfg.Forwards})
+	f, err := forwarder.New(forwarder.Config{Forwards: cfg.Forwards, Logger: lg})
 	if err != nil {
-		log.Fatalf("forwarder: %v", err)
+		lg.Error("forwarder init failed", "err", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := f.Run(ctx); err != nil {
-		log.Fatalf("forwarder: %v", err)
+		lg.Error("forwarder exited with error", "err", err)
+		os.Exit(1)
 	}
 }

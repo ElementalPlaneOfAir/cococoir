@@ -2,7 +2,7 @@
 package forwarder
 
 import (
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -13,22 +13,22 @@ type udpFlow struct {
 	last time.Time
 }
 
-func serveUDP(ln *net.UDPConn, destAddr string, idleTimeout time.Duration) {
+func serveUDP(ln *net.UDPConn, destAddr string, idleTimeout time.Duration, log *slog.Logger) {
 	dst, err := net.ResolveUDPAddr("udp", destAddr)
 	if err != nil {
-		log.Printf("forwarder: resolve udp %s: %v", destAddr, err)
+		log.Error("resolve udp failed", "dest_addr", destAddr, "err", err)
 		return
 	}
 	var mu sync.Mutex
 	flows := make(map[string]*udpFlow)
 
-	go expireIdleFlows(&mu, flows, idleTimeout)
+	go expireIdleFlows(&mu, flows, idleTimeout, log)
 
 	buf := make([]byte, 65535)
 	for {
 		n, src, err := ln.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("forwarder: read udp %s: %v", ln.LocalAddr(), err)
+			log.Warn("read udp failed", "addr", ln.LocalAddr().String(), "err", err)
 			return
 		}
 		key := src.String()
@@ -38,30 +38,32 @@ func serveUDP(ln *net.UDPConn, destAddr string, idleTimeout time.Duration) {
 			dc, err := net.DialUDP("udp", nil, dst)
 			if err != nil {
 				mu.Unlock()
-				log.Printf("forwarder: dial udp %s: %v", destAddr, err)
+				log.Error("dial udp failed", "dest_addr", destAddr, "err", err)
 				continue
 			}
 			fl = &udpFlow{dst: dc, last: time.Now()}
 			flows[key] = fl
-			log.Printf("forwarder: udp flow %s <-> %s", key, destAddr)
-			go relayUDPResponses(ln, dc, src, key, &mu, flows)
+			log.Info("udp flow opened", "src", key, "dest", destAddr)
+			go relayUDPResponses(ln, dc, src, key, &mu, flows, log)
 		}
 		fl.last = time.Now()
 		mu.Unlock()
 		if _, err := fl.dst.Write(buf[:n]); err != nil {
-			log.Printf("forwarder: write udp %s: %v", destAddr, err)
+			log.Error("write udp failed", "dest_addr", destAddr, "err", err)
 		}
 	}
 }
 
-func relayUDPResponses(ln *net.UDPConn, dc *net.UDPConn, srcAddr *net.UDPAddr, key string, mu *sync.Mutex, flows map[string]*udpFlow) {
+func relayUDPResponses(ln *net.UDPConn, dc *net.UDPConn, srcAddr *net.UDPAddr, key string, mu *sync.Mutex, flows map[string]*udpFlow, log *slog.Logger) {
 	rbuf := make([]byte, 65535)
 	for {
 		m, err := dc.Read(rbuf)
 		if err != nil {
+			log.Info("udp flow relay exited", "src", key, "err", err)
 			return
 		}
 		if _, err := ln.WriteToUDP(rbuf[:m], srcAddr); err != nil {
+			log.Warn("udp relay write failed", "src", key, "err", err)
 			return
 		}
 		mu.Lock()
@@ -72,7 +74,7 @@ func relayUDPResponses(ln *net.UDPConn, dc *net.UDPConn, srcAddr *net.UDPAddr, k
 	}
 }
 
-func expireIdleFlows(mu *sync.Mutex, flows map[string]*udpFlow, idleTimeout time.Duration) {
+func expireIdleFlows(mu *sync.Mutex, flows map[string]*udpFlow, idleTimeout time.Duration, log *slog.Logger) {
 	ticker := time.NewTicker(udpExpireCheckInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -82,7 +84,7 @@ func expireIdleFlows(mu *sync.Mutex, flows map[string]*udpFlow, idleTimeout time
 			if now.Sub(fl.last) > idleTimeout {
 				_ = fl.dst.Close()
 				delete(flows, k)
-				log.Printf("forwarder: udp expire flow %s", k)
+				log.Info("udp flow expired", "src", k)
 			}
 		}
 		mu.Unlock()
