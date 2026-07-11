@@ -4,26 +4,31 @@
 # Two-VM nixosTest that exercises the full L4-forwarder-over-WG path:
 #
 #   curl (on edge)
-#     -> cococoir-edge listener (0.0.0.0:80)
+#     -> cococoir-edge listener (192.168.1.10:80, per-IP bind)
 #       -> WireGuard tunnel (10.10.0.0/24)
 #         -> cococoir-client listener (10.10.0.2:80)
 #           -> 127.0.0.1:80 (python3 -m http.server)
 #
-# If the test passes, the data path works: a public listener on the
-# VPS can be reached, forwarded over WireGuard to the customer box,
-# and handed off to a local service. This is the core of the cococoir
-# networking model.
+# If the test passes, the data path works: a per-IP-bound listener on
+# the VPS can be reached, forwarded over WireGuard to the customer
+# box, and handed off to a local service. This is the core of the
+# cococoir networking model, and the per-IP bind exercises the v0.5
+# PR 1 forwarder's per-IP code path (retry-with-backoff on the
+# initial bind, graceful shutdown). The forwarder waits for the IP
+# to appear on the local interface before binding, so the test adds
+# 192.168.1.10 as a secondary address on eth1.
 #
-# What this test does NOT cover (intentional, v0):
-#   - Per-customer IPv4 binding (the edge binds 0.0.0.0; per-customer
-#     IPs come in v0.5 PR 1 / cluster expansion).
+# What this test does NOT cover (intentional, v0/v0.5):
+#   - Multi-customer per-IP binding on a single VPS (v0.5 PR 2
+#     brings Hetzner IP provisioning; this test has a single
+#     bind, but the forwarder code path is the same).
 #   - TLS (Caddy lives on the customer box and is not in this test;
 #     the v0.5 Caddy module will add a TLS-terminating test).
 #   - The control channel between edge and client (v0.5 PR 4).
 #   - The probe system (v0.5 PR 4).
 #
 # Why this is the right v0 test: the "given 3 inputs, does the system
-# work end-to-end" question (PLAN.md, "Why 3 inputs, not zero config")
+# work end-to-end" question (PLAN_2.md, "Why 3 inputs, not zero config")
 # starts with the network. If the forwarder can't carry a single
 # HTTP request from the public listener to a local service, nothing
 # else matters.
@@ -58,15 +63,29 @@ in {
         # path, so no explicit override is needed. Same shape as the
         # operator workflow in production: define forwards in Nix,
         # serialize to JSON, drop it at the standard path.
+        #
+        # The forwarder binds to 192.168.1.10:80 (per-IP, not
+        # 0.0.0.0) so this test exercises the v0.5 PR 1 per-IP
+        # binding code path. 192.168.1.10 is assigned to eth1
+        # below as a /32 secondary.
         environment.etc."cococoir-edge.json".text = builtins.toJSON {
           forwards = [
             {
-              listen_addr = "0.0.0.0:80";
+              listen_addr = "192.168.1.10:80";
               proto = "tcp";
               dest_addr = "10.10.0.2:80";
             }
           ];
         };
+
+        # Add 192.168.1.10 as a /32 secondary on the user-network
+        # interface. nixosTest's default addressing puts a different
+        # 192.168.1.x address on eth1 already; this is a second
+        # local IP that the forwarder binds to. The /32 prefix
+        # avoids any interference with the test's own routing.
+        networking.interfaces.eth1.ipv4.addresses = [
+          { address = "192.168.1.10"; prefixLength = 32; }
+        ];
 
         networking.wireguard.interfaces.wg0 = {
           privateKey = edgePrivate;
@@ -164,10 +183,10 @@ in {
       edge.wait_until_succeeds("ping -c 1 -W 2 10.10.0.2", timeout=10)
 
       # The test: from inside the edge VM, curl hits the local
-      # cococoir-edge listener, which forwards over WG to the client,
-      # which forwards to local python on 127.0.0.1:80. The HTML body
-      # is the assertion.
-      output = edge.succeed("curl -sf http://127.0.0.1:80/")
+      # cococoir-edge listener at 192.168.1.10:80 (per-IP bind),
+      # which forwards over WG to the client, which forwards to
+      # local python on 127.0.0.1:80. The HTML body is the assertion.
+      output = edge.succeed("curl -sf http://192.168.1.10:80/")
       assert "cococoir test response" in output, f"unexpected response: {output!r}"
       print("edge-forward: PASS")
     '';

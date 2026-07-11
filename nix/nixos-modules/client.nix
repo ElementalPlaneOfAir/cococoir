@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — Go client service module (Day 7-8).
+# Cococoir v2 — Go client service module.
+#
+# v0.5 PR 1: the cococoir-client binary is the second of two entry
+# points built from the consolidated nix/packages/cococoir module.
+# The shared forwarder lives in nix/packages/cococoir/internal/forwarder.
+# See edge.nix for the per-IP binding, retry-with-backoff, and
+# graceful shutdown notes.
 #
 # Runs on the customer box. The client receives L4 traffic from
 # cococoir-edge over the WireGuard tunnel and forwards it to
@@ -8,12 +14,7 @@
 # from the public internet to the customer box; the client forwards
 # from the tunnel to the local services.
 #
-# v0 scope: install the cococoir-client binary and run it under
-# systemd with a JSON config. Symmetric to edge.nix, but lives on
-# the customer box and binds to the WG interface instead of a
-# public IP.
-#
-# What this module does NOT do (intentional, v0):
+# v0 scope of this module:
 #   - No SIGHUP hot-reload. NixOS rebuild -> systemd restart.
 #   - No WireGuard interface config. Operator wires
 #     `networking.wireguard.interfaces.wg0` in the machine config
@@ -25,7 +26,7 @@
 #   - No control-channel client. The client grows an HTTP client in
 #     v0.5 PR 4 to talk to the edge's admin API.
 #
-# Config schema (JSON, matches the Go binary in nix/packages/client):
+# Config schema (JSON, matches the Go binary in nix/packages/cococoir):
 #   { "forwards": [
 #       { "listen_addr": "10.10.0.2:443", "proto": "tcp", "dest_addr": "127.0.0.1:443" },
 #       { "listen_addr": "10.10.0.2:443", "proto": "udp", "dest_addr": "127.0.0.1:443" }
@@ -37,7 +38,7 @@
   ...
 }: let
   cfg = config.services.cococoir-client;
-  clientPkg = pkgs.callPackage ../packages/client {};
+  clientPkg = pkgs.callPackage ../packages/cococoir {};
 in {
   options.services.cococoir-client = {
     enable = lib.mkEnableOption "cococoir v2 Go client service (L4 TCP/UDP forwarder on the customer box)";
@@ -58,8 +59,8 @@ in {
     package = lib.mkOption {
       type = lib.types.package;
       default = clientPkg;
-      defaultText = lib.literalExpression "pkgs.callPackage ../packages/client {}";
-      description = "cococoir-client package. Override to point at a fork or pinned version.";
+      defaultText = lib.literalExpression "pkgs.callPackage ../packages/cococoir {}";
+      description = "cococoir package. Override to point at a fork or pinned version. The systemd unit uses the `cococoir-client` binary out of this package's bin/.";
     };
   };
 
