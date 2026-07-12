@@ -10,7 +10,9 @@
 # graceful shutdown all live in the shared package. See PLAN_2.md
 # ADR-006 and the v0.5 PR 1 spec.
 #
-# stdlib-only: no go.mod deps, vendorHash = null.
+# v0.5 added: internal/store (bbolt-backed customer records),
+# internal/logger (structured slog setup), -log-format flag in
+# both binaries. vendorHash pins the bbolt + transitive deps.
 {
   lib,
   buildGoModule,
@@ -24,7 +26,7 @@ buildGoModule {
 
   src = ./.;
 
-  vendorHash = null;
+  vendorHash = "sha256-sZ2i3aCVufv5d2/NWb2OpM7/omEo1RmVmfOou+WyVKM=";
 
   subPackages = [
     "cmd/edge"

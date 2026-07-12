@@ -2,16 +2,17 @@
 // Package logger builds the structured *slog.Logger used by the
 // cococoir binaries. The cmd entry points (cmd/edge, cmd/client)
 // call ParseFormat on their -log-format flag, then call Build on
-// the resulting Format. The same data model (component, msg,
-// structured key/value attrs) is emitted whether the handler is
-// text or JSON, so a future telemetry pipeline can ingest the JSON
-// form without needing to re-parse human-readable text.
+// the resulting Format with os.Stderr. The same data model
+// (component, msg, structured key/value attrs) is emitted whether
+// the handler is text or JSON, so a future telemetry pipeline can
+// ingest the JSON form without needing to re-parse human-readable
+// text.
 package logger
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
 )
 
 // Format is the structured-logging output format. Use the FormatText
@@ -36,23 +37,22 @@ func ParseFormat(s string) (Format, error) {
 	}
 }
 
-// Build returns a *slog.Logger writing to stderr in f's format at
-// Info level, with a "component" attribute attached to every
-// record. Callers should obtain Format from ParseFormat; calling
-// Build with an unvalidated Format falls back to text and writes
-// a one-line warning to stderr, so the binary never crashes over
-// a misconfigured log format.
-func (f Format) Build(component string) *slog.Logger {
+// Build returns a *slog.Logger writing to w in f's format at Info
+// level, with a "component" attribute attached to every record.
+// Callers must obtain Format from ParseFormat; an unknown Format
+// is a programmer error and panics. The cmd entry points validate
+// via ParseFormat and os.Exit(1) on failure, so this panic is
+// unreachable in production.
+func (f Format) Build(w io.Writer, component string) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
 	var handler slog.Handler
 	switch f {
 	case FormatJSON:
-		handler = slog.NewJSONHandler(os.Stderr, opts)
+		handler = slog.NewJSONHandler(w, opts)
 	case FormatText:
-		handler = slog.NewTextHandler(os.Stderr, opts)
+		handler = slog.NewTextHandler(w, opts)
 	default:
-		os.Stderr.WriteString(fmt.Sprintf("logger: invalid format %q, using text\n", string(f)))
-		handler = slog.NewTextHandler(os.Stderr, opts)
+		panic(fmt.Sprintf("logger: unknown format %q, add a case in Build", string(f)))
 	}
 	return slog.New(handler).With("component", component)
 }

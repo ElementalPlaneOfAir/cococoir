@@ -54,6 +54,34 @@ in {
       defaultText = lib.literalExpression "pkgs.callPackage ../packages/cococoir {}";
       description = "cococoir package. Override to point at a fork or pinned version. The systemd unit uses the `cococoir-edge` binary out of this package's bin/.";
     };
+
+    logFormat = lib.mkOption {
+      type = lib.types.enum ["text" "json"];
+      default = "text";
+      defaultText = lib.literalExpression "text";
+      description = ''
+        Structured-logging output format. "text" is the human-readable
+        default; "json" emits one JSON object per record on stderr and
+        is what a future telemetry pipeline (v0.5 PR 4) will ingest.
+        A misconfigured value here fails the systemd unit at startup,
+        not at log time.
+      '';
+    };
+
+    healthAddr = lib.mkOption {
+      type = lib.types.str;
+      default = "127.0.0.1:9090";
+      defaultText = lib.literalExpression "127.0.0.1:9090";
+      description = ''
+        Address for the /healthz, /readyz, /status HTTP endpoints.
+        Default binds to localhost only — the health server is for
+        local observability (operator curls, future on-box collector,
+        nixosTest). Set to "0.0.0.0:9090" to expose externally, or
+        "" to disable the health server entirely. A future v0.5 PR 4
+        change will add a bearer-token auth mode for cross-node
+        collection.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -65,7 +93,7 @@ in {
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/cococoir-edge -config ${cfg.configFile}";
+        ExecStart = "${cfg.package}/bin/cococoir-edge -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
         Restart = "on-failure";
         RestartSec = 5;
 

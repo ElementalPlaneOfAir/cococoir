@@ -188,6 +188,34 @@ in {
       # local python on 127.0.0.1:80. The HTML body is the assertion.
       output = edge.succeed("curl -sf http://192.168.1.10:80/")
       assert "cococoir test response" in output, f"unexpected response: {output!r}"
+
+      # Health endpoint: each cococoir service exposes /healthz, /readyz,
+      # /status on 127.0.0.1:9090 by default. The endpoints let a
+      # misbehaving VM be inspected from the test driver (or an
+      # operator) without booting the test again.
+      edge.wait_for_open_port(9090)
+      client.wait_for_open_port(9090)
+
+      # /healthz is always 200 if the process is alive.
+      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:9090/healthz"), "edge /healthz did not return ok"
+      assert "ok" in client.succeed("curl -sf http://127.0.0.1:9090/healthz"), "client /healthz did not return ok"
+
+      # /readyz returns 200 once at least one forward is bound.
+      assert edge.succeed("curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/readyz") == "200", "edge /readyz not 200"
+      assert client.succeed("curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/readyz") == "200", "client /readyz not 200"
+
+      # /status returns the full state as JSON. Assert the component
+      # field and that the bind is recorded on both services.
+      edge_status = edge.succeed("curl -sf http://127.0.0.1:9090/status")
+      assert '"component": "cococoir-edge"' in edge_status, f"edge status missing component: {edge_status!r}"
+      assert '"bound": true' in edge_status, f"edge status missing bound:true: {edge_status!r}"
+      assert '"listen_addr": "192.168.1.10:80"' in edge_status, f"edge status missing per-IP listen: {edge_status!r}"
+
+      client_status = client.succeed("curl -sf http://127.0.0.1:9090/status")
+      assert '"component": "cococoir-client"' in client_status, f"client status missing component: {client_status!r}"
+      assert '"bound": true' in client_status, f"client status missing bound:true: {client_status!r}"
+      assert '"listen_addr": "10.10.0.2:80"' in client_status, f"client status missing WG listen: {client_status!r}"
+
       print("edge-forward: PASS")
     '';
   };

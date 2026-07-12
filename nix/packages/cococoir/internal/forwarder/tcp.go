@@ -7,14 +7,18 @@ import (
 	"net"
 )
 
-func serveTCP(ln net.Listener, destAddr string, log *slog.Logger) {
+func serveTCP(ln net.Listener, destAddr string, log *slog.Logger, f *Forwarder) {
 	for {
 		src, err := ln.Accept()
 		if err != nil {
 			log.Warn("accept failed", "addr", ln.Addr().String(), "err", err)
 			return
 		}
-		go handleTCPConn(src, destAddr, log)
+		f.incTCPConns()
+		go func() {
+			defer f.decTCPConns()
+			handleTCPConn(src, destAddr, log)
+		}()
 	}
 }
 

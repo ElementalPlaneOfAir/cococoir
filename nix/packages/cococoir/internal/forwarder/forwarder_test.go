@@ -163,6 +163,260 @@ func TestRun_RetryUntilContextCancel(t *testing.T) {
 	}
 }
 
+func TestStats_DefaultComponent(t *testing.T) {
+	f, err := New(Config{Forwards: []Forward{{Proto: ProtoTCP, ListenAddr: "127.0.0.1:0", DestAddr: "127.0.0.1:1"}}, Logger: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.cfg.Component; got != "cococoir" {
+		t.Errorf("default Component = %q, want %q", got, "cococoir")
+	}
+}
+
+func TestStats_CustomComponent(t *testing.T) {
+	f, err := New(Config{
+		Forwards:  []Forward{{Proto: ProtoTCP, ListenAddr: "127.0.0.1:0", DestAddr: "127.0.0.1:1"}},
+		Component: "cococoir-edge",
+		Logger:    discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Stats().Component; got != "cococoir-edge" {
+		t.Errorf("Stats().Component = %q, want %q", got, "cococoir-edge")
+	}
+}
+
+func TestStats_InitialState(t *testing.T) {
+	f, err := New(Config{
+		Forwards: []Forward{{Proto: ProtoTCP, ListenAddr: "127.0.0.1:0", DestAddr: "127.0.0.1:1"}},
+		Logger:   discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := f.Stats()
+	if stats.Component != "cococoir" {
+		t.Errorf("Component = %q, want %q", stats.Component, "cococoir")
+	}
+	if stats.TCPConns != 0 {
+		t.Errorf("TCPConns = %d, want 0", stats.TCPConns)
+	}
+	if stats.UDPFlows != 0 {
+		t.Errorf("UDPFlows = %d, want 0", stats.UDPFlows)
+	}
+	if len(stats.Forwards) != 0 {
+		t.Errorf("Forwards = %d, want 0 (no binds yet)", len(stats.Forwards))
+	}
+	if stats.StartedAt.IsZero() {
+		t.Error("StartedAt is zero")
+	}
+	if stats.UptimeSeconds < 0 {
+		t.Errorf("UptimeSeconds = %v, want >= 0", stats.UptimeSeconds)
+	}
+}
+
+func TestStats_RecordsBoundForward(t *testing.T) {
+	port := pickFreeTCPPort(t)
+	upstream, _ := net.Listen("tcp", "127.0.0.1:0")
+	_ = upstream.Close()
+	f, err := New(Config{
+		Forwards: []Forward{{
+			Proto:      ProtoTCP,
+			ListenAddr: fmt.Sprintf("127.0.0.1:%d", port),
+			DestAddr:   upstream.Addr().String(),
+		}},
+		Component: "cococoir-edge",
+		Logger:    discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = runForwarder(t, f)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stats := f.Stats()
+		if len(stats.Forwards) == 1 && stats.Forwards[0].Bound {
+			if !stats.Forwards[0].BoundAt.After(time.Time{}) {
+				t.Error("BoundAt is zero, want a real time")
+			}
+			if stats.Forwards[0].LastError != "" {
+				t.Errorf("LastError = %q, want empty", stats.Forwards[0].LastError)
+			}
+			if stats.Forwards[0].ListenAddr != fmt.Sprintf("127.0.0.1:%d", port) {
+				t.Errorf("ListenAddr = %q, want %q", stats.Forwards[0].ListenAddr, fmt.Sprintf("127.0.0.1:%d", port))
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("forwarder never recorded bound state; stats = %+v", f.Stats())
+}
+
+func TestStats_RecordsBindError(t *testing.T) {
+	f, err := New(Config{
+		Forwards: []Forward{{
+			Proto:      ProtoTCP,
+			ListenAddr: "192.0.2.1:80",
+			DestAddr:   "127.0.0.1:80",
+		}},
+		BindTimeout: 100 * time.Millisecond,
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- f.Run(ctx) }()
+
+	select {
+	case <-runErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after BindTimeout expired")
+	}
+
+	stats := f.Stats()
+	if len(stats.Forwards) != 1 {
+		t.Fatalf("Forwards = %d, want 1", len(stats.Forwards))
+	}
+	fs := stats.Forwards[0]
+	if fs.Bound {
+		t.Error("Bound = true, want false")
+	}
+	if fs.LastError == "" {
+		t.Error("LastError is empty, want a bind error message")
+	}
+	if fs.BoundAt != nil {
+		t.Errorf("BoundAt = %v, want nil", *fs.BoundAt)
+	}
+}
+
+func TestStats_TCPConnCount(t *testing.T) {
+	upstreamPort := pickFreeTCPPort(t)
+	upstream, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", upstreamPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+
+	fwdPort := pickFreeTCPPort(t)
+	f, err := New(Config{
+		Forwards: []Forward{{
+			Proto:      ProtoTCP,
+			ListenAddr: fmt.Sprintf("127.0.0.1:%d", fwdPort),
+			DestAddr:   upstream.Addr().String(),
+		}},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = runForwarder(t, f)
+
+	msg := []byte("ping")
+	_ = roundTripTCP(t, fwdPort, msg, 2*time.Second)
+	_ = roundTripTCP(t, fwdPort, msg, 2*time.Second)
+
+	waitDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if f.Stats().TCPConns == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("TCPConns = %d after conns closed, want 0", f.Stats().TCPConns)
+}
+
+func TestStats_UDPFlowCount(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+	go echoUDP(upstream)
+
+	fwdPort := pickFreeUDPPort(t)
+	f, err := New(Config{
+		Forwards: []Forward{{
+			Proto:      ProtoUDP,
+			ListenAddr: fmt.Sprintf("127.0.0.1:%d", fwdPort),
+			DestAddr:   upstream.LocalAddr().String(),
+		}},
+		UDPFlowIdle: 100 * time.Millisecond,
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = runForwarder(t, f)
+
+	_ = roundTripUDP(t, fwdPort, []byte("ping"), 2*time.Second)
+
+	waitDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if f.Stats().UDPFlows == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("UDPFlows = %d after idle timeout, want 0", f.Stats().UDPFlows)
+}
+
+func TestStats_ForwardsSliceIsCopy(t *testing.T) {
+	upstream, _ := net.Listen("tcp", "127.0.0.1:0")
+	_ = upstream.Close()
+	f, err := New(Config{
+		Forwards: []Forward{{Proto: ProtoTCP, ListenAddr: "127.0.0.1:0", DestAddr: upstream.Addr().String()}},
+		Logger:   discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = runForwarder(t, f)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(f.Stats().Forwards) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(f.Stats().Forwards) == 0 {
+		t.Fatalf("expected at least one forward after bind; stats = %+v", f.Stats())
+	}
+
+	stats := f.Stats()
+	stats.Forwards[0].Bound = false
+	stats.Forwards[0].LastError = "mutated by test"
+
+	again := f.Stats()
+	if !again.Forwards[0].Bound {
+		t.Error("mutating Stats().Forwards affected the forwarder state; should be a copy")
+	}
+	if again.Forwards[0].LastError != "" {
+		t.Errorf("LastError = %q, want empty (mutation leaked through)", again.Forwards[0].LastError)
+	}
+}
+
 func TestIsTransientBindErr(t *testing.T) {
 	cases := []struct {
 		name string
