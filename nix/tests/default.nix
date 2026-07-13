@@ -16,10 +16,11 @@
 # Future layers:
 #   L3 (customer-journey): scripted HTTP/API calls simulating a real
 #                          customer signup, login, upload. v0.5 PR 3-4.
-{pkgs}:
+{pkgs, sopsModule ? null}:
 let
   lib = pkgs.lib;
   edgeTests = import ./edge {inherit pkgs;};
+  storageTests = import ./storage {inherit pkgs; sopsModule = if sopsModule == null then [] else [ sopsModule ];};
   cococoirPkg = pkgs.callPackage ../packages/cococoir {};
 in {
   # ── L1: option tree ──────────────────────────────────────────────
@@ -113,4 +114,11 @@ in {
   # WireGuard tunnel -> cococoir-client (box) -> 127.0.0.1:80
   # (python http server, Caddy stand-in). See
   # nix/tests/edge/default.nix for the full design.
-} // edgeTests
+
+  # ── v2 gate: 1-VM nixosTest for the storage layer ──────────────
+  # Single NixOS VM with sops-nix + Garage + FUSE mount + native
+  # S3 PUT/GET. This is the v2 foundation test: it exercises the
+  # storage option tree, the sops-nix secret decryption, the
+  # bucket-init oneshot, the FUSE service, and the S3 client path.
+  # See nix/tests/storage/default.nix for the full design.
+} // edgeTests // storageTests

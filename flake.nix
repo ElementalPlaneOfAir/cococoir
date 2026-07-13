@@ -6,6 +6,7 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     import-tree.url = "github:denful/import-tree";
+    sops-nix.url = "github:Mic92/sops-nix";
   };
 
   outputs = inputs:
@@ -32,8 +33,11 @@
         ];
       };
 
-      perSystem = {pkgs, ...}: {
-        checks = import ./nix/tests {inherit pkgs;};
+      perSystem = {pkgs, self', ...}: {
+        checks = import ./nix/tests {
+          inherit pkgs;
+          sopsModule = inputs.sops-nix.nixosModules.sops;
+        };
       };
     };
 }
