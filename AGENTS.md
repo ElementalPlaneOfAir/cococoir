@@ -5,6 +5,9 @@
 - Make sure to ask questions if the task is unclear, or you feel the instructions dont make sense as you are completing a task.
 - "Perfection is not achieved when there is nothing left to add, it is achieved when there is nothing left to remove."
 
+
+
+
 # Code Architecture Directives
 
 - Write and architect code with a **Zero technical debt** policy. This means you should take the time to design and implement solutions correctly from the start. And if you see a feature that is designed badly, fix and rearchitect it as soon as possible, before building anything else on top of it.
