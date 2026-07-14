@@ -18,3 +18,5 @@ terraform.tfvars
 sops/
 vars/
 inventory.json
+
+*.qcow2
