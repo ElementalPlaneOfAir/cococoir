@@ -31,6 +31,32 @@
   pkgs,
   ...
 }: let
+  # Static SSH host key. Without this, the nixpkgs openssh
+  # module's default host keys are content-addressed to the
+  # nix store and change whenever the activation derivation's
+  # closure shifts (e.g. a config edit that changes the
+  # activation's input set). That breaks the client's
+  # known_hosts on every qcow2 rebuild. A fixed, committed
+  # key gives a stable fingerprint for the lifetime of the
+  # repo.
+  #
+  # The private key is checked in plaintext at
+  # ./v2-jellyfin/ssh_host_ed25519_key. This is acceptable
+  # because the v2-jellyfin VM is a single-tenant dev image
+  # with no untrusted clients. Production hosts must generate
+  # fresh host keys at install time, never reuse these.
+  #
+  # Fingerprint (verify on first connect):
+  #   SHA256:VpWK7zm4jFW3R1YnvZR54ylYUJAugU1DoD5tApKapNc
+  sshHostKeys =
+    pkgs.runCommand "v2-jellyfin-ssh-host-keys" {} ''
+      mkdir -p $out
+      cp ${./v2-jellyfin/ssh_host_ed25519_key} $out/ssh_host_ed25519_key
+      cp ${./v2-jellyfin/ssh_host_ed25519_key.pub} $out/ssh_host_ed25519_key.pub
+      chmod 0600 $out/ssh_host_ed25519_key
+      chmod 0644 $out/ssh_host_ed25519_key.pub
+    '';
+
   # Build-time secret generation, same pattern as the storage
   # nixosTest. In production, sops-nix writes these files with
   # mode 0440 / 0400 at /run/secrets/<name>.
@@ -80,6 +106,12 @@ in {
   services.openssh = {
     enable = true;
     openFirewall = true;
+    hostKeys = [
+      {
+        type = "ed25519";
+        path = "${sshHostKeys}/ssh_host_ed25519_key";
+      }
+    ];
     settings = {
       PermitRootLogin = "yes";
       PasswordAuthentication = true;
