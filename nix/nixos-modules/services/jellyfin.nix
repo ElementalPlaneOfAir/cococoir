@@ -137,8 +137,10 @@ in {
       [ "cococoir-fuse-${cfg.bucket}.service" ];
 
     services.caddy.virtualHosts."${cfg.domain}".extraConfig =
-      if cfg.public
-      then "reverse_proxy 127.0.0.1:${toString cfg.port}"
-      else ''respond "Forbidden" 403'';
+      lib.mkDefault (
+        if cfg.public
+        then "reverse_proxy 127.0.0.1:${toString cfg.port}"
+        else ''respond "Forbidden" 403''
+      );
   };
 }

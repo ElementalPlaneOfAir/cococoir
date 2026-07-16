@@ -8,23 +8,29 @@
 #   nix run .#v2-jellyfin -- -nographic
 #
 # Then from your normal computer (the host):
-#   curl --resolve jellyfin.local:8080:127.0.0.1 \
-#        http://jellyfin.local:8080/health
-#   # should return 200 with body "Healthy"
+#   curl --resolve jellyfin.local:4433:127.0.0.1 -k \
+#        https://jellyfin.local:4433/health
+#   # should return 200 with body "Healthy" (-k skips the cert
+#   # check; the cert is self-signed and per-VM).
 #
-# To open in a browser, add to /etc/hosts (or equivalent):
-#   127.0.0.1 jellyfin.local
-# then visit http://jellyfin.local:8080 — you'll see Jellyfin's
-# setup wizard. Configure an admin user, add /media/entertain as
-# a library, and you'll see the pre-seeded welcome.txt.
+# To open in a browser, add `jellyfin.local` to your host's
+# /etc/hosts:
+#   sudo ./scripts/add-jellyfin-hosts.sh
+#   sudo ./scripts/add-jellyfin-hosts.sh rm   # when done
+# then visit https://jellyfin.local:4433 — your browser will
+# warn about the self-signed cert; accept it (it's a dev VM,
+# the cert is regenerated every build). You'll see Jellyfin's
+# setup wizard. Configure an admin user, add /media/entertain
+# as a library, and you'll see the pre-seeded welcome.txt.
 #
 # SSH in for inspection:
 #   ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 #       root@localhost
 #
-# The VM is hermetic: secrets are generated at build time, Garage
-# runs single-node, no sops-nix, no real network. Production
-# uses sops-nix with the user's age key.
+# The VM is hermetic: secrets and the TLS cert are generated at
+# build time, Garage runs single-node, no sops-nix, no real
+# network. Production uses sops-nix with the user's age key and
+# a real ACME certificate.
 {
   config,
   lib,
@@ -47,6 +53,24 @@
       chmod 0440 $out/access-key-id $out/secret-access-key
       chmod 0400 $out/rpc-secret $out/admin-token $out/metrics-token
     '';
+
+  # Build-time self-signed TLS cert for `jellyfin.local`. The
+  # browser will warn about it (it's a dev VM, the cert changes
+  # every build); -k on curl / "Accept the risk" in the browser
+  # gets past it. In production, sops-nix + ACME replace this.
+  testCerts = pkgs.runCommand "cococoir-v2-jellyfin-tls" {
+    buildInputs = [pkgs.openssl];
+  } ''
+    mkdir -p $out
+    openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout $out/key.pem -out $out/cert.pem -days 365 \
+      -subj "/CN=jellyfin.local" \
+      -addext "subjectAltName=DNS:jellyfin.local,DNS:localhost" \
+      >/dev/null 2>&1
+    chmod 0444 $out/cert.pem
+    chmod 0400 $out/key.pem
+  '';
+
   # NOTE: in modern nixpkgs (>= 25.05), `nixpkgs.lib.nixosSystem`
   # only includes nixos/modules/virtualisation/qemu-vm.nix in a
   # `vmVariant` submodule, not the main config. So options like
@@ -64,6 +88,10 @@ in {
     enable = true;
     allowedTCPPorts = [22 80 443];
   };
+
+  # Self-signed TLS cert for the Caddy vhost. Built at VM build
+  # time and read at runtime. See `testCerts` above.
+  environment.etc."cococoir-v2-jellyfin-tls".source = testCerts;
 
   # Real NixOS VM config. Grub on /dev/vda, ext4 root. Same pattern
   # as the v0 single-tenant test config.
@@ -123,15 +151,19 @@ in {
     buckets.media = {};
   };
 
-  # Caddy: serves the Jellyfin vhost on :80. The email option
-  # defaults to null and is only emitted into the Caddyfile when
-  # non-null. Setting `email = ""` is a parse error: Caddy's
-  # Caddyfile parser sees `email` followed by a line ending and
-  # bails. For a dev VM, leave email unset (null) — Caddy won't
-  # try ACME for `jellyfin.local`.
+  # Caddy: serves the Jellyfin vhost on :443 with the build-time
+  # self-signed cert. The Caddy vhost-options module doesn't
+  # expose a `tls` option, so we emit the `tls` directive via
+  # `extraConfig`. Caddy listens on :443 for the vhost and on
+  # :80 for the auto-redirect to https.
+  #
+  # The `email` option is left at its default (null) — Caddy
+  # doesn't try ACME for `jellyfin.local` (no real DNS), and
+  # setting `email = ""` is a parse error.
   services.caddy = {
     enable = true;
     virtualHosts."jellyfin.local".extraConfig = ''
+      tls /etc/cococoir-v2-jellyfin-tls/cert.pem /etc/cococoir-v2-jellyfin-tls/key.pem
       reverse_proxy 127.0.0.1:8096
     '';
   };
@@ -180,12 +212,15 @@ in {
     };
   };
 
-  # QEMU port forward: host :8080 -> guest :80 (Caddy).
+  # QEMU port forwards:
+  #   host :4433 -> guest :443  (Caddy, TLS)
+  #   host :2222 -> guest :22   (SSH)
+  # 4433 (not 443) on the host so we don't need root to bind.
   virtualisation.forwardPorts = [
     {
       from = "host";
-      host.port = 8080;
-      guest.port = 80;
+      host.port = 4433;
+      guest.port = 443;
     }
     {
       from = "host";
