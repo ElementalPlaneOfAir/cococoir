@@ -1,27 +1,38 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir v2 — manual VM: Jellyfin + Garage + Caddy.
+# Cococoir v2 — manual dev VM ("vmtest"). One VM hosts every
+# cococoir service under test, each behind its own Caddy vhost.
+# Today that's Jellyfin; nextcloud/gitea/etc. land here as the
+# service modules come online.
+#
+# Public names use the `cococoir-vmtest.local` cookie-jar so the
+# VM can route by hostname. The wildcard cert SAN covers the
+# whole jar.
 #
 # Run with:
-#   nix run .#v2-jellyfin
+#   nix run .#vmtest
 #   # or headless:
-#   nix run .#v2-jellyfin -- -nographic
+#   nix run .#vmtest -- -nographic
 #
 # Then from your normal computer (the host):
-#   curl --resolve jellyfin.local:4433:127.0.0.1 -k \
-#        https://jellyfin.local:4433/health
+#   curl --resolve jellyfin.cococoir-vmtest.local:4433:127.0.0.1 -k \
+#        https://jellyfin.cococoir-vmtest.local:4433/health
 #   # should return 200 with body "Healthy" (-k skips the cert
 #   # check; the cert is self-signed and per-VM).
 #
-# To open in a browser, add `jellyfin.local` to your host's
-# /etc/hosts:
-#   sudo ./scripts/add-jellyfin-hosts.sh
-#   sudo ./scripts/add-jellyfin-hosts.sh rm   # when done
-# then visit https://jellyfin.local:4433 — your browser will
-# warn about the self-signed cert; accept it (it's a dev VM,
-# the cert is regenerated every build). You'll see Jellyfin's
-# setup wizard. Configure an admin user, add /media/entertain
-# as a library, and you'll see the pre-seeded welcome.txt.
+# To open in a browser, add the per-service subdomains to your
+# host's /etc/hosts:
+#   sudo ./scripts/cococoir-vmtest-hosts.sh
+#   sudo ./scripts/cococoir-vmtest-hosts.sh rm   # when done
+# then visit https://jellyfin.cococoir-vmtest.local:4433 — your
+# browser will warn about the self-signed cert; accept it (it's
+# a dev VM, the cert is regenerated every build). You'll see
+# Jellyfin's setup wizard. Configure an admin user, add
+# /media/entertain as a library, and you'll see the pre-seeded
+# welcome.txt.
+#
+# On NixOS hosts /etc/hosts is read-only; the script will tell
+# you to add `networking.hosts` to your NixOS config instead.
 #
 # SSH in for inspection:
 #   ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -41,7 +52,7 @@
   # nixosTest. In production, sops-nix writes these files with
   # mode 0440 / 0400 at /run/secrets/<name>.
   testSecrets =
-    pkgs.runCommand "cococoir-v2-jellyfin-secrets" {
+    pkgs.runCommand "cococoir-vmtest-secrets" {
       buildInputs = [pkgs.openssl pkgs.gnused];
     } ''
       mkdir -p $out
@@ -54,18 +65,21 @@
       chmod 0400 $out/rpc-secret $out/admin-token $out/metrics-token
     '';
 
-  # Build-time self-signed TLS cert for `jellyfin.local`. The
-  # browser will warn about it (it's a dev VM, the cert changes
-  # every build); -k on curl / "Accept the risk" in the browser
-  # gets past it. In production, sops-nix + ACME replace this.
-  testCerts = pkgs.runCommand "cococoir-v2-jellyfin-tls" {
+  # Build-time self-signed TLS cert for the
+  # `*.cococoir-vmtest.local` cookie-jar. The browser will warn
+  # about it (it's a dev VM, the cert changes every build);
+  # -k on curl / "Accept the risk" in the browser gets past it.
+  # Caddy matches the longest host first, so future per-service
+  # vhosts just work without touching the cert. In production,
+  # sops-nix + ACME replace this.
+  testCerts = pkgs.runCommand "cococoir-vmtest-tls" {
     buildInputs = [pkgs.openssl];
   } ''
     mkdir -p $out
     openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout $out/key.pem -out $out/cert.pem -days 365 \
-      -subj "/CN=jellyfin.local" \
-      -addext "subjectAltName=DNS:jellyfin.local,DNS:localhost" \
+      -subj "/CN=*.cococoir-vmtest.local" \
+      -addext "subjectAltName=DNS:cococoir-vmtest.local,DNS:*.cococoir-vmtest.local" \
       >/dev/null 2>&1
     chmod 0444 $out/cert.pem
     chmod 0400 $out/key.pem
@@ -82,7 +96,7 @@ in {
   ];
 
   system.stateVersion = "25.11";
-  networking.hostName = "v2-jellyfin";
+  networking.hostName = "vmtest";
   networking.useDHCP = true;
   networking.firewall = {
     enable = true;
@@ -91,7 +105,7 @@ in {
 
   # Self-signed TLS cert for the Caddy vhost. Built at VM build
   # time and read at runtime. See `testCerts` above.
-  environment.etc."cococoir-v2-jellyfin-tls".source = testCerts;
+  environment.etc."cococoir-vmtest-tls".source = testCerts;
 
   # Real NixOS VM config. Grub on /dev/vda, ext4 root. Same pattern
   # as the v0 single-tenant test config.
@@ -124,7 +138,7 @@ in {
   # Storage layer: Garage single-node, one bucket, FUSE mount.
   # Secrets are the build-time generated ones; sops-nix would
   # replace them with /run/secrets/<name> paths in production.
-  environment.etc."cococoir-v2-jellyfin-secrets".source = testSecrets;
+  environment.etc."cococoir-vmtest-secrets".source = testSecrets;
 
   cococoir.storage = {
     enable = true;
@@ -142,38 +156,44 @@ in {
       capacity = "1T";
     };
     secrets = {
-      rpcSecretFile = "/etc/cococoir-v2-jellyfin-secrets/rpc-secret";
-      adminTokenFile = "/etc/cococoir-v2-jellyfin-secrets/admin-token";
-      metricsTokenFile = "/etc/cococoir-v2-jellyfin-secrets/metrics-token";
-      accessKeyIdFile = "/etc/cococoir-v2-jellyfin-secrets/access-key-id";
-      secretAccessKeyFile = "/etc/cococoir-v2-jellyfin-secrets/secret-access-key";
+      rpcSecretFile = "/etc/cococoir-vmtest-secrets/rpc-secret";
+      adminTokenFile = "/etc/cococoir-vmtest-secrets/admin-token";
+      metricsTokenFile = "/etc/cococoir-vmtest-secrets/metrics-token";
+      accessKeyIdFile = "/etc/cococoir-vmtest-secrets/access-key-id";
+      secretAccessKeyFile = "/etc/cococoir-vmtest-secrets/secret-access-key";
     };
     buckets.media = {};
   };
 
   # Caddy: serves the Jellyfin vhost on :443 with the build-time
-  # self-signed cert. The Caddy vhost-options module doesn't
-  # expose a `tls` option, so we emit the `tls` directive via
-  # `extraConfig`. Caddy listens on :443 for the vhost and on
-  # :80 for the auto-redirect to https.
+  # self-signed wildcard cert. The Caddy vhost-options module
+  # doesn't expose a `tls` option, so we emit the `tls` directive
+  # via `extraConfig`. Caddy listens on :443 for the vhost and
+  # on :80 for the auto-redirect to https.
+  #
+  # Future services (nextcloud, gitea, ...) get their own vhost
+  # block here with `reverse_proxy 127.0.0.1:<port>`. The
+  # wildcard cert SAN covers them all.
   #
   # The `email` option is left at its default (null) — Caddy
-  # doesn't try ACME for `jellyfin.local` (no real DNS), and
-  # setting `email = ""` is a parse error.
+  # doesn't try ACME for `*.cococoir-vmtest.local` (no real
+  # DNS), and setting `email = ""` is a parse error.
   services.caddy = {
     enable = true;
-    virtualHosts."jellyfin.local".extraConfig = ''
-      tls /etc/cococoir-v2-jellyfin-tls/cert.pem /etc/cococoir-v2-jellyfin-tls/key.pem
+    virtualHosts."jellyfin.cococoir-vmtest.local".extraConfig = ''
+      tls /etc/cococoir-vmtest-tls/cert.pem /etc/cococoir-vmtest-tls/key.pem
       reverse_proxy 127.0.0.1:8096
     '';
   };
 
   # Jellyfin service. `bucket` defaults to "media" (4-option
   # contract). Jellyfin's bucket + FUSE mount are auto-declared
-  # under cococoir.storage.* by the service module.
+  # under cococoir.storage.* by the service module. The domain
+  # lives in the `cococoir-vmtest.local` cookie-jar so the
+  # wildcard cert covers it.
   cococoir.services.jellyfin = {
     enable = true;
-    domain = "jellyfin.local";
+    domain = "jellyfin.cococoir-vmtest.local";
     public = true;
   };
 
@@ -204,7 +224,7 @@ in {
       ExecStart = pkgs.writeShellScript "pre-seed-media" ''
         cat > /media/entertain/welcome.txt <<'EOF'
         Hello from cococoir v2!
-        This file was pre-seeded by the v2-jellyfin VM config.
+        This file was pre-seeded by the cococoir vmtest VM config.
         The v2 single-machine stack (Garage S3 + FUSE mount + Jellyfin + Caddy)
         served it to you across the QEMU port forward.
         EOF
