@@ -72,19 +72,19 @@
   # Caddy matches the longest host first, so future per-service
   # vhosts just work without touching the cert. In production,
   # sops-nix + ACME replace this.
-  testCerts = pkgs.runCommand "vmtest-tls" {
-    buildInputs = [pkgs.openssl];
-  } ''
-    mkdir -p $out
-    openssl req -x509 -newkey rsa:2048 -nodes \
-      -keyout $out/key.pem -out $out/cert.pem -days 365 \
-      -subj "/CN=*.vmtest.local" \
-      -addext "subjectAltName=DNS:vmtest.local,DNS:*.vmtest.local" \
-      >/dev/null 2>&1
-    chmod 0444 $out/cert.pem
-    chmod 0400 $out/key.pem
-  '';
-
+  testCerts =
+    pkgs.runCommand "vmtest-tls" {
+      buildInputs = [pkgs.openssl];
+    } ''
+      mkdir -p $out
+      openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout $out/key.pem -out $out/cert.pem -days 365 \
+        -subj "/CN=*.vmtest.local" \
+        -addext "subjectAltName=DNS:vmtest.local,DNS:*.vmtest.local" \
+        >/dev/null 2>&1
+      chmod 0444 $out/cert.pem
+      chmod 0400 $out/key.pem
+    '';
   # NOTE: in modern nixpkgs (>= 25.05), `nixpkgs.lib.nixosSystem`
   # only includes nixos/modules/virtualisation/qemu-vm.nix in a
   # `vmVariant` submodule, not the main config. So options like
@@ -233,13 +233,10 @@ in {
   };
 
   # QEMU port forwards:
-  #   host :4433 -> guest :443  (Caddy, TLS)
-  #   host :2222 -> guest :22   (SSH)
-  # 4433 (not 443) on the host so we don't need root to bind.
   virtualisation.forwardPorts = [
     {
       from = "host";
-      host.port = 4433;
+      host.port = 443;
       guest.port = 443;
     }
     {
