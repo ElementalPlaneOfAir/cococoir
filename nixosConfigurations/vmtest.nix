@@ -5,7 +5,7 @@
 # Today that's Jellyfin; nextcloud/gitea/etc. land here as the
 # service modules come online.
 #
-# Public names use the `cococoir-vmtest.local` cookie-jar so the
+# Public names use the `vmtest.local` cookie-jar so the
 # VM can route by hostname. The wildcard cert SAN covers the
 # whole jar.
 #
@@ -15,16 +15,16 @@
 #   nix run .#vmtest -- -nographic
 #
 # Then from your normal computer (the host):
-#   curl --resolve jellyfin.cococoir-vmtest.local:4433:127.0.0.1 -k \
-#        https://jellyfin.cococoir-vmtest.local:4433/health
+#   curl --resolve jellyfin.vmtest.local:4433:127.0.0.1 -k \
+#        https://jellyfin.vmtest.local:4433/health
 #   # should return 200 with body "Healthy" (-k skips the cert
 #   # check; the cert is self-signed and per-VM).
 #
 # To open in a browser, add the per-service subdomains to your
 # host's /etc/hosts:
-#   sudo ./scripts/cococoir-vmtest-hosts.sh
-#   sudo ./scripts/cococoir-vmtest-hosts.sh rm   # when done
-# then visit https://jellyfin.cococoir-vmtest.local:4433 — your
+#   sudo ./scripts/vmtest-hosts.sh
+#   sudo ./scripts/vmtest-hosts.sh rm   # when done
+# then visit https://jellyfin.vmtest.local:4433 — your
 # browser will warn about the self-signed cert; accept it (it's
 # a dev VM, the cert is regenerated every build). You'll see
 # Jellyfin's setup wizard. Configure an admin user, add
@@ -52,7 +52,7 @@
   # nixosTest. In production, sops-nix writes these files with
   # mode 0440 / 0400 at /run/secrets/<name>.
   testSecrets =
-    pkgs.runCommand "cococoir-vmtest-secrets" {
+    pkgs.runCommand "vmtest-secrets" {
       buildInputs = [pkgs.openssl pkgs.gnused];
     } ''
       mkdir -p $out
@@ -66,20 +66,20 @@
     '';
 
   # Build-time self-signed TLS cert for the
-  # `*.cococoir-vmtest.local` cookie-jar. The browser will warn
+  # `*.vmtest.local` cookie-jar. The browser will warn
   # about it (it's a dev VM, the cert changes every build);
   # -k on curl / "Accept the risk" in the browser gets past it.
   # Caddy matches the longest host first, so future per-service
   # vhosts just work without touching the cert. In production,
   # sops-nix + ACME replace this.
-  testCerts = pkgs.runCommand "cococoir-vmtest-tls" {
+  testCerts = pkgs.runCommand "vmtest-tls" {
     buildInputs = [pkgs.openssl];
   } ''
     mkdir -p $out
     openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout $out/key.pem -out $out/cert.pem -days 365 \
-      -subj "/CN=*.cococoir-vmtest.local" \
-      -addext "subjectAltName=DNS:cococoir-vmtest.local,DNS:*.cococoir-vmtest.local" \
+      -subj "/CN=*.vmtest.local" \
+      -addext "subjectAltName=DNS:vmtest.local,DNS:*.vmtest.local" \
       >/dev/null 2>&1
     chmod 0444 $out/cert.pem
     chmod 0400 $out/key.pem
@@ -105,7 +105,7 @@ in {
 
   # Self-signed TLS cert for the Caddy vhost. Built at VM build
   # time and read at runtime. See `testCerts` above.
-  environment.etc."cococoir-vmtest-tls".source = testCerts;
+  environment.etc."vmtest-tls".source = testCerts;
 
   # Real NixOS VM config. Grub on /dev/vda, ext4 root. Same pattern
   # as the v0 single-tenant test config.
@@ -138,7 +138,7 @@ in {
   # Storage layer: Garage single-node, one bucket, FUSE mount.
   # Secrets are the build-time generated ones; sops-nix would
   # replace them with /run/secrets/<name> paths in production.
-  environment.etc."cococoir-vmtest-secrets".source = testSecrets;
+  environment.etc."vmtest-secrets".source = testSecrets;
 
   cococoir.storage = {
     enable = true;
@@ -156,11 +156,11 @@ in {
       capacity = "1T";
     };
     secrets = {
-      rpcSecretFile = "/etc/cococoir-vmtest-secrets/rpc-secret";
-      adminTokenFile = "/etc/cococoir-vmtest-secrets/admin-token";
-      metricsTokenFile = "/etc/cococoir-vmtest-secrets/metrics-token";
-      accessKeyIdFile = "/etc/cococoir-vmtest-secrets/access-key-id";
-      secretAccessKeyFile = "/etc/cococoir-vmtest-secrets/secret-access-key";
+      rpcSecretFile = "/etc/vmtest-secrets/rpc-secret";
+      adminTokenFile = "/etc/vmtest-secrets/admin-token";
+      metricsTokenFile = "/etc/vmtest-secrets/metrics-token";
+      accessKeyIdFile = "/etc/vmtest-secrets/access-key-id";
+      secretAccessKeyFile = "/etc/vmtest-secrets/secret-access-key";
     };
     buckets.media = {};
   };
@@ -176,12 +176,12 @@ in {
   # wildcard cert SAN covers them all.
   #
   # The `email` option is left at its default (null) — Caddy
-  # doesn't try ACME for `*.cococoir-vmtest.local` (no real
+  # doesn't try ACME for `*.vmtest.local` (no real
   # DNS), and setting `email = ""` is a parse error.
   services.caddy = {
     enable = true;
-    virtualHosts."jellyfin.cococoir-vmtest.local".extraConfig = ''
-      tls /etc/cococoir-vmtest-tls/cert.pem /etc/cococoir-vmtest-tls/key.pem
+    virtualHosts."jellyfin.vmtest.local".extraConfig = ''
+      tls /etc/vmtest-tls/cert.pem /etc/vmtest-tls/key.pem
       reverse_proxy 127.0.0.1:8096
     '';
   };
@@ -189,11 +189,11 @@ in {
   # Jellyfin service. `bucket` defaults to "media" (4-option
   # contract). Jellyfin's bucket + FUSE mount are auto-declared
   # under cococoir.storage.* by the service module. The domain
-  # lives in the `cococoir-vmtest.local` cookie-jar so the
+  # lives in the `vmtest.local` cookie-jar so the
   # wildcard cert covers it.
   cococoir.services.jellyfin = {
     enable = true;
-    domain = "jellyfin.cococoir-vmtest.local";
+    domain = "jellyfin.vmtest.local";
     public = true;
   };
 

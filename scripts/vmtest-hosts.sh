@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# cococoir-vmtest-hosts.sh — temporary /etc/hosts entries for
+# vmtest-hosts.sh — temporary /etc/hosts entries for
 # the cococoir v2 dev VM (vmtest).
 #
 # The VM forwards host:4433 -> guest:443 (Caddy/TLS). Caddy
 # routes by hostname to the right service. Add the
-# per-service subdomains under `cococoir-vmtest.local` to
+# per-service subdomains under `vmtest.local` to
 # /etc/hosts so the browser can resolve the names.
 #
 # Usage:
-#   cococoir-vmtest-hosts.sh                  # add all known services
-#   cococoir-vmtest-hosts.sh add jellyfin     # add one or more
-#   cococoir-vmtest-hosts.sh add jellyfin nextcloud
-#   cococoir-vmtest-hosts.sh rm               # remove all
-#   cococoir-vmtest-hosts.sh rm jellyfin      # remove one
-#   cococoir-vmtest-hosts.sh list             # show the known list
+#   vmtest-hosts.sh                  # add all known services
+#   vmtest-hosts.sh add jellyfin     # add one or more
+#   vmtest-hosts.sh add jellyfin nextcloud
+#   vmtest-hosts.sh rm               # remove all
+#   vmtest-hosts.sh rm jellyfin      # remove one
+#   vmtest-hosts.sh list             # show the known list
 #
 # On NixOS hosts, /etc/hosts is read-only. The script detects
 # this and prints the `networking.hosts` snippet to add to your
@@ -24,9 +24,9 @@ set -euo pipefail
 # Services that exist in the vmtest VM. Add to this list as new
 # service modules come online (nextcloud, gitea, ...).
 KNOWN_SERVICES=(jellyfin)
-SUFFIX="cococoir-vmtest.local"
+SUFFIX="vmtest.local"
 HOSTS=/etc/hosts
-MARKER="# cococoir-vmtest"
+MARKER="# vmtest"
 
 is_nixos() {
   [[ -f /etc/os-release ]] && grep -qE '^ID=nixos$' /etc/os-release

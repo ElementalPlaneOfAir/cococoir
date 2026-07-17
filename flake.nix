@@ -46,7 +46,7 @@
       };
 
       # Manual v2 dev VM: every cococoir service under test, each
-      # behind its own Caddy vhost in the `cococoir-vmtest.local`
+      # behind its own Caddy vhost in the `vmtest.local`
       # cookie-jar. Today that's Jellyfin; nextcloud/gitea/etc.
       # land here as the service modules come online. Run with:
       #   nix run .#vmtest
