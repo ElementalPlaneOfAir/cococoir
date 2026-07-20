@@ -17,10 +17,15 @@
 {pkgs, sopsModule ? null}:
 let
   lib = pkgs.lib;
-  edgeTests = import ./edge {inherit pkgs;};
-  storageTests = import ./storage {inherit pkgs; sopsModule = if sopsModule == null then [] else [ sopsModule ];};
+  edgeTests = let raw = import ./edge {inherit pkgs;}; in {
+    edge-forward = raw.edge-forward.test;
+  };
+  storageTests = let
+    raw = import ./storage {inherit pkgs; sopsModule = if sopsModule == null then [] else [ sopsModule ];};
+  in {
+    storage = raw.storage.test;
+  };
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
-  docRefsTests = import ./doc-refs {inherit pkgs;};
   cococoirPkg = pkgs.callPackage ../packages/cococoir {};
 in {
   # ── L0: forwarder Go unit tests ──────────────────────────────────
@@ -46,4 +51,4 @@ in {
   # WireGuard tunnel -> cococoir-client (box) -> 127.0.0.1:80
   # (python http server, Caddy stand-in). See
   # nix/tests/edge/default.nix for the full design.
-} // edgeTests // storageTests // contractConformanceTests // docRefsTests
+} // edgeTests // storageTests // contractConformanceTests

@@ -40,8 +40,12 @@ in
       pkgs,
       ...
     }: {
+      # Import only the storage module — the full cococoir module
+      # transitively imports services that the storage test
+      # doesn't need. garage.nix declares the storage option
+      # surface and wires everything the storage layer needs.
       imports = sopsModule ++ [
-        (import ../../nixos-modules)
+        ../../nixos-modules/storage/garage.nix
       ];
 
       virtualisation.graphics = false;
@@ -59,19 +63,6 @@ in
 
       cococoir.storage = {
         enable = true;
-        cluster = {
-          rpcBindAddr = "127.0.0.1:3901";
-          rpcPublicAddr = "127.0.0.1:3901";
-          s3ApiBindAddr = "127.0.0.1:3900";
-          adminApiBindAddr = "127.0.0.1:3903";
-          region = "garage";
-        };
-        node = {
-          id = "node-1";
-          address = "127.0.0.1:3901";
-          zone = "z1";
-          capacity = "1T";
-        };
         secrets = {
           rpcSecretFile = "/etc/cococoir-test-secrets/rpc-secret";
           adminTokenFile = "/etc/cococoir-test-secrets/admin-token";

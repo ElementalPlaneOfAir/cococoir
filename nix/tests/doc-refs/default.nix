@@ -23,8 +23,8 @@ let
   # The doc files we scan. Adding a new doc file with
   # path references: add it here.
   docFiles = [
-    ../AGENTS.md
-    ../PLAN.md
+    ../../../AGENTS.md
+    ../../../PLAN.md
   ];
 
   # Extract path-like substrings from a file. We use a
@@ -34,7 +34,8 @@ let
     lib.splitString "\n" (builtins.readFile path)
   );
 in
-pkgs.runCommand "cococoir-doc-refs" {
+{
+  doc-refs = pkgs.runCommand "cococoir-doc-refs" {
   inherit docFiles;
   passAsFile = ["docFiles"];
 } ''
@@ -73,5 +74,6 @@ pkgs.runCommand "cococoir-doc-refs" {
   fi
 
   echo "cococoir doc-refs: PASS" >> $out_report
-  echo "  docs: ${lib.length docFiles}" >> $out_report
-''
+  echo "  docs: ${toString (lib.length docFiles)}" >> $out_report
+'';
+}

@@ -52,6 +52,7 @@ in
 mkCococoirService {
   name = "pocketid";
   description = "Pocket-ID OIDC provider";
+  defaultEnable = true; # OIDC is always-on; the platform requires it.
   defaultPort = 1411;
   defaultHealthPath = "/.well-known/openid-configuration";
   conventionalSubdomain = "auth";

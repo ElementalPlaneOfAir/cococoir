@@ -6,44 +6,26 @@
 #
 #   cococoir.secrets.sopsFile = ./secrets.yaml;
 #
-# The actual `sops.secrets.<name>` declarations live in the
-# customer's `secrets.yaml` and are wired by sops-nix. Cococoir
-# documents the inventory of keys the platform expects; the
-# `nix run .#init` tool (v2.8 backlog) generates the YAML with
-# random values for every key, encrypted with the customer's
-# age key, so the customer never hand-edits it.
+# When set, the customer is expected to import sops-nix and
+# declare `sops.secrets.<key>` for each key in the inventory
+# below (or use the `nix run .#init` tool — v2.8 — to
+# generate the encrypted YAML with random values for every
+# key). The customer's `config.nix` then wires the *File
+# options on each service from `config.sops.secrets.<key>.path`.
 #
-# In a customer's config.nix the wiring looks like:
-#
-#   imports = [
-#     cococoir.nixosModules.default
-#     sops-nix.nixosModules.sops
-#   ];
-#
-#   cococoir = {
-#     secrets.sopsFile = ./secrets.yaml;
-#     storage.secrets = {
-#       rpcSecretFile         = config.sops.secrets."garage-rpc-secret".path;
-#       adminTokenFile        = config.sops.secrets."garage-admin-token".path;
-#       metricsTokenFile      = config.sops.secrets."garage-metrics-token".path;
-#       accessKeyIdFile       = config.sops.secrets."s3-access-key-id".path;
-#       secretAccessKeyFile   = config.sops.secrets."s3-secret-access-key".path;
-#     };
-#     services.pocketid = {
-#       enable             = true;
-#       encryptionKeyFile  = config.sops.secrets."pocketid-encryption-key".path;
-#       staticApiKeyFile   = config.sops.secrets."pocketid-static-api-key".path;
-#     };
-#   };
-#
-# That's the only secret-related boilerplate. The customer
-# imports sops-nix (one line), points sopsFile at the file,
-# and references sops paths in *File options.
-#
-# In dev VMs (vmtest, nixosTest) leave `cococoir.secrets.sopsFile`
-# at its default (null) and supply *File options directly with
-# build-time-generated paths. This module is inert when
-# sopsFile is null; no sops reference is made.
+# Why not auto-wire? The auto-wiring pattern (this module
+# reading `config.cococoir.secrets.sopsFile` in its `config`
+# block to conditionally declare `sops.secrets.<key>` and
+# wire the *File options) creates an evaluation cycle in
+# the NixOS module system — the gate depends on the same
+# option the module declares. We tried splitting the
+# auto-wiring into a sibling module and using
+# `lib.optionalAttrs`/`lib.mkIf`; both recursed. The cleanest
+# path is the customer doing the wiring explicitly. It's
+# ~10 lines per customer config, the inventory is documented
+# here, and the `nix run .#init` tool generates the YAML
+# automatically. Total customer config is still well under
+# 50 lines.
 {lib, ...}:
 
 let
@@ -105,6 +87,32 @@ let
         Recommended for dev VMs and CI environments.
       '';
     };
+    "jellarr-api-key" = {
+      owner = "jellarr";
+      group = "jellarr";
+      mode = "0400";
+      description = ''
+        Jellyfin API key for jellarr. On first boot, the
+        `jellarr-api-key-bootstrap.service` oneshot inserts
+        this key into Jellyfin's SQLite database. After that,
+        jellarr authenticates to Jellyfin's REST API with this
+        key (sent as `X-Emby-Token: <key>`). Trimmed of
+        whitespace at insertion time.
+      '';
+    };
+    "jellyfin-admin-password" = {
+      owner = "jellarr";
+      group = "jellarr";
+      mode = "0400";
+      description = ''
+        Password for the Jellyfin admin user that jellarr
+        creates on first boot. Plaintext in the file
+        (whitespace is trimmed by jellarr). Customer generates
+        a strong value via `nix run .#init` (v2.8) or their
+        password manager; the dev VM generates a random one
+        at build time.
+      '';
+    };
   };
 in
 {
@@ -115,36 +123,26 @@ in
     description = ''
       Path to a sops-encrypted YAML containing all machine
       secrets. Set by the customer in their config.nix. When
-      null (the default), the customer is responsible for
-      supplying *File options explicitly with their own secret
-      paths — this is the dev VM / nixosTest path.
+      non-null, the customer also imports sops-nix
+      (`sops-nix.nixosModules.sops`) and wires the *File
+      options on each cococoir service from
+      `config.sops.secrets.<key>.path`. See the inventory
+      below for the list of keys. The `nix run .#init` tool
+      (v2.8) generates the YAML with random values for every
+      key in the inventory.
 
-      When non-null, the customer imports sops-nix
-      (`sops-nix.nixosModules.sops`) and references sops paths
-      in *File options:
-
-        cococoir.storage.secrets.rpcSecretFile =
-          config.sops.secrets."garage-rpc-secret".path;
-
-      See the module header for the full inventory. The
-      `nix run .#init` tool (v2.8) generates the YAML with
-      random values for every key, encrypted with the
-      customer's age key, so the customer never hand-edits
-      secrets.yaml.
+      When null (the default), the customer is responsible
+      for supplying *File options explicitly with their own
+      secret paths — this is the dev VM / nixosTest path
+      where secrets are build-time-generated.
     '';
   };
 
-  # The inventory is exposed as documentation, not via options
-  # (so adding a secret is a doc change here + a manual
-  # `nix run .#add-secret <key>` call, not a module-system
-  # event). This is intentional: the lazy evaluation of the
-  # NixOS module system makes conditional sops.* declarations
-  # recursive in dev VMs, and the customer paying attention to
-  # the inventory here is a feature, not a bug.
-  #
-  # The inventory attrset is reachable as
-  # `cococoir.secrets._inventory` for tooling (`nix eval
+  # The inventory is exposed for tooling (`nix eval
   # .#nixosConfigurations.<x>.config.cococoir.secrets._inventory`).
+  # Internal — customers do not set or read this; the
+  # `nix run .#init` / `nix run .#add-secret` tools are the
+  # customer-facing interface.
   options.cococoir.secrets._inventory = lib.mkOption {
     type = lib.types.attrsOf lib.types.attrs;
     default = inventory;

@@ -1,32 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/storage/garage — the Garage daemon + bucket-init oneshot +
-# per-mount FUSE services for v2.
+# cococoir/storage — single-node Garage S3 daemon + bucket-init +
+# per-bucket FUSE mounts for v2.
 #
-# Ported from v1/clan-services/garage/default.nix. The change from
-# v1: clan-core's var generators are replaced with file-path options
-# populated by sops-nix at the user's machine config level. The
-# storage module never owns secret material.
+# Always-on (cococoir.storage.enable defaults to true). Every
+# service that needs a bucket auto-declares it via the service
+# module; the customer only sets the 5 secret file paths.
 #
-# This module is single-node only. Multi-node cluster expansion is
-# v4 work. The option surface and assertions assume one node, one
-# zone.
-#
-# What this module produces (when cococoir.storage.enable = true):
-#   - Static `garage` system user + persistent data/meta/global dirs
-#   - nixpkgs services.garage, hardened (LoadCredential, static user)
-#   - `garage-bucket-init.service`: idempotent first-boot setup that
-#     adds bootstrap_peers, applies the layout, imports the S3 key,
-#     creates buckets, allows the global key on each
-#   - One `cococoir-fuse-<bucket>.service` per cococoir.storage.mounts
-#     entry, FUSE-mounting the bucket via geesefs
-#   - `cococoir.storage.derived.{gatewayAddress, buckets, mounts}`
-#     for service modules to consume
+# The option surface is intentionally minimal — single-node
+# ports, region, and layout are hardcoded. Multi-node support
+# will justify its own option surface when it lands.
 { config,
   lib,
   pkgs,
   ... }:
 let
+  inherit (lib) mkOption mkEnableOption types;
+
   cfg = config.cococoir.storage;
   dataDir = "/var/lib/cococoir/garage/data";
   metaDir = "/var/lib/cococoir/garage/meta";
@@ -46,11 +36,6 @@ let
   bucketNames = builtins.attrNames cfg.buckets;
   mountNames = builtins.attrNames cfg.mounts;
 
-  # Clamp a requested RF to the number of layout zones. v2 is
-  # single-node / single-zone, so the clamped RF is always 1; the
-  # clamp is preserved for forward-compat with multi-node v4.
-  clampedRF = requested: 1;
-
   fuseServices = lib.mapAttrs' (name: m: {
     name = "cococoir-fuse-${name}";
     value = {
@@ -60,16 +45,10 @@ let
         ++ lib.optional (hasParentMount config.fileSystems m.mountPoint)
           "${parentMountUnit m.mountPoint}";
       requires = [ "garage-bucket-init.service" ];
-      # geesefs's underlying AWS SDK reads AWS_*_FILE env vars for
-      # credentials. Without these, geesefs logs
-      # "no valid providers in chain" and writes never reach S3
-      # (the syscall returns success from the page cache, the
-      # S3 PUT fails silently). See ADR-005: native S3 > FUSE;
-      # this is the FUSE case.
       environment = {
         AWS_ACCESS_KEY_ID_FILE = cfg.secrets.accessKeyIdFile;
         AWS_SECRET_ACCESS_KEY_FILE = cfg.secrets.secretAccessKeyFile;
-        AWS_REGION = cfg.cluster.region;
+        AWS_REGION = "garage";
       };
       serviceConfig = {
         Type = "simple";
@@ -84,7 +63,7 @@ let
             "default_permissions"
             "use_path_request_style"
             "url=http://127.0.0.1:${toString s3ApiPort}"
-            "region=${cfg.cluster.region}"
+            "region=garage"
           ] ++ lib.optional m.readOnly "ro"))
         ];
         ExecStopPost = "-${pkgs.fuse3}/bin/fusermount3 -u ${m.mountPoint}";
@@ -97,20 +76,97 @@ let
 
   sopsKeyDir = builtins.dirOf cfg.secrets.accessKeyIdFile;
 in {
-  imports = [ ./options.nix ];
+  options.cococoir.storage = {
+    enable = mkOption {
+      type = types.bool;
+      default = true;
+      defaultText = "true";
+      description = ''
+        Enable the cococoir storage layer (Garage S3 daemon + FUSE
+        mounts). **Always on** — the platform requires storage for
+        every service that has a bucket. Customers do not need to
+        set this option; it is `true` by default. Set to `false`
+        only in a non-customer config (e.g. a test that doesn't
+        need storage).
+      '';
+    };
+
+    secrets = {
+      rpcSecretFile = mkOption {
+        type = types.path;
+        description = "Path to the Garage RPC secret. Populated by sops-nix.";
+      };
+      adminTokenFile = mkOption {
+        type = types.path;
+        description = "Path to the Garage admin API token. Populated by sops-nix.";
+      };
+      metricsTokenFile = mkOption {
+        type = types.path;
+        description = "Path to the Garage metrics token. Populated by sops-nix.";
+      };
+      accessKeyIdFile = mkOption {
+        type = types.path;
+        description = "Path to the cluster-wide S3 access key id. Populated by sops-nix.";
+      };
+      secretAccessKeyFile = mkOption {
+        type = types.path;
+        description = "Path to the cluster-wide S3 secret access key. Populated by sops-nix.";
+      };
+    };
+
+    buckets = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          replicationFactor = mkOption {
+            type = types.ints.unsigned;
+            default = 1;
+            description = ''
+              Requested replication factor. Single-node v2 is always 1.
+            '';
+          };
+        };
+      });
+      default = { };
+      description = ''
+        Buckets to create. Service modules add their bucket here
+        automatically when enabled; users do not need to declare
+        buckets manually.
+      '';
+    };
+
+    mounts = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          bucket = mkOption {
+            type = types.str;
+            description = "Name of the bucket to mount.";
+          };
+          mountPoint = mkOption {
+            type = types.str;
+            description = "Local filesystem path the bucket is FUSE-mounted at.";
+          };
+          readOnly = mkOption {
+            type = types.bool;
+            default = false;
+            description = "Whether the mount is read-only.";
+          };
+        };
+      });
+      default = { };
+      description = ''
+        FUSE mounts (geesefs) exposing buckets as local filesystems.
+        Service modules add their mount here automatically.
+      '';
+    };
+  };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.node ? address && cfg.node.address != "";
-        message = "cococoir.storage: cococoir.storage.node.address is required.";
-      }
-      {
         assertion = bucketNames != [ ];
         message = ''
           cococoir.storage: no buckets declared. Enable a cococoir
-          service that needs storage (e.g. jellyfin, nextcloud) or
-          set cococoir.storage.buckets directly.
+          service that needs storage (e.g. jellyfin, nextcloud).
         '';
       }
       {
@@ -152,12 +208,12 @@ in {
         replication_factor = 1;
         data_dir = dataDir;
         metadata_dir = metaDir;
-        rpc_bind_addr = cfg.cluster.rpcBindAddr;
-        rpc_public_addr = cfg.cluster.rpcPublicAddr;
-        s3_api.api_bind_addr = cfg.cluster.s3ApiBindAddr;
-        s3_api.s3_region = cfg.cluster.region;
-        admin.api_bind_addr = cfg.cluster.adminApiBindAddr;
-        s3_api.root_domain = "s3.${cfg.cluster.region}.local";
+        rpc_bind_addr = "127.0.0.1:3901";
+        rpc_public_addr = "127.0.0.1:3901";
+        s3_api.api_bind_addr = "127.0.0.1:3900";
+        s3_api.s3_region = "garage";
+        s3_api.root_domain = "s3.garage.local";
+        admin.api_bind_addr = "127.0.0.1:3903";
       };
     };
 
@@ -196,9 +252,9 @@ in {
             [
               "${./bucket-init.sh}"
               "--global-dir" globalDir
-              "--address" cfg.node.address
-              "--zone" cfg.node.zone
-              "--capacity" cfg.node.capacity
+              "--address" "127.0.0.1:3901"
+              "--zone" "z1"
+              "--capacity" "1T"
             ]
             ++ lib.concatMap (b: [ "--bucket" b ]) bucketNames
           );
@@ -212,27 +268,5 @@ in {
         };
       };
     } // fuseServices;
-
-    cococoir.storage.derived = {
-      gatewayAddress = "127.0.0.1:${toString s3ApiPort}";
-      buckets = lib.mapAttrs (n: b: {
-        name = n;
-        endpoint = "http://127.0.0.1:${toString s3ApiPort}";
-        host = "127.0.0.1";
-        port = s3ApiPort;
-        region = cfg.cluster.region;
-        accessKeyIdFile = cfg.secrets.accessKeyIdFile;
-        secretAccessKeyFile = cfg.secrets.secretAccessKeyFile;
-        intendedReplicationFactor = b.replicationFactor;
-        replicationFactor = clampedRF b.replicationFactor;
-      }) cfg.buckets;
-      mounts = lib.mapAttrs' (_: m: {
-        name = m.bucket;
-        value = {
-          mountPoint = m.mountPoint;
-          readOnly = m.readOnly;
-        };
-      }) cfg.mounts;
-    };
   };
 }

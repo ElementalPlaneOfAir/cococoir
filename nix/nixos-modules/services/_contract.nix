@@ -54,8 +54,26 @@ let
 in
 {
   options.cococoir.services.${args.name} =
+    let
+      defaultEnable = args.defaultEnable or false;
+    in
     {
-      enable = mkEnableOption args.description;
+      enable = mkOption {
+        type = lib.types.bool;
+        default = defaultEnable;
+        defaultText = if defaultEnable then "true" else "false";
+        description = if defaultEnable then ''
+          Enable ${args.description}. **Always on** — the
+          platform requires this service. Customers do not
+          need to set this option; it is `true` by default.
+          Set to `false` only to disable the service in a
+          non-customer config (e.g. a test that doesn't need
+          the OIDC provider).
+        ''
+        else ''
+          Whether to enable ${args.description}.
+        '';
+      };
 
       domain = mkOption {
         type = types.str;

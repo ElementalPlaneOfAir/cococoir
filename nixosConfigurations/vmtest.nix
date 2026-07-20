@@ -174,23 +174,18 @@ in {
 
   programs.fish.enable = true;
 
-  # Storage layer. Cluster + node addresses default to 127.0.0.1
-  # bindings; only `node.address` is required (Garage's RPC needs
-  # a real public address even on a single-node setup). The
-  # `secrets` block stays explicit because vmtest does not use
-  # sops-nix.
-  cococoir.storage = {
-    enable = true;
-    node.address = "127.0.0.1:3901";
-    secrets = {
+  # Storage layer. cococoir.storage.enable defaults to true
+  # (always-on). The `secrets` block sets the 5 secret file
+  # paths; production wires these from sops-nix. Single-node
+  # ports are hardcoded — no cluster config needed.
+  cococoir.storage.secrets = {
       rpcSecretFile = "/etc/vmtest-secrets/rpc-secret";
       adminTokenFile = "/etc/vmtest-secrets/admin-token";
       metricsTokenFile = "/etc/vmtest-secrets/metrics-token";
       accessKeyIdFile = "/etc/vmtest-secrets/access-key-id";
       secretAccessKeyFile = "/etc/vmtest-secrets/secret-access-key";
     };
-    buckets.media = {};
-  };
+  cococoir.storage.buckets.media = {};
 
   # Caddy: just enable. Every cococoir.services.<name> with
   # enable = true registers a vhost via the contract factory,
@@ -222,13 +217,13 @@ in {
   services.jellyfin.enabledPlugins."SSO-Auth" =
     inputs.jellyfin-plugins-nix.packages.x86_64-linux."SSO-Auth";
 
-  # Pocket-ID: self-hosted OIDC provider. Domain defaults to
+  # Pocket-ID: self-hosted OIDC provider, always-on (the
+  # platform requires OIDC). Domain defaults to
   # `auth.vmtest.local` via cococoir.baseDomain +
   # conventionalSubdomain = "auth"; we override to
   # `pocketid.vmtest.local` to keep URLs stable with the
   # prior vmtest (and the bookmarks the user has built up).
   cococoir.services.pocketid = {
-    enable = true;
     domain = "pocketid.vmtest.local";
     public = true;
     encryptionKeyFile = "/etc/vmtest-pocketid-secrets/encryption-key";

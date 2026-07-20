@@ -13,6 +13,17 @@
     # option). Used for the SSO-Auth plugin that wires Jellyfin
     # to Pocket-ID. Maintained by LoCrealloc, not us.
     jellyfin-plugins-nix.url = "github:LoCrealloc/jellyfin-plugins-nix";
+    # Declarative Jellyfin configuration (libraries, users,
+    # plugin config, startup-wizard skip) via the official
+    # Jellyfin REST API. The jellyfin service module activates
+    # `services.jellarr` automatically when jellyfin is
+    # enabled — customers never see jellarr as a separate
+    # thing. Tracks main (no tag pin); the v0.1.0 tag fails
+    # to evaluate on current nixpkgs.
+    jellarr = {
+      url = "github:venkyr77/jellarr";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs: let
@@ -32,6 +43,11 @@
         # `services.jellyfin.enabledPlugins.<name>`. The SSO-Auth
         # plugin is enabled in vmtest.nix via that option.
         inputs.jellyfin-plugins-nix.nixosModules.jellyfin-plugins
+        # Jellarr's NixOS module exposes `services.jellarr`
+        # (enable, bootstrap, config, etc.). The cococoir
+        # jellyfin service module activates it automatically
+        # when `cococoir.services.jellyfin.enable = true`.
+        inputs.jellarr.nixosModules.default
       ];
     };
   in
