@@ -156,42 +156,44 @@ in
     // (args.extraOptions or {});
 
   config = lib.mkIf cfg.enable (
-    {
-      assertions = [
-        {
-          assertion = cfg.domain != "";
-          message = "cococoir.services.${args.name}.domain is empty.";
-        }
-        {
-          assertion = cfg.public -> config.services.caddy.enable;
+    lib.mkMerge [
+      {
+        assertions = [
+          {
+            assertion = cfg.domain != "";
+            message = "cococoir.services.${args.name}.domain is empty.";
+          }
+          {
+            assertion = cfg.public -> config.services.caddy.enable;
+            message = ''
+              cococoir.services.${args.name}: `public = true` requires
+              `services.caddy.enable = true`. The Caddy vhost is
+              the security boundary.
+            '';
+          }
+        ]
+        ++ lib.optional hasBucket {
+          assertion = config.cococoir.storage.enable;
           message = ''
-            cococoir.services.${args.name}: `public = true` requires
-            `services.caddy.enable = true`. The Caddy vhost is
-            the security boundary.
+            cococoir.services.${args.name}: `cococoir.storage.enable`
+            is not set. ${args.name} requires the storage layer
+            (Garage + FUSE mount).
           '';
-        }
-      ]
-      ++ lib.optional hasBucket {
-        assertion = config.cococoir.storage.enable;
-        message = ''
-          cococoir.services.${args.name}: `cococoir.storage.enable`
-          is not set. ${args.name} requires the storage layer
-          (Garage + FUSE mount).
-        '';
-      };
+        };
 
-      services.caddy.virtualHosts."${cfg.domain}".extraConfig =
-        lib.mkDefault (let
-          tls = config.cococoir.tls;
-          tlsLine =
-            if tls.mode == "self-signed"
-            then "tls ${tls.certFile} ${tls.keyFile}\n"
-            else "";
-        in
-          tlsLine + (if cfg.public
-            then "reverse_proxy 127.0.0.1:${toString cfg.port}"
-            else ''respond "Forbidden" 403''));
-    }
-    // (args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; }
+        services.caddy.virtualHosts."${cfg.domain}".extraConfig =
+          lib.mkDefault (let
+            tls = config.cococoir.tls;
+            tlsLine =
+              if tls.mode == "self-signed"
+              then "tls ${tls.certFile} ${tls.keyFile}\n"
+              else "";
+          in
+            tlsLine + (if cfg.public
+              then "reverse_proxy 127.0.0.1:${toString cfg.port}"
+              else ''respond "Forbidden" 403''));
+      }
+      ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; })
+    ]
   );
 }
