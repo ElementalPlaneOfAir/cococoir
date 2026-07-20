@@ -2,12 +2,8 @@
 #
 # Cococoir v2 — manual dev VM ("vmtest"). One VM hosts every
 # cococoir service under test, each behind its own Caddy vhost.
-# Today that's Jellyfin; nextcloud/gitea/etc. land here as the
-# service modules come online.
-#
-# Public names use the `vmtest.local` cookie-jar so the
-# VM can route by hostname. The wildcard cert SAN covers the
-# whole jar.
+# Each service gets a subdomain of `vmtest.local` so the
+# wildcard cert covers the whole jar.
 #
 # Run with:
 #   nix run .#vmtest
@@ -24,9 +20,9 @@
 # host's /etc/hosts:
 #   sudo ./scripts/vmtest-hosts.sh
 #   sudo ./scripts/vmtest-hosts.sh rm   # when done
-# then visit https://jellyfin.vmtest.local:4433 — your
-# browser will warn about the self-signed cert; accept it (it's
-# a dev VM, the cert is regenerated every build). You'll see
+# then visit https://jellyfin.vmtest.local:4433 — your browser
+# will warn about the self-signed cert; accept it (it's a dev
+# VM, the cert is regenerated every build). You'll see
 # Jellyfin's setup wizard. Configure an admin user, add
 # /media/entertain as a library, and you'll see the pre-seeded
 # welcome.txt.
@@ -41,16 +37,20 @@
 # The VM is hermetic: secrets and the TLS cert are generated at
 # build time, Garage runs single-node, no sops-nix, no real
 # network. Production uses sops-nix with the user's age key and
-# a real ACME certificate.
+# a real ACME certificate (see cococoir.tls.mode = "acme").
 {
   config,
   lib,
   pkgs,
+  inputs,
   ...
 }: let
   # Build-time secret generation, same pattern as the storage
   # nixosTest. In production, sops-nix writes these files with
-  # mode 0440 / 0400 at /run/secrets/<name>.
+  # mode 0440 / 0400 at /run/secrets/<name>; the cococoir.secrets
+  # module wires that automatically when `cococoir.secrets.sopsFile`
+  # is set. We keep the explicit `cococoir.storage.secrets.*File`
+  # wiring here because vmtest does NOT use sops-nix.
   testSecrets =
     pkgs.runCommand "vmtest-secrets" {
       buildInputs = [pkgs.openssl pkgs.gnused];
@@ -65,13 +65,35 @@
       chmod 0400 $out/rpc-secret $out/admin-token $out/metrics-token
     '';
 
+  # Build-time pocket-id secrets. ENCRYPTION_KEY is the
+  # base64-encoded 32-byte symmetric key pocket-id uses to
+  # encrypt private keys + tokens at rest. The file MUST NOT
+  # have a trailing newline — pocket-id treats CR/LF as
+  # part of the key, so a stray \n fails decryption on
+  # restart. STATIC_API_KEY auto-creates a "Static API
+  # User" admin on first boot, so we can administer
+  # pocket-id via its API without clicking through the
+  # setup wizard.
+  testPocketidSecrets =
+    pkgs.runCommand "vmtest-pocketid-secrets" {
+      buildInputs = [pkgs.openssl];
+    } ''
+      mkdir -p $out
+      # `openssl rand -base64` adds a trailing newline; strip
+      # it with `tr -d '\n'` + `printf '%s'`. Both files must
+      # be exactly the bytes pocket-id expects — no CR/LF.
+      openssl rand -base64 32 | tr -d '\n' > $out/encryption-key
+      api_key="$(openssl rand -base64 32 | tr -d '\n')"
+      printf '%s' "$api_key" > $out/static-api-key
+      chmod 0400 $out/encryption-key $out/static-api-key
+    '';
+
   # Build-time self-signed TLS cert for the
   # `*.vmtest.local` cookie-jar. The browser will warn
   # about it (it's a dev VM, the cert changes every build);
   # -k on curl / "Accept the risk" in the browser gets past it.
-  # Caddy matches the longest host first, so future per-service
-  # vhosts just work without touching the cert. In production,
-  # sops-nix + ACME replace this.
+  # In production, `cococoir.tls.mode = "acme"` makes Caddy
+  # issue a real cert.
   testCerts =
     pkgs.runCommand "vmtest-tls" {
       buildInputs = [pkgs.openssl];
@@ -85,11 +107,6 @@
       chmod 0444 $out/cert.pem
       chmod 0400 $out/key.pem
     '';
-  # NOTE: in modern nixpkgs (>= 25.05), `nixpkgs.lib.nixosSystem`
-  # only includes nixos/modules/virtualisation/qemu-vm.nix in a
-  # `vmVariant` submodule, not the main config. So options like
-  # `virtualisation.forwardPorts` are not declared here. The
-  # flake.nix imports qemu-vm.nix directly to declare them.
 in {
   imports = [
     (import ../nix/nixos-modules)
@@ -103,9 +120,31 @@ in {
     allowedTCPPorts = [22 80 443];
   };
 
-  # Self-signed TLS cert for the Caddy vhost. Built at VM build
-  # time and read at runtime. See `testCerts` above.
-  environment.etc."vmtest-tls".source = testCerts;
+  # Platform-wide config. baseDomain + tls.mode do the work that
+  # used to live in every per-vhost `extraConfig`:
+  #   - service `domain` options default to `<svc>.vmtest.local`
+  #     (override per-service if you need a non-conventional name)
+  #   - Caddy's `tls` directive is emitted automatically from
+  #     `cococoir.tls.{certFile, keyFile}` for every vhost
+  #   - `services.caddy.enable = true` and the per-service
+  #     `cococoir.services.<name>.enable = true` together drive
+  #     vhost creation via the contract factory
+  cococoir = {
+    baseDomain = "vmtest.local";
+    tls = {
+      mode = "self-signed";
+      certFile = "/etc/vmtest-tls/cert.pem";
+      keyFile = "/etc/vmtest-tls/key.pem";
+    };
+  };
+
+  # Build-time secrets mounted at well-known paths. Production
+  # would use `cococoir.secrets.sopsFile = ./secrets.yaml` instead.
+  environment.etc = {
+    "vmtest-tls".source = testCerts;
+    "vmtest-secrets".source = testSecrets;
+    "vmtest-pocketid-secrets".source = testPocketidSecrets;
+  };
 
   # Real NixOS VM config. Grub on /dev/vda, ext4 root. Same pattern
   # as the v0 single-tenant test config.
@@ -130,31 +169,19 @@ in {
   users.users.root.password = "password";
   environment.systemPackages = with pkgs; [
     btop
-    kitty # So the system has support for my terminal outputs
+    kitty
   ];
 
   programs.fish.enable = true;
 
-  # Storage layer: Garage single-node, one bucket, FUSE mount.
-  # Secrets are the build-time generated ones; sops-nix would
-  # replace them with /run/secrets/<name> paths in production.
-  environment.etc."vmtest-secrets".source = testSecrets;
-
+  # Storage layer. Cluster + node addresses default to 127.0.0.1
+  # bindings; only `node.address` is required (Garage's RPC needs
+  # a real public address even on a single-node setup). The
+  # `secrets` block stays explicit because vmtest does not use
+  # sops-nix.
   cococoir.storage = {
     enable = true;
-    cluster = {
-      rpcBindAddr = "127.0.0.1:3901";
-      rpcPublicAddr = "127.0.0.1:3901";
-      s3ApiBindAddr = "127.0.0.1:3900";
-      adminApiBindAddr = "127.0.0.1:3903";
-      region = "garage";
-    };
-    node = {
-      id = "node-1";
-      address = "127.0.0.1:3901";
-      zone = "z1";
-      capacity = "1T";
-    };
+    node.address = "127.0.0.1:3901";
     secrets = {
       rpcSecretFile = "/etc/vmtest-secrets/rpc-secret";
       adminTokenFile = "/etc/vmtest-secrets/admin-token";
@@ -165,36 +192,47 @@ in {
     buckets.media = {};
   };
 
-  # Caddy: serves the Jellyfin vhost on :443 with the build-time
-  # self-signed wildcard cert. The Caddy vhost-options module
-  # doesn't expose a `tls` option, so we emit the `tls` directive
-  # via `extraConfig`. Caddy listens on :443 for the vhost and
-  # on :80 for the auto-redirect to https.
-  #
-  # Future services (nextcloud, gitea, ...) get their own vhost
-  # block here with `reverse_proxy 127.0.0.1:<port>`. The
-  # wildcard cert SAN covers them all.
+  # Caddy: just enable. Every cococoir.services.<name> with
+  # enable = true registers a vhost via the contract factory,
+  # which pulls `tls` from cococoir.tls and `reverse_proxy` /
+  # 403 from `public`. No per-vhost boilerplate here.
   #
   # The `email` option is left at its default (null) — Caddy
-  # doesn't try ACME for `*.vmtest.local` (no real
-  # DNS), and setting `email = ""` is a parse error.
-  services.caddy = {
-    enable = true;
-    virtualHosts."jellyfin.vmtest.local".extraConfig = ''
-      tls /etc/vmtest-tls/cert.pem /etc/vmtest-tls/key.pem
-      reverse_proxy 127.0.0.1:8096
-    '';
-  };
+  # doesn't try ACME for `*.vmtest.local` (no real DNS), and
+  # `email = ""` is a parse error.
+  services.caddy.enable = true;
 
-  # Jellyfin service. `bucket` defaults to "media" (4-option
-  # contract). Jellyfin's bucket + FUSE mount are auto-declared
-  # under cococoir.storage.* by the service module. The domain
-  # lives in the `vmtest.local` cookie-jar so the
-  # wildcard cert covers it.
+  # Jellyfin service. The factory's `defaultBucket = "media"`
+  # auto-declares the bucket + FUSE mount under
+  # cococoir.storage.*. Domain defaults to `jellyfin.vmtest.local`
+  # via cococoir.baseDomain.
   cococoir.services.jellyfin = {
     enable = true;
-    domain = "jellyfin.vmtest.local";
     public = true;
+  };
+
+  # SSO-Auth plugin (jellyfin-plugin-sso v4.0.0.3 from 9p4) for
+  # OIDC. The plugin is downloaded as a pre-built .zip from
+  # GitHub releases and packaged by LoCrealloc's
+  # jellyfin-plugins-nix; the NixOS module symlinks the .dlls
+  # into /var/lib/jellyfin/plugins/SSO-Auth/ at jellyfin startup.
+  # The plugin's XML config (issuer URL, client ID, etc.) is
+  # not pre-seeded here — for this dev VM, the user configures
+  # it via the plugin's web UI on first login.
+  services.jellyfin.enabledPlugins."SSO-Auth" =
+    inputs.jellyfin-plugins-nix.packages.x86_64-linux."SSO-Auth";
+
+  # Pocket-ID: self-hosted OIDC provider. Domain defaults to
+  # `auth.vmtest.local` via cococoir.baseDomain +
+  # conventionalSubdomain = "auth"; we override to
+  # `pocketid.vmtest.local` to keep URLs stable with the
+  # prior vmtest (and the bookmarks the user has built up).
+  cococoir.services.pocketid = {
+    enable = true;
+    domain = "pocketid.vmtest.local";
+    public = true;
+    encryptionKeyFile = "/etc/vmtest-pocketid-secrets/encryption-key";
+    staticApiKeyFile = "/etc/vmtest-pocketid-secrets/static-api-key";
   };
 
   # Jellyfin's StorageHelper.TestDataDirectorySize checks
@@ -245,10 +283,4 @@ in {
       guest.port = 22;
     }
   ];
-
-  # Disable the cococoir-edge / cococoir-client systemd units for
-  # the v2 single-machine path. The forwarder is a no-op until a
-  # WireGuard peer is configured, and the systemd units are
-  # conditional on forwards being non-empty (per client.nix).
-  # This is the v2 default.
 }

@@ -60,6 +60,17 @@ let
         ++ lib.optional (hasParentMount config.fileSystems m.mountPoint)
           "${parentMountUnit m.mountPoint}";
       requires = [ "garage-bucket-init.service" ];
+      # geesefs's underlying AWS SDK reads AWS_*_FILE env vars for
+      # credentials. Without these, geesefs logs
+      # "no valid providers in chain" and writes never reach S3
+      # (the syscall returns success from the page cache, the
+      # S3 PUT fails silently). See ADR-005: native S3 > FUSE;
+      # this is the FUSE case.
+      environment = {
+        AWS_ACCESS_KEY_ID_FILE = cfg.secrets.accessKeyIdFile;
+        AWS_SECRET_ACCESS_KEY_FILE = cfg.secrets.secretAccessKeyFile;
+        AWS_REGION = cfg.cluster.region;
+      };
       serviceConfig = {
         Type = "simple";
         ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${m.mountPoint}";
@@ -142,7 +153,7 @@ in {
         data_dir = dataDir;
         metadata_dir = metaDir;
         rpc_bind_addr = cfg.cluster.rpcBindAddr;
-        rpc_public_addr = cfg.node.address;
+        rpc_public_addr = cfg.cluster.rpcPublicAddr;
         s3_api.api_bind_addr = cfg.cluster.s3ApiBindAddr;
         s3_api.s3_region = cfg.cluster.region;
         admin.api_bind_addr = cfg.cluster.adminApiBindAddr;
