@@ -107,20 +107,19 @@ OTEL observability.
 
 ### Components
 
-#### Storage (NixOS modules at `nix/nixos-modules/storage/`)
+#### Storage (NixOS module at `nix/nixos-modules/storage/garage.nix`)
 
-The `cococoir.storage.*` option tree. The user (or a service module)
-declares buckets, the user declares FUSE mounts, the module wires
-up Garage systemd, the bucket-init oneshot, and the FUSE mount
-services. All secrets are referenced by file path (provided by
-sops-nix); the module never owns secret material.
+The `cococoir.storage.*` option tree. The customer sets 5 secret
+file paths; everything else is hardcoded (single-node v2). Services
+auto-declare buckets and FUSE mounts when enabled.
 
-- `cococoir.storage.cluster.{rpcBindAddr, rpcPublicAddr, s3ApiBindAddr, adminApiBindAddr, region, replicationFactor}`
-- `cococoir.storage.node.{id, address, zone, capacity}` — single-node for v2 (multi-node is v4)
+- `cococoir.storage.enable` — always-on (default `true`)
 - `cococoir.storage.secrets.{rpcSecretFile, adminTokenFile, metricsTokenFile, accessKeyIdFile, secretAccessKeyFile}` — file paths, populated by sops-nix
-- `cococoir.storage.buckets.<name>.{replicationFactor}` — per-bucket, clamped to layout zones with capacity
-- `cococoir.storage.mounts.<name>.{bucket, mountPoint, readOnly}` — FUSE mount via `geesefs`
-- `cococoir.storage.derived.{gatewayAddress, buckets.<n>.{endpoint, region, accessKeyIdFile, secretAccessKeyFile}, mounts.<bucket>.{mountPoint, readOnly}}` — read-only resolved view, consumed by service modules
+- `cococoir.storage.buckets.<name>.{replicationFactor}` — per-bucket, added by service modules
+- `cococoir.storage.mounts.<name>.{bucket, mountPoint, readOnly}` — FUSE mount via `geesefs`, added by service modules
+
+Single-node ports (3900/3901/3903), region, and layout are
+hardcoded. Multi-node options will be added when v4 lands.
 
 #### Services (NixOS modules at `nix/nixos-modules/services/`)
 
