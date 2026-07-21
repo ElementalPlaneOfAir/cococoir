@@ -50,6 +50,9 @@ let
     mkdir -p $out
     openssl rand -hex 32 > $out/key
   '';
+  jellarrEnvFile = pkgs.writeText "jellarr-env" ''
+    JELLARR_API_KEY=${builtins.readFile "${jellarrApiKey}/key"}
+  '';
 in
 mkCococoirService {
   name = "jellyfin";
@@ -91,9 +94,11 @@ mkCococoirService {
         enable = true;
         apiKeyFile = "${jellarrApiKey}/key";
       };
+      environmentFile = "${jellarrEnvFile}";
       config = {
         version = 1;
         base_url = "http://127.0.0.1:8096";
+        system = {};
         startup.completeStartupWizard = true;
         library.virtualFolders = [
           {

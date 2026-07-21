@@ -120,6 +120,14 @@ in {
     allowedTCPPorts = [22 80 443];
   };
 
+  networking.hosts = {
+    "127.0.0.1" = ["pocketid.vmtest.local" "jellyfin.vmtest.local"];
+  };
+
+  security.pki.certificates = [
+    (builtins.readFile "${testCerts}/cert.pem")
+  ];
+
   # Platform-wide config. baseDomain + tls.mode do the work that
   # used to live in every per-vhost `extraConfig`:
   #   - service `domain` options default to `<svc>.vmtest.local`

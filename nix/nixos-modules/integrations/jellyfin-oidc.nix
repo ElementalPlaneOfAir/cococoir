@@ -37,7 +37,7 @@ mkIf oidcEnabled {
   systemd.services.cococoir-jellyfin-oidc = {
     description = "Cococoir Jellyfin-PocketID OIDC bridge";
     wantedBy = ["multi-user.target"];
-    after = ["pocketid.service" "jellyfin.service" "network.target"];
+    after = ["pocketid.service" "jellyfin.service" "network.target" "jellarr-api-key-bootstrap.service"];
     requires = ["pocketid.service"];
     path = [pkgs.sqlite pkgs.coreutils];
     serviceConfig = {
@@ -148,20 +148,39 @@ mkIf oidcEnabled {
               ButtonColor: "#4285F4",
               ButtonIcon: "",
               AdditionalParameters: "",
-              ServerBaseUrl: ""
+              ServerBaseUrl: "https://${jf.domain}"
             }],
             RoleMappings: [],
             DefaultProvider: "pocketid",
             AutoCreateUsers: true,
             DefaultRoleName: ""
           }')
+        for i in $(seq 1 15); do
+          if $CURL -X POST \
+            -H "X-Emby-Token: $JF_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$CONFIG" \
+            "$PLUGIN_CONFIG"; then
+            break
+          fi
+          sleep 2
+        done
+
+        echo "OIDC bridge configured"
+
+        echo "Injecting SSO login button into Jellyfin branding..."
+        BUTTON_HTML='<a href="/sso/OIDC/Start/pocketid" class="raised block emby-button button-submit" style="display:block;margin:1em 0;padding:0.9em;text-align:center;text-decoration:none;">Sign in with PocketID</a>'
+        UPDATED_BRANDING=$(${jq} -n \
+          --arg html "$BUTTON_HTML" \
+          '{LoginDisclaimer: $html, SplashscreenEnabled: false}')
         $CURL -X POST \
           -H "X-Emby-Token: $JF_KEY" \
           -H "Content-Type: application/json" \
-          -d "$CONFIG" \
-          "$PLUGIN_CONFIG"
+          -d "$UPDATED_BRANDING" \
+          "$JF_BASE/System/Configuration/branding"
 
-        echo "OIDC bridge configured"
+        echo "Triggering jellarr sync..."
+        systemctl start jellarr.service || true
       '';
     };
   };
