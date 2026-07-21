@@ -11,21 +11,20 @@
 #   nix run .#vmtest -- -nographic
 #
 # Then from your normal computer (the host):
-#   curl --resolve jellyfin.vmtest.local:4433:127.0.0.1 -k \
-#        https://jellyfin.vmtest.local:4433/health
+#   curl -k https://jellyfin.vmtest.local/health
 #   # should return 200 with body "Healthy" (-k skips the cert
 #   # check; the cert is self-signed and per-VM).
+#   curl -k https://pocketid.vmtest.local/.well-known/openid-configuration
+#   # should return json (OIDC discovery document)
 #
 # To open in a browser, add the per-service subdomains to your
 # host's /etc/hosts:
-#   sudo ./scripts/vmtest-hosts.sh
-#   sudo ./scripts/vmtest-hosts.sh rm   # when done
-# then visit https://jellyfin.vmtest.local:4433 — your browser
-# will warn about the self-signed cert; accept it (it's a dev
-# VM, the cert is regenerated every build). You'll see
-# Jellyfin's setup wizard. Configure an admin user, add
-# /media/entertain as a library, and you'll see the pre-seeded
-# welcome.txt.
+#   127.0.0.1 jellyfin.vmtest.local pocketid.vmtest.local
+# then visit https://jellyfin.vmtest.local — your browser
+# will warn about the self-signed cert; accept it. You'll see
+# the Jellyfin login page with a "Sign in with PocketID" button
+# below the password fields. PocketID auto-creates users via
+# OIDC on first login.
 #
 # On NixOS hosts /etc/hosts is read-only; the script will tell
 # you to add `networking.hosts` to your NixOS config instead.
@@ -220,22 +219,6 @@ in {
     enable = true;
     public = true;
   };
-
-  # OIDC RBAC plugin (jellyfin-plugin-oidc v1.0.8 from Ezeqielle)
-  # for PocketID SSO. The plugin is downloaded at build time and
-  # symlinked into /var/lib/jellyfin/plugins/OIDC RBAC/ at
-  # Jellyfin startup. Configuration (provider, client secret,
-  # role mappings) is applied by the cococoir-jellyfin-oidc
-  # oneshot via Jellyfin's REST API — no raw XML.
-  systemd.services.jellyfin.preStart = let
-    oidcPlugin = pkgs.callPackage ../nix/packages/jellyfin-plugin-oidc.nix {};
-  in
-  lib.mkBefore ''
-    mkdir -p /var/lib/jellyfin/plugins/"OIDC RBAC"
-    rm -f /var/lib/jellyfin/plugins/"OIDC RBAC"/*.dll
-    ln -sf ${oidcPlugin}/* /var/lib/jellyfin/plugins/"OIDC RBAC"/
-    chmod -R 770 /var/lib/jellyfin/plugins/"OIDC RBAC"
-  '';
 
   # Pocket-ID: self-hosted OIDC provider, always-on (the
   # platform requires OIDC). Domain defaults to

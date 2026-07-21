@@ -7,12 +7,15 @@
 # key, a systemd oneshot:
 #   1. Creates an OIDC client in PocketID via its admin API.
 #   2. Generates a client secret.
-#   3. Injects a Jellyfin API key into Jellyfin's SQLite DB.
-#   4. Configures the OIDC RBAC plugin via Jellyfin's REST API
+#   3. Configures the OIDC RBAC plugin via Jellyfin's REST API
 #      (POST /Plugins/{guid}/Configuration).
+#   4. Injects the SSO login button into Jellyfin's Branding >
+#      Login Disclaimer via POST /System/Configuration/branding.
 #
-# No raw XML is written — everything goes through the plugin's
-# standard configuration API.
+# The Jellyfin API key used for all API calls is the same key
+# injected by jellarr's bootstrap — no separate key, no extra
+# Jellyfin stop/start. The OIDC RBAC plugin DLLs are symlinked
+# into place via a systemd preStart on jellyfin.service.
 #
 # Plugin ID: d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f90 (OIDC RBAC)
 {config, lib, pkgs, ...}:
@@ -26,20 +29,35 @@ let
   jq = getExe pkgs.jq;
   piPort = toString pi.port;
   pluginGuid = "d4e5f6a7b8c90d1e2f3a4b5c6d7e8f90";
-  jfApiKey = pkgs.runCommand "cococoir-jellyfin-oidc-api-key" {
-    buildInputs = [pkgs.openssl];
-  } ''
-    mkdir -p $out
-    openssl rand -hex 32 > $out/key
-  '';
+
+  oidcPlugin = pkgs.stdenv.mkDerivation {
+    pname = "jellyfin-plugin-oidc-rbac";
+    version = "1.0.8";
+    src = pkgs.fetchzip {
+      url = "https://github.com/Ezeqielle/jellyfin-plugin-oidc/releases/download/v1.0.8/oidc-rbac.zip";
+      hash = "sha256-qZ50uaVVQ0A4BFEVuPqldT3nN30P4gPZTDheW1up52I=";
+      stripRoot = false;
+    };
+    installPhase = ''
+      mkdir -p $out
+      cp *.dll $out/
+    '';
+  };
 in
 mkIf oidcEnabled {
+  systemd.services.jellyfin.preStart = lib.mkBefore ''
+    mkdir -p /var/lib/jellyfin/plugins/"OIDC RBAC"
+    rm -f /var/lib/jellyfin/plugins/"OIDC RBAC"/*.dll
+    ln -sf ${oidcPlugin}/* /var/lib/jellyfin/plugins/"OIDC RBAC"/
+    chmod -R 770 /var/lib/jellyfin/plugins/"OIDC RBAC"
+  '';
+
   systemd.services.cococoir-jellyfin-oidc = {
     description = "Cococoir Jellyfin-PocketID OIDC bridge";
     wantedBy = ["multi-user.target"];
     after = ["pocketid.service" "jellyfin.service" "network.target" "jellarr-api-key-bootstrap.service"];
     requires = ["pocketid.service"];
-    path = [pkgs.sqlite pkgs.coreutils];
+    path = [pkgs.coreutils];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -51,8 +69,7 @@ mkIf oidcEnabled {
         CALLBACK="https://${jf.domain}/sso/OIDC/Callback/pocketid"
         API_KEY_FILE="${pi.staticApiKeyFile}"
         CLIENT_ID="jellyfin"
-        JF_DB="/var/lib/jellyfin/data/jellyfin.db"
-        JF_API_KEY_FILE="${jfApiKey}/key"
+        JF_KEY_FILE="/etc/cococoir/jellarr-api-key"
         JF_BASE="http://127.0.0.1:8096"
         PLUGIN_CONFIG="$JF_BASE/Plugins/${pluginGuid}/Configuration"
 
@@ -104,27 +121,7 @@ mkIf oidcEnabled {
           sleep 2
         done
 
-        echo "Injecting Jellyfin API key..."
-        JF_KEY=$(cat "$JF_API_KEY_FILE" | tr -d '[:space:]')
-        until [ -e "$JF_DB" ]; do sleep 1; done
-        systemctl stop jellyfin
-        sleep 5
-        sqlite3 "$JF_DB" <<SQL
-        BEGIN IMMEDIATE;
-        INSERT INTO ApiKeys (AccessToken, Name, DateCreated, DateLastActivity)
-        SELECT '$JF_KEY', 'cococoir-jellyfin-oidc', datetime('now'), datetime('now')
-        WHERE NOT EXISTS (SELECT 1 FROM ApiKeys WHERE Name='cococoir-jellyfin-oidc');
-        COMMIT;
-        SQL
-        systemctl start jellyfin
-
-        echo "Waiting for Jellyfin to restart..."
-        for i in $(seq 1 30); do
-          if $CURL -o /dev/null "$JF_BASE/System/Info/Public"; then
-            break
-          fi
-          sleep 2
-        done
+        JF_KEY=$(cat "$JF_KEY_FILE")
 
         echo "Configuring OIDC RBAC plugin..."
         CONFIG=$(${jq} -n \

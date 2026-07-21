@@ -86,6 +86,12 @@ mkCococoirService {
     };
   in
   lib.recursiveUpdate base (lib.optionalAttrs (options.services ? jellarr) {
+    environment.etc."cococoir/jellarr-api-key" = {
+      text = builtins.readFile "${jellarrApiKey}/key";
+      mode = "0400";
+      user = "jellyfin";
+      group = "jellyfin";
+    };
     services.jellarr = {
       enable = true;
       user = "jellyfin";
