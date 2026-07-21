@@ -170,9 +170,16 @@ in {
   environment.systemPackages = with pkgs; [
     btop
     kitty
+    python3
+    curl
+    jq
   ];
 
   programs.fish.enable = true;
+
+  nix.settings = {
+    experimental-features = ["nix-command" "flakes"];
+  };
 
   # Storage layer. cococoir.storage.enable defaults to true
   # (always-on). The `secrets` block sets the 5 secret file
@@ -206,16 +213,21 @@ in {
     public = true;
   };
 
-  # SSO-Auth plugin (jellyfin-plugin-sso v4.0.0.3 from 9p4) for
-  # OIDC. The plugin is downloaded as a pre-built .zip from
-  # GitHub releases and packaged by LoCrealloc's
-  # jellyfin-plugins-nix; the NixOS module symlinks the .dlls
-  # into /var/lib/jellyfin/plugins/SSO-Auth/ at jellyfin startup.
-  # The plugin's XML config (issuer URL, client ID, etc.) is
-  # not pre-seeded here — for this dev VM, the user configures
-  # it via the plugin's web UI on first login.
-  services.jellyfin.enabledPlugins."SSO-Auth" =
-    inputs.jellyfin-plugins-nix.packages.x86_64-linux."SSO-Auth";
+  # OIDC RBAC plugin (jellyfin-plugin-oidc v1.0.8 from Ezeqielle)
+  # for PocketID SSO. The plugin is downloaded at build time and
+  # symlinked into /var/lib/jellyfin/plugins/OIDC RBAC/ at
+  # Jellyfin startup. Configuration (provider, client secret,
+  # role mappings) is applied by the cococoir-jellyfin-oidc
+  # oneshot via Jellyfin's REST API — no raw XML.
+  systemd.services.jellyfin.preStart = let
+    oidcPlugin = pkgs.callPackage ../nix/packages/jellyfin-plugin-oidc.nix {};
+  in
+  lib.mkBefore ''
+    mkdir -p /var/lib/jellyfin/plugins/"OIDC RBAC"
+    rm -f /var/lib/jellyfin/plugins/"OIDC RBAC"/*.dll
+    ln -sf ${oidcPlugin}/* /var/lib/jellyfin/plugins/"OIDC RBAC"/
+    chmod -R 770 /var/lib/jellyfin/plugins/"OIDC RBAC"
+  '';
 
   # Pocket-ID: self-hosted OIDC provider, always-on (the
   # platform requires OIDC). Domain defaults to

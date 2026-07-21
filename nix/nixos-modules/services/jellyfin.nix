@@ -18,6 +18,9 @@
 #
 # What this module adds:
 #   - activates nixpkgs' services.jellyfin
+#   - activates jellarr for declarative config (users, libraries,
+#     plugins, startup-wizard skip). Per AGENTS.md §
+#     "jellyfin + jellarr" is one toggle.
 #   - declares the jellyfin system user (with `render`/`video`
 #     extra groups for HW transcode)
 #   - waits on the FUSE mount of the backing bucket
@@ -36,10 +39,17 @@
   config,
   lib,
   pkgs,
+  options,
   ...
 }:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs;};
+  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  jellarrApiKey = pkgs.runCommand "jellarr-api-key" {
+    buildInputs = [pkgs.openssl];
+  } ''
+    mkdir -p $out
+    openssl rand -hex 32 > $out/key
+  '';
 in
 mkCococoirService {
   name = "jellyfin";
@@ -48,26 +58,53 @@ mkCococoirService {
   defaultHealthPath = "/health";
   defaultBucket = "media";
   defaultMount = "/media/entertain";
-  extraConfig = {cfg, ...}: {
-    services.jellyfin = {
+  extraConfig = {cfg, lib, options, ...}: let
+    base = {
+      services.jellyfin = {
+        enable = true;
+        openFirewall = false;
+        user = "jellyfin";
+      };
+
+      users.users.jellyfin = {
+        isSystemUser = true;
+        description = "Jellyfin System User";
+        extraGroups = ["render" "video"];
+      };
+
+      systemd.services.jellyfin.after =
+        ["cococoir-fuse-${cfg.bucket}.service"];
+
+      cococoir.storage.buckets.${cfg.bucket}.replicationFactor = 1;
+      cococoir.storage.mounts.${cfg.bucket} = {
+        bucket = cfg.bucket;
+        mountPoint = "/media/entertain";
+      };
+    };
+  in
+  lib.recursiveUpdate base (lib.optionalAttrs (options.services ? jellarr) {
+    services.jellarr = {
       enable = true;
-      openFirewall = false;
       user = "jellyfin";
+      group = "jellyfin";
+      bootstrap = {
+        enable = true;
+        apiKeyFile = "${jellarrApiKey}/key";
+      };
+      config = {
+        version = 1;
+        base_url = "http://127.0.0.1:8096";
+        startup.completeStartupWizard = true;
+        library.virtualFolders = [
+          {
+            name = "Entertainment";
+            collectionType = "movies";
+            libraryOptions.pathInfos = [
+              { path = "/media/entertain"; }
+            ];
+          }
+        ];
+      };
     };
-
-    users.users.jellyfin = {
-      isSystemUser = true;
-      description = "Jellyfin System User";
-      extraGroups = ["render" "video"];
-    };
-
-    systemd.services.jellyfin.after =
-      ["cococoir-fuse-${cfg.bucket}.service"];
-
-    cococoir.storage.buckets.${cfg.bucket}.replicationFactor = 1;
-    cococoir.storage.mounts.${cfg.bucket} = {
-      bucket = cfg.bucket;
-      mountPoint = "/media/entertain";
-    };
-  };
+  });
 }

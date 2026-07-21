@@ -7,12 +7,6 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     import-tree.url = "github:denful/import-tree";
     sops-nix.url = "github:Mic92/sops-nix";
-    # Jellyfin plugins packaged as NixOS-installable derivations
-    # (downloads the pre-built .dlls from the upstream GitHub
-    # releases and exposes a `services.jellyfin.enabledPlugins`
-    # option). Used for the SSO-Auth plugin that wires Jellyfin
-    # to Pocket-ID. Maintained by LoCrealloc, not us.
-    jellyfin-plugins-nix.url = "github:LoCrealloc/jellyfin-plugins-nix";
     # Declarative Jellyfin configuration (libraries, users,
     # plugin config, startup-wizard skip) via the official
     # Jellyfin REST API. The jellyfin service module activates
@@ -29,25 +23,18 @@
   outputs = inputs: let
     vmtest = inputs.nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
-      # Pass the flake's inputs to the module so vmtest.nix can
-      # reference `inputs.jellyfin-plugins-nix.packages.<sys>.<name>`.
       specialArgs = { inherit inputs; };
       modules = [
         ./nixosConfigurations/vmtest.nix
-        # Modern nixpkgs (>= 25.05) only includes the QEMU VM module
-        # in a `vmVariant` submodule, not the main config. Importing
-        # it here declares options like `virtualisation.forwardPorts`
-        # in the main config, which the vmtest config uses.
         "${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
-        # LoCrealloc's jellyfin-plugins-nix module exposes
-        # `services.jellyfin.enabledPlugins.<name>`. The SSO-Auth
-        # plugin is enabled in vmtest.nix via that option.
-        inputs.jellyfin-plugins-nix.nixosModules.jellyfin-plugins
-        # Jellarr's NixOS module exposes `services.jellarr`
-        # (enable, bootstrap, config, etc.). The cococoir
-        # jellyfin service module activates it automatically
-        # when `cococoir.services.jellyfin.enable = true`.
         inputs.jellarr.nixosModules.default
+      ];
+    };
+
+    nixosModulesWithJellarr = {
+      imports = [
+        inputs.jellarr.nixosModules.default
+        ./nix/nixos-modules
       ];
     };
   in
@@ -57,11 +44,7 @@
         "aarch64-linux"
       ];
 
-      flake.nixosModules.default = {...}: {
-        imports = [
-          ./nix/nixos-modules
-        ];
-      };
+      flake.nixosModules.default = nixosModulesWithJellarr;
 
       # Manual v2 dev VM: every cococoir service under test, each
       # behind its own Caddy vhost in the `vmtest.local`

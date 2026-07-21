@@ -1,17 +1,5 @@
 {
   "nodes": {
-    "SSO-Auth": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-Maarlz0aQvucLhEYmm4Wv7/6Y+SU6Bsczmed6f+5qRo=",
-        "type": "file",
-        "url": "https://github.com/9p4/jellyfin-plugin-sso/releases/download/v4.0.0.3/sso-authentication_4.0.0.3.zip"
-      },
-      "original": {
-        "type": "file",
-        "url": "https://github.com/9p4/jellyfin-plugin-sso/releases/download/v4.0.0.3/sso-authentication_4.0.0.3.zip"
-      }
-    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": "nixpkgs-lib"
@@ -86,45 +74,13 @@
         "type": "github"
       }
     },
-    "jellyfin-plugins-nix": {
-      "inputs": {
-        "SSO-Auth": "SSO-Auth",
-        "kodisyncqueue": "kodisyncqueue",
-        "nixpkgs": "nixpkgs"
-      },
-      "locked": {
-        "lastModified": 1768157203,
-        "narHash": "sha256-pQ09u25ThQiWWEI7U8MOaphF6+KwBMPMM+6Kgn16iFI=",
-        "owner": "LoCrealloc",
-        "repo": "jellyfin-plugins-nix",
-        "rev": "adae962a9a831a6fec96dca63c56b3f5929702ab",
-        "type": "github"
-      },
-      "original": {
-        "owner": "LoCrealloc",
-        "repo": "jellyfin-plugins-nix",
-        "type": "github"
-      }
-    },
-    "kodisyncqueue": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-OVaiIHKGXfmyA3QAHPoPkAS7qnKnVeEffXiuIrFB5DA=",
-        "type": "file",
-        "url": "https://github.com/jellyfin/jellyfin-plugin-kodisyncqueue/releases/download/v15/kodi-sync-queue_15.0.0.0.zip"
-      },
-      "original": {
-        "type": "file",
-        "url": "https://github.com/jellyfin/jellyfin-plugin-kodisyncqueue/releases/download/v15/kodi-sync-queue_15.0.0.0.zip"
-      }
-    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1745930157,
-        "narHash": "sha256-y3h3NLnzRSiUkYpnfvnS669zWZLoqqI6NprtLQ+5dck=",
+        "lastModified": 1783224372,
+        "narHash": "sha256-8i/87eeoqiGE4yOTjwSA3Eh/ziJRQEmd/unYU+K27sk=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "46e634be05ce9dc6d4db8e664515ba10b78151ae",
+        "rev": "d407951447dcd00442e97087bf374aad70c04cea",
         "type": "github"
       },
       "original": {
@@ -166,22 +122,6 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1783224372,
-        "narHash": "sha256-8i/87eeoqiGE4yOTjwSA3Eh/ziJRQEmd/unYU+K27sk=",
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "d407951447dcd00442e97087bf374aad70c04cea",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nixos",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "nixpkgs_3": {
-      "locked": {
         "lastModified": 1782175435,
         "narHash": "sha256-EMzXKmnOtBQ2MnvpiNOm7E+kOMvdPrIKaeg52Tip2Uk=",
         "owner": "NixOS",
@@ -201,14 +141,13 @@
         "flake-parts": "flake-parts",
         "import-tree": "import-tree",
         "jellarr": "jellarr",
-        "jellyfin-plugins-nix": "jellyfin-plugins-nix",
-        "nixpkgs": "nixpkgs_2",
+        "nixpkgs": "nixpkgs",
         "sops-nix": "sops-nix"
       }
     },
     "sops-nix": {
       "inputs": {
-        "nixpkgs": "nixpkgs_3"
+        "nixpkgs": "nixpkgs_2"
       },
       "locked": {
         "lastModified": 1783174389,

@@ -44,10 +44,11 @@
   config,
   lib,
   pkgs,
+  options,
   ...
 }:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs;};
+  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
 in
 mkCococoirService {
   name = "pocketid";

@@ -26,5 +26,6 @@
     ./client.nix
     ./services/jellyfin.nix
     ./services/pocketid.nix
+    ./integrations/jellyfin-oidc.nix
   ];
 }

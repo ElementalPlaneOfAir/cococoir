@@ -36,8 +36,7 @@
 # Per ADR-004: adding a 5th option to the standard contract is a
 # deliberate decision, not an accident. Use `extraOptions` for
 # per-service additions.
-{lib, config, pkgs, ...}:
-
+{lib, config, pkgs, options, ...}:
 let
   inherit (lib) mkOption mkEnableOption types literalMD;
 in
@@ -193,7 +192,7 @@ in
               then "reverse_proxy 127.0.0.1:${toString cfg.port}"
               else ''respond "Forbidden" 403''));
       }
-      ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; })
+      ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; options = options; })
     ]
   );
 }
