@@ -231,6 +231,10 @@ in {
     public = true;
     encryptionKeyFile = "/etc/vmtest-pocketid-secrets/encryption-key";
     staticApiKeyFile = "/etc/vmtest-pocketid-secrets/static-api-key";
+    adminUser = {
+      username = "nicole";
+      firstName = "Nicole";
+    };
   };
 
   # Jellyfin's StorageHelper.TestDataDirectorySize checks

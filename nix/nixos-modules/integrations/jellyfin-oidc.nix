@@ -63,7 +63,7 @@ mkIf oidcEnabled (lib.mkMerge [
     systemd.services.cococoir-jellyfin-oidc = {
       description = "Cococoir Jellyfin-PocketID OIDC client provisioning";
       wantedBy = ["multi-user.target"];
-      after = ["pocketid.service" "network.target"];
+      after = ["pocketid.service" "network.target" "cococoir-pocketid-provision.service"];
       requires = ["pocketid.service"];
       serviceConfig = {
         Type = "oneshot";
@@ -123,6 +123,32 @@ mkIf oidcEnabled (lib.mkMerge [
           else
             echo "Client secret already exists at $SECRET_FILE"
           fi
+
+          echo "Ensuring jellyfin-users group..."
+          JF_GROUP_UUID=$($CURL "$PI_DIRECT/api/user-groups?search=jellyfin-users" \
+            | ${jq} -r '.data[] | select(.name == "jellyfin-users") | .id')
+          if [ -z "$JF_GROUP_UUID" ]; then
+            echo "Creating jellyfin-users group..."
+            JF_GROUP_UUID=$($CURL -X POST \
+              -H "$AUTH_HDR" \
+              -H "Content-Type: application/json" \
+              -d '{"name":"jellyfin-users","friendlyName":"Jellyfin Users"}' \
+              "$PI_DIRECT/api/user-groups" | ${jq} -r '.id')
+          fi
+          echo "jellyfin-users -> $JF_GROUP_UUID"
+
+          echo "Setting allowed user groups on OIDC client $CLIENT_ID..."
+          ADMIN_GROUP_UUID=$($CURL "$PI_DIRECT/api/user-groups?search=cococoir-admins" \
+            | ${jq} -r '.data[] | select(.name == "cococoir-admins") | .id')
+          GROUP_LIST=$(echo -n "[\"$JF_GROUP_UUID\"]")
+          if [ -n "$ADMIN_GROUP_UUID" ]; then
+            GROUP_LIST=$(echo -n "[\"$JF_GROUP_UUID\",\"$ADMIN_GROUP_UUID\"]")
+          fi
+          $CURL -X PUT \
+            -H "$AUTH_HDR" \
+            -H "Content-Type: application/json" \
+            -d "$GROUP_LIST" \
+            "$PI_DIRECT/api/oidc/clients/$CLIENT_ID/allowed-user-groups"
 
           echo "Triggering jellarr sync..."
           systemctl start jellarr.service || true

@@ -84,6 +84,48 @@ mkCococoirService {
         environment.
       '';
     };
+
+    adminUser = lib.mkOption {
+      type = lib.types.nullOr (lib.types.submodule {
+        options = {
+          username = lib.mkOption {
+            type = lib.types.str;
+            example = "nicole";
+            description = ''
+              PocketID username for the human admin account.
+              cococoir creates this user on first boot (if it
+              doesn't already exist) and logs a one-time login
+              code to journald for passkey enrollment.
+            '';
+          };
+          email = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "nicole@example.com";
+            description = "Optional email for the admin account.";
+          };
+          firstName = lib.mkOption {
+            type = lib.types.str;
+            default = "Admin";
+            example = "Nicole";
+            description = "First name for the admin account.";
+          };
+        };
+      });
+      default = null;
+      example = {
+        username = "nicole";
+        email = "nicole@example.com";
+        firstName = "Nicole";
+      };
+      description = ''
+        When set and `staticApiKeyFile` is configured, cococoir
+        creates a human admin user in PocketID on first boot.
+        After deployment, run `journalctl -u
+        cococoir-pocketid-provision.service` to find the
+        one-time login code for passkey setup.
+      '';
+    };
   };
   extraConfig = {cfg, ...}: {
     users.users.pocketid = {
