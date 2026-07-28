@@ -80,14 +80,3 @@ function clamp(x: number, lo: number, hi: number): number {
 - No body text unless genuinely necessary. The subject line should be self-explanatory.
 - When squash-merging a PR, the individual commits become the body — so keep each commit message clean and readable as a bullet point.
 
-# Commands
-
-- **Typecheck:** `npm run typecheck` (runs `tsc --noEmit` across all workspaces via turbo)
-- **Test:** `npm run test` (runs `vitest run` across all workspaces via turbo)
-- **Build:** `npm run build` (builds all workspaces via turbo)
-- **Dev:** `npm run dev` (builds packages then starts desktop app)
-- **Clean:** `npm run clean` (cleans all workspace dist dirs and turbo cache)
-
-# Project Info
-
-- There is a high level project overview in spec/high-level-seance-description.md

@@ -228,14 +228,21 @@ in {
   # oneshot copies it there on first boot (idempotent within a VM
   # overlay). The bcrypt hash goes directly into staticPasswords.
   services.dex.settings = {
+    staticClients = [{
+      id = "vmtest-cli";
+      public = true;
+      name = "vmtest CLI";
+    }];
+
     staticPasswords = let
       hash = builtins.readFile "${testDexSecrets}/admin-password-hash";
     in [{
-      email = "admin@vmtest.local";
+      email = "admin@example.com";
       hash = hash;
       username = "admin";
       userID = "08a8684b-db88-4b73-90a9-3cd1661f5466";
       groups = ["admins"];
+      preferredUsername = "admin";
     }];
   };
 

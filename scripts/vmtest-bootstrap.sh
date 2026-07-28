@@ -67,13 +67,13 @@ case "$jf_code" in
 esac
 
 echo ""
-echo "─── Dex test user (admin@vmtest.local / password) ───"
+echo "─── Dex test user (admin@example.com / password) ───"
 TOKEN=$(curl -sk -X POST https://auth.vmtest.local/dex/token \
-  -H 'Authorization: Basic amVsbHlmaW46' \
+  -H 'Authorization: Basic dm10ZXN0LWNsaTo=' \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=password' \
   -d 'scope=openid profile email groups' \
-  -d 'username=admin@vmtest.local' \
+  -d 'username=admin@example.com' \
   -d 'password=password' 2>/dev/null | jq -r '.access_token // empty')
 
 if [ -n "$TOKEN" ]; then
@@ -81,11 +81,11 @@ if [ -n "$TOKEN" ]; then
   echo ""
   echo "─── ID token claims ───"
   ID_TOKEN=$(curl -sk -X POST https://auth.vmtest.local/dex/token \
-    -H 'Authorization: Basic amVsbHlmaW46' \
+    -H 'Authorization: Basic dm10ZXN0LWNsaTo=' \
     -H 'Content-Type: application/x-www-form-urlencoded' \
     -d 'grant_type=password' \
     -d 'scope=openid profile email groups' \
-    -d 'username=admin@vmtest.local' \
+    -d 'username=admin@example.com' \
     -d 'password=password' 2>/dev/null | jq -r '.id_token // empty')
   if [ -n "$ID_TOKEN" ]; then
     PAYLOAD=$(echo "$ID_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null || \
