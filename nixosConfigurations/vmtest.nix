@@ -64,27 +64,20 @@
       chmod 0400 $out/rpc-secret $out/admin-token $out/metrics-token
     '';
 
-  # Build-time pocket-id secrets. ENCRYPTION_KEY is the
-  # base64-encoded 32-byte symmetric key pocket-id uses to
-  # encrypt private keys + tokens at rest. The file MUST NOT
-  # have a trailing newline — pocket-id treats CR/LF as
-  # part of the key, so a stray \n fails decryption on
-  # restart. STATIC_API_KEY auto-creates a "Static API
-  # User" admin on first boot, so we can administer
-  # pocket-id via its API without clicking through the
-  # setup wizard.
-  testPocketidSecrets =
-    pkgs.runCommand "vmtest-pocketid-secrets" {
-      buildInputs = [pkgs.openssl];
+  # Build-time Dex secrets: OIDC client secret for Jellyfin
+  # and a bcrypt password hash for the test admin user.
+  # Dex's replace-secret reads the client secret file at
+  # startup and substitutes its path in the YAML config with
+  # the file content. The bcrypt hash goes into Dex's
+  # staticPasswords.
+  testDexSecrets =
+    pkgs.runCommand "vmtest-dex-secrets" {
+      buildInputs = [pkgs.openssl pkgs.apacheHttpd];
     } ''
       mkdir -p $out
-      # `openssl rand -base64` adds a trailing newline; strip
-      # it with `tr -d '\n'` + `printf '%s'`. Both files must
-      # be exactly the bytes pocket-id expects — no CR/LF.
-      openssl rand -base64 32 | tr -d '\n' > $out/encryption-key
-      api_key="$(openssl rand -base64 32 | tr -d '\n')"
-      printf '%s' "$api_key" > $out/static-api-key
-      chmod 0400 $out/encryption-key $out/static-api-key
+      openssl rand -hex -out $out/jellyfin-client-secret 32
+      chmod 0440 $out/jellyfin-client-secret
+      htpasswd -bnBC 10 "" password | cut -d: -f2 | tr -d '\n' > $out/admin-password-hash
     '';
 
   # Build-time self-signed TLS cert for the
@@ -120,7 +113,7 @@ in {
   };
 
   networking.hosts = {
-    "127.0.0.1" = ["pocketid.vmtest.local" "jellyfin.vmtest.local"];
+    "127.0.0.1" = ["auth.vmtest.local" "jellyfin.vmtest.local"];
   };
 
   security.pki.certificates = [
@@ -150,7 +143,7 @@ in {
   environment.etc = {
     "vmtest-tls".source = testCerts;
     "vmtest-secrets".source = testSecrets;
-    "vmtest-pocketid-secrets".source = testPocketidSecrets;
+    "vmtest-dex-secrets".source = testDexSecrets;
   };
 
   # Real NixOS VM config. Grub on /dev/vda, ext4 root. Same pattern
@@ -220,18 +213,34 @@ in {
     public = true;
   };
 
-  # Pocket-ID: self-hosted OIDC provider, always-on (the
-  # platform requires OIDC). Domain defaults to
-  # `auth.vmtest.local` via cococoir.baseDomain +
-  # conventionalSubdomain = "auth"; we override to
-  # `pocketid.vmtest.local` to keep URLs stable with the
-  # prior vmtest (and the bookmarks the user has built up).
-  cococoir.services.pocketid = {
-    domain = "pocketid.vmtest.local";
+  # Dex: self-hosted OIDC provider with email+password auth.
+  # Domain defaults to auth.vmtest.local via cococoir.baseDomain.
+  # Users are declared in staticPasswords — no setup wizard, no
+  # API provisioning. Groups flow through the `groups` OIDC scope
+  # so Jellyfin picks them up as role claims.
+  cococoir.services.dex = {
     public = true;
-    encryptionKeyFile = "/etc/vmtest-pocketid-secrets/encryption-key";
-    staticApiKeyFile = "/etc/vmtest-pocketid-secrets/static-api-key";
   };
+
+  # Build-time secret files wired into Dex and jellarr.
+  # The generated Jellyfin client secret lives in
+  # /etc/dex/clients/jellyfin-secret; the cococoir-jellyfin-oidc-secret
+  # oneshot copies it there on first boot (idempotent within a VM
+  # overlay). The bcrypt hash goes directly into staticPasswords.
+  services.dex.settings = {
+    staticPasswords = let
+      hash = builtins.readFile "${testDexSecrets}/admin-password-hash";
+    in [{
+      email = "admin@vmtest.local";
+      hash = hash;
+      username = "admin";
+      userID = "08a8684b-db88-4b73-90a9-3cd1661f5466";
+      groups = ["admins"];
+    }];
+  };
+
+  environment.etc."dex/clients/jellyfin-secret".source =
+    "${testDexSecrets}/jellyfin-client-secret";
 
   # Jellyfin's StorageHelper.TestDataDirectorySize checks
   # /var/lib/jellyfin/data has >= 2GiB free at startup and aborts

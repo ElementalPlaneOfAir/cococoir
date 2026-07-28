@@ -25,8 +25,7 @@
     ./edge.nix
     ./client.nix
     ./services/jellyfin.nix
-    ./services/pocketid.nix
+    ./services/dex.nix
     ./integrations/jellyfin-oidc.nix
-    ./integrations/pocketid-provision.nix
   ];
 }
