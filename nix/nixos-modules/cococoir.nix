@@ -26,6 +26,13 @@
     ./client.nix
     ./services/jellyfin.nix
     ./services/dex.nix
+    ./services/pocketid.nix
+    ./services/cryptpad.nix
+    ./services/radarr.nix
+    ./services/sonarr.nix
+    ./services/lidarr.nix
+    ./services/prowlarr.nix
     ./integrations/jellyfin-oidc.nix
+    ./integrations/cryptpad-oidc.nix
   ];
 }

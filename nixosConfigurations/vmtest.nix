@@ -76,7 +76,8 @@
     } ''
       mkdir -p $out
       openssl rand -hex -out $out/jellyfin-client-secret 32
-      chmod 0440 $out/jellyfin-client-secret
+      openssl rand -hex -out $out/cryptpad-client-secret 32
+      chmod 0440 $out/jellyfin-client-secret $out/cryptpad-client-secret
       htpasswd -bnBC 10 "" password | cut -d: -f2 | tr -d '\n' > $out/admin-password-hash
     '';
 
@@ -113,7 +114,8 @@ in {
   };
 
   networking.hosts = {
-    "127.0.0.1" = ["auth.vmtest.local" "jellyfin.vmtest.local"];
+    "127.0.0.1" = ["auth.vmtest.local" "jellyfin.vmtest.local" "cryptpad.vmtest.local"
+                      "radarr.vmtest.local" "sonarr.vmtest.local" "lidarr.vmtest.local" "prowlarr.vmtest.local"];
   };
 
   security.pki.certificates = [
@@ -193,6 +195,22 @@ in {
       secretAccessKeyFile = "/etc/vmtest-secrets/secret-access-key";
     };
   cococoir.storage.buckets.media = {};
+  cococoir.storage.buckets.movies = { replicationFactor = 1; };
+  cococoir.storage.buckets.shows = { replicationFactor = 1; };
+  cococoir.storage.buckets.music = { replicationFactor = 1; };
+
+  cococoir.storage.mounts.movies = {
+    bucket = "movies";
+    mountPoint = "/media/movies";
+  };
+  cococoir.storage.mounts.shows = {
+    bucket = "shows";
+    mountPoint = "/media/shows";
+  };
+  cococoir.storage.mounts.music = {
+    bucket = "music";
+    mountPoint = "/media/music";
+  };
 
   # Caddy: just enable. Every cococoir.services.<name> with
   # enable = true registers a vhost via the contract factory,
@@ -211,6 +229,33 @@ in {
   cococoir.services.jellyfin = {
     enable = true;
     public = true;
+  };
+
+  cococoir.services.cryptpad = {
+    enable = true;
+    public = true;
+  };
+
+  cococoir.services.radarr = {
+    enable = true;
+    public = false;
+  };
+  cococoir.services.sonarr = {
+    enable = true;
+    public = false;
+  };
+  cococoir.services.lidarr = {
+    enable = true;
+    public = false;
+  };
+  cococoir.services.prowlarr = {
+    enable = true;
+    public = false;
+  };
+
+  # Pocket-ID defaults to enabled. Disable it — vmtest uses Dex.
+  cococoir.services.pocketid = {
+    enable = false;
   };
 
   # Dex: self-hosted OIDC provider with email+password auth.
@@ -248,6 +293,46 @@ in {
 
   environment.etc."dex/clients/jellyfin-secret".source =
     "${testDexSecrets}/jellyfin-client-secret";
+
+  environment.etc."dex/clients/cryptpad-secret".source =
+    "${testDexSecrets}/cryptpad-client-secret";
+
+  services.jellarr.config = lib.mkForce {
+    version = 1;
+    base_url = "http://127.0.0.1:8096";
+    system = {};
+    startup.completeStartupWizard = true;
+    library.virtualFolders = [
+      {
+        name = "Movies";
+        collectionType = "movies";
+        libraryOptions.pathInfos = [{ path = "/media/movies"; }];
+      }
+      {
+        name = "TV Shows";
+        collectionType = "tvshows";
+        libraryOptions.pathInfos = [{ path = "/media/shows"; }];
+      }
+      {
+        name = "Music";
+        collectionType = "music";
+        libraryOptions.pathInfos = [{ path = "/media/music"; }];
+      }
+    ];
+  };
+
+  systemd.services.jellyfin = {
+    after = [
+      "cococoir-fuse-movies.service"
+      "cococoir-fuse-shows.service"
+      "cococoir-fuse-music.service"
+    ];
+    serviceConfig.BindReadOnlyPaths = [
+      "/media/movies"
+      "/media/shows"
+      "/media/music"
+    ];
+  };
 
   # Jellyfin's StorageHelper.TestDataDirectorySize checks
   # /var/lib/jellyfin/data has >= 2GiB free at startup and aborts

@@ -40,7 +40,8 @@ set -euo pipefail
 G='\033[32m' R='\033[31m' N='\033[0m'
 
 echo "─── Services ───"
-for svc in dex cococoir-jellyfin-oidc-secret jellyfin jellarr; do
+for svc in dex cococoir-jellyfin-oidc-secret jellyfin jellarr \
+  cococoir-cryptpad-oidc-secret cryptpad; do
   state=$(systemctl is-active $svc.service 2>/dev/null || echo missing)
   case "$state" in
     active|activating) printf "  %-40s ${G}%s${N}\n" "$svc" "$state" ;;
@@ -64,6 +65,14 @@ jf_code=$(curl -sk -o /dev/null -w '%{http_code}' \
 case "$jf_code" in
   200) printf "  %-25s ${G}%s${N}\n" "jellyfin" "$jf_code" ;;
   *)   printf "  %-25s ${R}%s${N}\n" "jellyfin" "$jf_code" ;;
+esac
+
+# CryptPad checkup
+cp_code=$(curl -sk -o /dev/null -w '%{http_code}' \
+  https://cryptpad.vmtest.local/checkup/ 2>/dev/null || echo 000)
+case "$cp_code" in
+  200) printf "  %-25s ${G}%s${N}\n" "cryptpad" "$cp_code" ;;
+  *)   printf "  %-25s ${R}%s${N}\n" "cryptpad" "$cp_code" ;;
 esac
 
 echo ""
