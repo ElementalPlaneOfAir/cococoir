@@ -38,16 +38,75 @@ cat >"$VMSH" <<'ENDOFSCRIPT'
 set -euo pipefail
 
 G='\033[32m' R='\033[31m' N='\033[0m'
+fails=0
+fail() { fails=$((fails + 1)); printf "  %-40s ${R}%s${N}\n" "$1" "$2"; }
+pass() { printf "  %-40s ${G}%s${N}\n" "$1" "$2"; }
 
 echo "─── Services ───"
-for svc in dex cococoir-jellyfin-oidc-secret jellyfin jellarr \
+for svc in dex cococoir-jellyfin-oidc-secret jellyfin \
+  cococoir-jellarr-api-key jellarr-api-key-bootstrap jellarr \
   cococoir-cryptpad-oidc-secret cryptpad; do
   state=$(systemctl is-active $svc.service 2>/dev/null || echo missing)
   case "$state" in
-    active|activating) printf "  %-40s ${G}%s${N}\n" "$svc" "$state" ;;
-    *)                 printf "  %-40s ${R}%s${N}\n" "$svc" "$state" ;;
+    active|activating) pass "$svc" "$state" ;;
+    inactive)
+      # Oneshots (seed/secret/api-key units) are done when they
+      # ran and exited 0.
+      rc=$(systemctl show $svc.service -p ExecMainStatus --value 2>/dev/null || echo 1)
+      entered=$(systemctl show $svc.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+      if [ "$entered" != "0" ] && [ "$rc" = "0" ]; then
+        pass "$svc" "done"
+      else
+        fail "$svc" "inactive (rc=$rc)"
+      fi
+      ;;
+    *) fail "$svc" "$state" ;;
   esac
 done
+
+# jellarr is a oneshot without RemainAfterExit: "inactive" is the
+# success state, so poll ExecMainStatus instead of is-active.
+# Boot path takes minutes: api-key oneshot → bootstrap (stops
+# jellyfin, sleeps 10, inserts key, restarts) → jellarr run.
+echo ""
+echo "─── Jellarr (declarative config applied) ───"
+jellarr_ok=0
+for i in $(seq 1 150); do
+  if systemctl is-failed -q jellarr.service \
+    || systemctl is-failed -q jellarr-api-key-bootstrap.service \
+    || systemctl is-failed -q cococoir-jellarr-api-key.service; then
+    fail "jellarr pipeline" "FAILED"
+    journalctl -u cococoir-jellarr-api-key -u jellarr-api-key-bootstrap \
+      -u jellarr --no-pager -n 30 >&2 || true
+    break
+  fi
+  status=$(systemctl show jellarr.service -p ExecMainStatus --value 2>/dev/null || echo 1)
+  entered=$(systemctl show jellarr.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+  if [ "$entered" != "0" ] && [ "$status" = "0" ] \
+    && [ "$(systemctl is-active jellarr.service)" = "inactive" ]; then
+    jellarr_ok=1
+    pass "jellarr pipeline" "applied"
+    break
+  fi
+  sleep 2
+done
+[ "$jellarr_ok" = "1" ] || fail "jellarr pipeline" "timeout"
+
+# The login page renders the branding jellarr pushed — the
+# end-to-end proof that declarative config (incl. the OIDC
+# integration) actually landed on the server.
+if [ "$jellarr_ok" = "1" ]; then
+  oidc_ok=0
+  for i in $(seq 1 30); do
+    if curl -sk https://jellyfin.vmtest.local/web/index.html | grep -q "Sign in with Dex"; then
+      oidc_ok=1
+      pass "OIDC login button" "rendered"
+      break
+    fi
+    sleep 2
+  done
+  [ "$oidc_ok" = "1" ] || fail "OIDC login button" "missing"
+fi
 
 echo ""
 echo "─── Health ───"
@@ -55,24 +114,24 @@ echo "─── Health ───"
 dx_code=$(curl -sk -o /dev/null -w '%{http_code}' \
   https://auth.vmtest.local/dex/.well-known/openid-configuration 2>/dev/null || echo 000)
 case "$dx_code" in
-  200) printf "  %-25s ${G}%s${N}\n" "dex OIDC discovery" "$dx_code" ;;
-  *)   printf "  %-25s ${R}%s${N}\n" "dex OIDC discovery" "$dx_code" ;;
+  200) pass "dex OIDC discovery" "$dx_code" ;;
+  *)   fail "dex OIDC discovery" "$dx_code" ;;
 esac
 
 # Jellyfin health
 jf_code=$(curl -sk -o /dev/null -w '%{http_code}' \
   https://jellyfin.vmtest.local/health 2>/dev/null || echo 000)
 case "$jf_code" in
-  200) printf "  %-25s ${G}%s${N}\n" "jellyfin" "$jf_code" ;;
-  *)   printf "  %-25s ${R}%s${N}\n" "jellyfin" "$jf_code" ;;
+  200) pass "jellyfin" "$jf_code" ;;
+  *)   fail "jellyfin" "$jf_code" ;;
 esac
 
 # CryptPad checkup
 cp_code=$(curl -sk -o /dev/null -w '%{http_code}' \
   https://cryptpad.vmtest.local/checkup/ 2>/dev/null || echo 000)
 case "$cp_code" in
-  200) printf "  %-25s ${G}%s${N}\n" "cryptpad" "$cp_code" ;;
-  *)   printf "  %-25s ${R}%s${N}\n" "cryptpad" "$cp_code" ;;
+  200) pass "cryptpad" "$cp_code" ;;
+  *)   fail "cryptpad" "$cp_code" ;;
 esac
 
 echo ""
@@ -102,11 +161,15 @@ if [ -n "$TOKEN" ]; then
     echo "$PAYLOAD" | jq '{email, preferred_username, groups, name}' 2>/dev/null || echo "  (could not decode)"
   fi
 else
-  echo "  ${R}failed to get token${N} (dex may still be starting)"
+  fail "dex password grant" "no token"
 fi
 
 echo ""
-echo -e "${G}Done.${N}"
+if [ "$fails" -ne 0 ]; then
+  echo -e "${R}FAIL: $fails check(s) failed${N}"
+  exit 1
+fi
+echo -e "${G}Done. All checks passed.${N}"
 ENDOFSCRIPT
 
 "${SPASS[@]}" scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \

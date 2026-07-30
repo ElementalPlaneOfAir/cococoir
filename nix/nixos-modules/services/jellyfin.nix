@@ -44,15 +44,6 @@
 }:
 let
   mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
-  jellarrApiKey = pkgs.runCommand "jellarr-api-key" {
-    buildInputs = [pkgs.openssl];
-  } ''
-    mkdir -p $out
-    openssl rand -hex 32 > $out/key
-  '';
-  jellarrEnvFile = pkgs.writeText "jellarr-env" ''
-    JELLARR_API_KEY=${builtins.readFile "${jellarrApiKey}/key"}
-  '';
 in
 mkCococoirService {
   name = "jellyfin";
@@ -92,15 +83,15 @@ mkCococoirService {
       group = "jellyfin";
       bootstrap = {
         enable = true;
-        apiKeyFile = "${jellarrApiKey}/key";
+        apiKeyFile = "/var/lib/jellarr/api-key";
       };
-      environmentFile = "${jellarrEnvFile}";
+      environmentFile = "/var/lib/jellarr/jellarr.env";
       config = {
         version = 1;
         base_url = "http://127.0.0.1:8096";
         system = {};
         startup.completeStartupWizard = true;
-        library.virtualFolders = [
+        library.virtualFolders = lib.mkDefault [
           {
             name = "Entertainment";
             collectionType = "movies";
@@ -110,6 +101,39 @@ mkCococoirService {
           }
         ];
       };
+    };
+
+    systemd.services.cococoir-jellarr-api-key = {
+      description = "Generate jellarr API key (idempotent)";
+      wantedBy = ["multi-user.target"];
+      before = ["jellarr-api-key-bootstrap.service" "jellarr.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+      path = [pkgs.openssl];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "gen-jellarr-api-key" ''
+          set -euo pipefail
+          if [ ! -f /var/lib/jellarr/api-key ]; then
+            umask 077
+            openssl rand -hex 32 > /var/lib/jellarr/api-key
+          fi
+          printf 'JELLARR_API_KEY=%s\n' "$(cat /var/lib/jellarr/api-key)" \
+            > /var/lib/jellarr/jellarr.env
+          chmod 0600 /var/lib/jellarr/jellarr.env
+        '';
+      };
+    };
+
+    systemd.services.jellarr-api-key-bootstrap = {
+      after = ["cococoir-jellarr-api-key.service"];
+      requires = ["cococoir-jellarr-api-key.service"];
+    };
+
+    systemd.services.jellarr = {
+      wantedBy = ["multi-user.target"];
+      after = ["cococoir-jellarr-api-key.service"];
+      requires = ["cococoir-jellarr-api-key.service"];
     };
   });
 }

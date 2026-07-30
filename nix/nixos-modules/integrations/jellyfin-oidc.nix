@@ -37,6 +37,10 @@ let
   };
 
   secretFile = "/etc/dex/clients/jellyfin-secret";
+  jellarrGroup =
+    if options.services ? jellarr
+    then config.services.jellarr.group
+    else "root";
 in
 mkIf oidcEnabled (lib.mkMerge [
   {
@@ -57,7 +61,7 @@ mkIf oidcEnabled (lib.mkMerge [
           if [ ! -f "$SECRET_FILE" ]; then
             openssl rand -hex -out "$SECRET_FILE" 32
             chmod 0440 "$SECRET_FILE"
-            chown root:jellarr "$SECRET_FILE"
+            chown root:${jellarrGroup} "$SECRET_FILE"
           fi
         '';
       };

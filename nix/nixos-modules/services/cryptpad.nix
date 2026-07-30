@@ -28,6 +28,7 @@ mkCococoirService {
   name = "cryptpad";
   description = "CryptPad collaborative office suite";
   defaultPort = 3000;
+  defaultHealthPath = "/checkup/";
   defaultBucket = "cryptpad-data";
   defaultMount = "/var/lib/cococoir/cryptpad";
   extraConfig = {cfg, lib, pkgs, ...}: {

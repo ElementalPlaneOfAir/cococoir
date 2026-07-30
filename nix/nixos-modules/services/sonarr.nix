@@ -11,6 +11,7 @@ mkCococoirService {
   name = "sonarr";
   description = "Sonarr TV show management";
   defaultPort = 8989;
+  defaultHealthPath = "/ping";
   extraConfig = {lib, ...}: {
     services.sonarr = {
       enable = true;

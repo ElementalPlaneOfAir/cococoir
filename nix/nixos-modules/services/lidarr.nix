@@ -11,6 +11,7 @@ mkCococoirService {
   name = "lidarr";
   description = "Lidarr music management";
   defaultPort = 8686;
+  defaultHealthPath = "/ping";
   extraConfig = {lib, ...}: {
     services.lidarr = {
       enable = true;

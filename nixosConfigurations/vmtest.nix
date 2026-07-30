@@ -297,11 +297,12 @@ in {
   environment.etc."dex/clients/cryptpad-secret".source =
     "${testDexSecrets}/cryptpad-client-secret";
 
-  services.jellarr.config = lib.mkForce {
-    version = 1;
-    base_url = "http://127.0.0.1:8096";
-    system = {};
-    startup.completeStartupWizard = true;
+  # Jellarr libraries for vmtest. Plain definitions merge with the
+  # cococoir modules: this overrides the jellyfin module's mkDefault
+  # virtualFolders, and the jellyfin-oidc integration's `plugins` /
+  # `branding` merge in alongside. Do NOT wrap this in lib.mkForce —
+  # mkForce on a submodule silently discards the OIDC plugin config.
+  services.jellarr.config = {
     library.virtualFolders = [
       {
         name = "Movies";

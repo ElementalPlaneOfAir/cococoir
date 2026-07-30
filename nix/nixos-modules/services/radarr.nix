@@ -20,6 +20,7 @@ mkCococoirService {
   name = "radarr";
   description = "Radarr movie management";
   defaultPort = 7878;
+  defaultHealthPath = "/ping";
   extraConfig = {lib, ...}: {
     services.radarr = {
       enable = true;

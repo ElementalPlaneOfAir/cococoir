@@ -40,6 +40,42 @@ let
       "defaultPort = 1411;"
       "defaultHealthPath = "
     ];
+    dex = [
+      "mkCococoirService {"
+      "name = \"dex\";"
+      "defaultPort = 5556;"
+      "defaultHealthPath = "
+    ];
+    cryptpad = [
+      "mkCococoirService {"
+      "name = \"cryptpad\";"
+      "defaultPort = 3000;"
+      "defaultHealthPath = "
+    ];
+    radarr = [
+      "mkCococoirService {"
+      "name = \"radarr\";"
+      "defaultPort = 7878;"
+      "defaultHealthPath = "
+    ];
+    sonarr = [
+      "mkCococoirService {"
+      "name = \"sonarr\";"
+      "defaultPort = 8989;"
+      "defaultHealthPath = "
+    ];
+    lidarr = [
+      "mkCococoirService {"
+      "name = \"lidarr\";"
+      "defaultPort = 8686;"
+      "defaultHealthPath = "
+    ];
+    prowlarr = [
+      "mkCococoirService {"
+      "name = \"prowlarr\";"
+      "defaultPort = 9696;"
+      "defaultHealthPath = "
+    ];
   };
 
   readService = name: builtins.readFile (../../nixos-modules/services + "/${name}.nix");
@@ -52,6 +88,8 @@ let
     map (n: "  ${name}: ${check name n}") needles
   ) expected));
 in
+assert lib.assertMsg (!(lib.hasInfix "MISSING" report))
+  "contract-conformance failed:\n${report}";
 {
   contract-conformance = pkgs.runCommand "cococoir-contract-conformance" {} ''
     cat > $out <<EOF

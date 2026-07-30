@@ -19,21 +19,35 @@
 {pkgs}:
 let
   lib = pkgs.lib;
-
   # The doc files we scan. Adding a new doc file with
   # path references: add it here.
   docFiles = [
     ../../../AGENTS.md
     ../../../PLAN.md
+    ../../../docs/STATUS.md
   ];
 
-  # Extract path-like substrings from a file. We use a
-  # simple regex; full Markdown parsing is overkill for
-  # what amounts to "find ./x, ../x, /x references".
-  extractPaths = path: builtins.filter (s: lib.hasPrefix "/" s || lib.hasPrefix "./" s) (
-    lib.splitString "\n" (builtins.readFile path)
-  );
+  # ADR cross-check: every ADR-NNN referenced from module code
+  # must exist in PLAN.md (the decision layer). Kills the rot
+  # class "comment cites a decision that was never written down".
+  planMd = ../../../PLAN.md;
+  moduleFiles = [
+    ../../../nix/nixos-modules/services/_contract.nix
+    ../../../nix/nixos-modules/services/cryptpad.nix
+    ../../../nix/nixos-modules/services/jellyfin.nix
+    ../../../nix/packages/cococoir/default.nix
+  ];
+  adrRefsIn = file:
+    lib.concatLists (builtins.filter (x: x != null) (
+      map (m: builtins.match ".*(ADR-[0-9]+).*" m) (
+        lib.splitString "\n" (builtins.readFile file)
+      )
+    ));
+  adrRefs = lib.unique (lib.concatMap adrRefsIn moduleFiles);
+  missingAdrs = builtins.filter (adr: !lib.hasInfix adr (builtins.readFile planMd)) adrRefs;
 in
+assert lib.assertMsg (missingAdrs == [])
+  "doc-refs: ADR(s) referenced from code but missing from PLAN.md: ${lib.concatStringsSep ", " missingAdrs}";
 {
   doc-refs = pkgs.runCommand "cococoir-doc-refs" {
   inherit docFiles;
@@ -43,28 +57,30 @@ in
   out_report=$out
   : > $out_report
 
+  i=0
   for doc in ${lib.concatMapStringsSep " " (p: "\"${toString p}\"") docFiles}; do
+    i=$((i + 1))
     echo "scanning $doc" >> $out_report
     # Grep for paths that look like ./x, ../x, or /x/y references.
     # Filter out URLs (https://, http://) and absolute system paths
     # like /nix/store which are not "this repo" references.
     grep -oE '`?\./[A-Za-z0-9._/-]+`?|`?\.\./[A-Za-z0-9._/-]+`?' "$doc" \
       | tr -d '`' \
-      | sort -u > "$doc.paths" || true
+      | sort -u > "$TMPDIR/paths.$i" || true
     # Also pick up things like \`./foo\` (we strip backticks above).
 
+    doc_dir="$(dirname "$doc")"
     while IFS= read -r p; do
       [ -z "$p" ] && continue
       # Resolve relative to the doc file's directory.
-      doc_dir="$(dirname "$doc")"
-      resolved="$(realpath -m --relative-to=. "$doc_dir/$p" 2>/dev/null || echo "$doc_dir/$p")"
+      resolved="$(realpath -m "$doc_dir/$p" 2>/dev/null || echo "$doc_dir/$p")"
       if [ -e "$resolved" ]; then
         echo "  ok: $p" >> $out_report
       else
         echo "FAIL: $doc references $p which does not exist (resolved: $resolved)" >> $out_report
         fail=1
       fi
-    done < "$doc.paths"
+    done < "$TMPDIR/paths.$i"
   done
 
   if [ "$fail" -ne 0 ]; then
