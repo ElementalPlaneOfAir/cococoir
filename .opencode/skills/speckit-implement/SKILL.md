@@ -1,41 +1,40 @@
 ---
 name: speckit-implement
-description: Execute tasks from a plan in order, verifying each step. Stop and report if a verification fails — never proceed past a broken task.
+description: Execute a proposal's tasks in order, verifying each. Amend the proposal when reality contradicts it. Stop on failure — never proceed past a broken task.
 ---
 
 ## What I do
 
-I execute the tasks defined in `tasks.md` in dependency order. For each task, I make the code changes, run the verification, and only proceed once it passes.
+I execute the task DAG in `.specify/specs/<feature-name>/proposal.md`. Each task: change, verify, mark done. I am the executive branch — I act within the proposal's authority and amend it when reality objects.
 
 ## When to use me
 
-- After tasks are written
-- When the user says "go ahead and build it"
-- To resume implementation after a fix
+- After the user has adjudicated a proposal
+- To resume after a fix or a review citation
 
 ## Prerequisites
 
-- `.specify/specs/<feature-name>/tasks.md` must exist
-- Working tree must be clean enough to isolate task changes
+- `proposal.md` exists with tasks and verifications
+- Ground truth is green: `bash scripts/status.sh` passes. Never build on a failing tripwire.
 
 ## How I work
 
-1. Load tasks.md and build the dependency graph
-2. Find the next uncompleted task(s) with all dependencies satisfied
-3. For each task:
-   a. Read the affected files to understand current state
-   b. Make the changes (edit existing files, never create new ones unless the task says to)
-   c. Run the verification command specified in the task
-   d. If verification fails: stop, report the failure, do NOT proceed to next task
-   e. If verification passes: mark task as `[x]` in tasks.md
-4. After all tasks complete:
-   - Run the full test suite (`nix flake check` for L1, `bash scripts/vmtest-e2e.sh` for L2 if applicable)
-   - Update docs/STATUS.md: mark the feature as working with proof (the verification results)
-   - Write a summary of what was done and what remains
+1. Build the dependency graph; find the next uncompleted task with satisfied deps
+2. For each task:
+   a. Read the affected files
+   b. Make the change (edit existing files; create only what the task names)
+   c. Run the task's verification
+   d. FAIL → stop, report, do NOT proceed to the next task
+   e. PASS → mark `[x]` in proposal.md
+3. **Plan amendment.** If reality contradicts the proposal — a file moved, an assumption broke, a better shape appears — STOP. Amend proposal.md first. Future sessions load the proposal as truth; a false proposal poisons them. Then continue.
+4. Bugs discovered in existing code become new tasks in proposal.md — never silent inline fixes
+5. After all tasks:
+   - Run `bash scripts/status.sh` (L1). If anything under `nix/nixos-modules/` changed, also run `bash scripts/vmtest-e2e.sh` (L2)
+   - Update STATUS.md: every "works" claim names its proof
+   - Hand off to the judiciary: if the change touched a mandatory-review class (new module boundary, nixos-modules, customer-facing config, or any task whose verification needed repair), run `/speckit-review` in a fresh window before calling it done
 
 ## Safety rules
 
-- NEVER proceed past a failed verification. Fix the failure first.
-- NEVER commit unless the user explicitly asks. Tasks complete does not mean commit.
-- If a task's verification requires a VM boot, skip it and note it for the user to run manually.
-- If you discover a bug or missing assertion in existing code, add a new task to tasks.md (don't silently fix it inline)
+- NEVER proceed past a failed verification. Fix first.
+- NEVER commit unless the user explicitly asks.
+- NEVER review my own work in this window — the judiciary runs cold.

@@ -5,7 +5,7 @@ description: Assess the codebase against spec/plan/tasks and surface drift — w
 
 ## What I do
 
-I compare the actual state of the codebase against the spec, plan, and tasks for a feature, then append any remaining or drifted work as new tasks.
+I compare the actual state of the codebase against the proposal for a feature, then append any remaining or drifted work as new tasks.
 
 ## When to use me
 
@@ -16,19 +16,19 @@ I compare the actual state of the codebase against the spec, plan, and tasks for
 
 ## Prerequisites
 
-- `.specify/specs/<feature-name>/` must exist with spec.md, plan.md, and tasks.md
+- `.specify/specs/<feature-name>/proposal.md` must exist
 
 ## How I work
 
-1. Load all three artifacts (spec, plan, tasks)
-2. For each artifact, check:
-   - **Spec acceptance criteria**: read the actual code and tests. Which criteria have no evidence of being met? → new tasks
-   - **Plan file list**: glob for the files. Which don't exist? Which exist but aren't in the plan? → new tasks or plan update
-   - **Task verification**: re-run each task's verification. Which fail now? → mark task as failed, add a fix task
+1. Load proposal.md and `bash scripts/status.sh` output
+2. Check each part of the proposal against reality:
+   - **Acceptance criteria**: read the actual code and tests. Which criteria have no evidence of being met? → new tasks
+   - **File lists in tasks**: glob for the files. Which don't exist? Which exist but aren't in any task? → new tasks or proposal amendment
+   - **Task verifications**: re-run each one. Which fail now? → mark task failed, add a fix task
 3. Cross-check the L1 tripwire tests (nix flake check):
    - Are there silent-failure seams (mkForce, optionalAttrs on `config`) in the rendered config? → add assertions
    - Does contract-conformance cover every service module? → add missing entries
-4. Append findings to tasks.md:
+4. Append findings to proposal.md:
 
 ```markdown
 ## Converge results — <ISO date>

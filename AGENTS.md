@@ -27,30 +27,34 @@ Docs rot when living state is written in stable docs, and agent sessions lose th
 - **PLAN.md** — what we're building and why; ADRs live here. Changes on decisions.
 - **docs/STATUS.md** — where we are *right now*: what works (with proof), what's broken, current focus. Changes constantly.
 
-Session start (every agent, every session): read AGENTS.md → PLAN.md → docs/STATUS.md, in that order.
+Session start (every agent, every session): read AGENTS.md → PLAN.md → docs/STATUS.md, in that order — or run `/speckit-orient`, which does this and refreshes the AUTO-STATUS block.
 
 Session end duties:
 
 - If you changed what works or broke something, update `docs/STATUS.md` **in the same commit**. A "works" claim must name its proof (an L1 check name or an e2e run); claims without proof are debt.
 - If you fix a bug, add its tripwire (L1 assertion or `scripts/vmtest-bootstrap.sh` check) in the same commit, so the bug cannot silently return.
 - Facts live in exactly one place: process here, decisions in PLAN.md, current state in docs/STATUS.md, per-line rationale in code comments. Link, don't copy.
-- Do not add new top-level docs. Three layers plus code comments is the whole system.
+- Do not add new top-level docs. Three layers plus code comments is the whole system. The one sanctioned exception is `SKILL-CONSTITUTION.md`: cold storage for the agent loop's design rationale, read only when modifying the loop itself.
 
 # Spec System
 
-For features that need structured design, use the speckit workflow:
+The spec system is a control loop, not a pipeline. Stations:
 
 ```
-/speckit.specify  → define what (user stories, acceptance criteria)
-/speckit.plan     → define how (modules, files, test strategy)
-/speckit.tasks    → break into ordered, dependency-aware tasks
-/speckit.implement → execute tasks, verifying each step
-/speckit.converge → surface drift between code and spec
+/speckit-orient    → load memory, refresh ground truth (scripts/status.sh), report what's true and what's next
+/speckit-propose   → smallest move: premise challenge, alternatives + case against each, mandatory strongest objection
+/speckit-implement → execute the task DAG with per-task verification; amend the proposal when reality contradicts it
+/speckit-review    → blind judiciary: a cold window sees only the diff, the criteria, and the law; verdict + citations + strongest objection
+/speckit-converge  → re-run verifications, surface drift between code and proposal
 ```
 
-The governing principles live at `.specify/memory/constitution.md` (derived from this file and PLAN.md). Each skill loads it before producing output. Specs/plans/tasks live under `.specify/specs/<feature-name>/`.
+Law lives at `.specify/memory/constitution.md`. Artifacts live at `.specify/specs/<feature-name>/proposal.md` — one document per change, scaling from three lines to a full multi-session arc. Skills are defined in `.opencode/skills/speckit-*/SKILL.md` and loaded on-demand.
 
-Skills are defined in `.opencode/skills/speckit-*/SKILL.md` and loaded on-demand. Only use the spec workflow for multi-file, multi-step features. Simple fixes don't need a spec — just do them and update STATUS.md.
+North star: cold-start time to first verified change. If a fresh agent can't make a small proven change using only the repo, the docs are insufficient — file that as a bug in the memory system.
+
+Simple fixes skip the loop: do them, update STATUS.md, done.
+
+The loop's design rationale and change guide live in `SKILL-CONSTITUTION.md`. It is deliberately outside the load order — read it before modifying any speckit machinery, and only then.
 
 # Code Architecture Directives
 
