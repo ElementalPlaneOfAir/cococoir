@@ -12,7 +12,7 @@
 #   cococoir.baseDomain = "alice.example.com";
 #
 # Then `cococoir.services.jellyfin.domain` defaults to
-# `jellyfin.alice.example.com`, `cococoir.services.pocketid.domain`
+# `jellyfin.alice.example.com`, `cococoir.services.dex.domain`
 # to `auth.alice.example.com`, etc. Override any individual
 # `domain` if a service needs a non-conventional name.
 #

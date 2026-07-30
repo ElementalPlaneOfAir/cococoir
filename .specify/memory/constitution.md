@@ -11,7 +11,7 @@ Governing principles. Every spec, plan, and task must conform.
 ## Architecture
 
 1. **Factory contract.** Services use `mkCococoirService` from `_contract.nix`. 3-option contract: `enable`, `domain`, `public`. Optional: `bucket`, `mount`.
-2. **No foisting.** Integration complexity is the module's job, never the customer's. "jellyfin + jellarr" is one toggle. "pocketid + OIDC" is one toggle.
+2. **No foisting.** Integration complexity is the module's job, never the customer's. "jellyfin + jellarr" is one toggle. "jellyfin + OIDC with dex" is one toggle.
 3. **50-line surface.** Customer-facing config stays under 50 lines total. Auto-derive, auto-wire, or default before adding an option.
 4. **Integration auto-activation.** An integration pair (e.g. jellarr) activates when its parent service enables. No separate `.integrations.X.enable` toggle.
 

@@ -14,15 +14,15 @@
 #   curl -k https://jellyfin.vmtest.local/health
 #   # should return 200 with body "Healthy" (-k skips the cert
 #   # check; the cert is self-signed and per-VM).
-#   curl -k https://pocketid.vmtest.local/.well-known/openid-configuration
+#   curl -k https://auth.vmtest.local/dex/.well-known/openid-configuration
 #   # should return json (OIDC discovery document)
 #
 # To open in a browser, add the per-service subdomains to your
 # host's /etc/hosts:
-#   127.0.0.1 jellyfin.vmtest.local pocketid.vmtest.local
+#   127.0.0.1 jellyfin.vmtest.local auth.vmtest.local
 # then visit https://jellyfin.vmtest.local — your browser
 # will warn about the self-signed cert; accept it. You'll see
-# the Jellyfin login page with a "Sign in with PocketID" button
+# the Jellyfin login page with a "Sign in with Dex" button
 # below the password fields. PocketID auto-creates users via
 # OIDC on first login.
 #
@@ -251,11 +251,6 @@ in {
   cococoir.services.prowlarr = {
     enable = true;
     public = false;
-  };
-
-  # Pocket-ID defaults to enabled. Disable it — vmtest uses Dex.
-  cococoir.services.pocketid = {
-    enable = false;
   };
 
   # Dex: self-hosted OIDC provider with email+password auth.

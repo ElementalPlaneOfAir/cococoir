@@ -21,7 +21,7 @@ deterministic, reproducible NixOS builds.
 - **v0 (shipped):** Go L4 TCP/UDP forwarder (`cococoir-edge` +
   `cococoir-client`), health endpoints, bbolt store, 2-VM nixosTest.
 - **v2 (target):** Single-machine home server. Garage S3 storage,
-  Jellyfin + Pocket-ID OIDC, Caddy reverse proxy with auto-TLS,
+  Jellyfin + Dex OIDC, Caddy reverse proxy with auto-TLS,
   sops-nix for secrets. 1-VM nixosTest gate.
 - **v3 (deferred):** Multi-tenant control plane (Postgres, web UI,
   auto-provisioning). Trigger: 10-20 customers.
@@ -38,7 +38,7 @@ in place.
 | OS & config | NixOS + flake-parts | Deterministic, reproducible, native performance |
 | Storage | Garage (S3-compatible) | CAP-aware, single-binary, FUSE mounts via geesefs |
 | Reverse proxy | Caddy | Auto-TLS, simple vhost config |
-| Auth | Pocket-ID | Self-hosted OIDC provider |
+| Auth | Dex | OIDC provider with static password users |
 | Secrets | sops-nix (age encryption) | Encrypted in repo, decrypted at activation |
 | Networking | WireGuard + Go forwarder | Per-customer IPv4 routing (v3+, not v2) |
 | Observability | OTEL in-process | Prober, journald tailer, embedded dashboard (planned v2) |
@@ -74,7 +74,7 @@ cococoir/
 │   │   ├── services/
 │   │   │   ├── _contract.nix  #   4-option factory
 │   │   │   ├── jellyfin.nix   #   Jellyfin media server
-│   │   │   └── pocketid.nix   #   Pocket-ID OIDC provider
+│   │   │   └── dex.nix        #   Dex OIDC provider
 │   │   ├── storage/
 │   │   │   └── garage.nix     #   Garage daemon + FUSE mounts
 │   │   ├── edge.nix           #   Go forwarder (VPS side)

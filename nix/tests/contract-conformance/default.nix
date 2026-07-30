@@ -7,10 +7,10 @@
 # added, this test asserts the service uses the factory
 # (services/_contract.nix) and passes the right arguments.
 #
-# The drift this catches is the exact class of bug found in the
-# prior pocket-id module: a service that was hand-rolled
-# instead of going through the factory, missing the prober
-# contract. This test fails the build if a service diverges.
+# The drift this catches is the exact class of bug where a service
+# module diverges from the factory contract — different option
+# surface, missing health path, missing port declaration, etc.
+# This check fails the build if a service diverges.
 #
 # Strategy: parse each service module's source as a string
 # and look for the factory call signature. We require:
@@ -32,12 +32,6 @@ let
       "mkCococoirService {"
       "name = \"jellyfin\";"
       "defaultPort = 8096;"
-      "defaultHealthPath = "
-    ];
-    pocketid = [
-      "mkCococoirService {"
-      "name = \"pocketid\";"
-      "defaultPort = 1411;"
       "defaultHealthPath = "
     ];
     dex = [

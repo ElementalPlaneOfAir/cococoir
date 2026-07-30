@@ -27,7 +27,7 @@ customer-facing scope, not internal implementation order.
 |---------|-----------|--------|------|
 | **v0** | L4 forwarder (`cococoir-edge` + `cococoir-client` Go binaries, NixOS modules, health endpoint, bbolt store) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
 | **v1** | Legacy home server (clan-core, Garage, FUSE mounts, services, rathole tunnel) at `v1/` | Frozen — soft deprecated. Features port to v2; no new development. | (n/a) |
-| **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, S3 storage, local OTEL observability, embedded dashboard) | Target | 1-VM nixosTest (Jellyfin + Nextcloud + Garage + cococoir-client + sops) |
+| **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, ZFS storage, 7 services with Dex OIDC) | Target | 1-VM nixosTest (Jellyfin + dex + cryptpad + storage + sops) |
 | **v3** | Control plane (Postgres + auto-provisioning + web UI, multi-tenant) | Deferred. Trigger: 10-20 customers. | (n/a yet) |
 | **v4** | Cluster expansion (multiple VPSes, each holding a slice of customers) | Deferred. Trigger: 50-100 customers or geographic need. | (n/a yet) |
 
@@ -91,11 +91,11 @@ OTEL observability.
 - **Single-machine deployment.** No remote access in v2 — that's
   v3. The forwarder is in the binary but does nothing until a
   WireGuard peer is configured (later).
-- **S3 storage via Garage (1-node).** Each service has its own
-  bucket where appropriate (`media` for Jellyfin, `documents` for
-  Nextcloud, etc.). Per-bucket replication factor. Native S3 where
-  the service supports it (Nextcloud), FUSE mount otherwise
-  (Jellyfin, qBittorrent).
+- **ZFS-based local storage with encrypted offsite backups.**
+  Two drives in a ZFS mirror pool; datasets per service with
+  quotas. Restic pushes encrypted snapshots to the hosted infra
+  (the customer's data stays encrypted at rest offsite). No FUSE,
+  no S3 API at the service layer — apps get real filesystems.
 - **Local OTEL observability.** Prober (HTTP GETs) emits OTEL
   traces; journald tailer emits OTEL logs. In-memory OTEL SDK
   exporter. Embedded dashboard at `:9090` showing services +
@@ -107,46 +107,98 @@ OTEL observability.
 
 ### Components
 
-#### Storage (NixOS module at `nix/nixos-modules/storage/garage.nix`)
+#### Storage (NixOS module at `nix/nixos-modules/storage/garage.nix`, to be rewritten)
 
-The `cococoir.storage.*` option tree. The customer sets 5 secret
-file paths; everything else is hardcoded (single-node v2). Services
-auto-declare buckets and FUSE mounts when enabled.
+The current implementation uses single-node Garage + geesefs FUSE
+mounts for S3-compatible storage per service. This is a v4 placeholder —
+single-node Garage provides no HDD-failure resilience (replication
+requires 3 nodes) and the FUSE layer adds I/O overhead for services
+that want filesystems, not S3.
 
-- `cococoir.storage.enable` — always-on (default `true`)
-- `cococoir.storage.secrets.{rpcSecretFile, adminTokenFile, metricsTokenFile, accessKeyIdFile, secretAccessKeyFile}` — file paths, populated by sops-nix
-- `cococoir.storage.buckets.<name>.{replicationFactor}` — per-bucket, added by service modules
-- `cococoir.storage.mounts.<name>.{bucket, mountPoint, readOnly}` — FUSE mount via `geesefs`, added by service modules
+The v2 target is **ZFS + restic** (see ADR-020):
 
-Single-node ports (3900/3901/3903), region, and layout are
-hardcoded. Multi-node options will be added when v4 lands.
+- **ZFS mirror pool** across two drives. HDD failure → data survives
+  on the surviving drive.
+- **ZFS datasets** per service (e.g. `tank/media`, `tank/documents`,
+  `tank/config`). Each gets a quota. Services mount these directly —
+  no FUSE, no S3 translation layer.
+- **Restic** (single Go binary, client-side encryption, deduplication,
+  compression) runs as a systemd timer. Pushes encrypted snapshots
+  to the hosted endpoint (any S3-compatible target — MinIO, Backblaze
+  B2, etc.). The hosted infra sees only encrypted blobs.
+- **Cold spare**: a second machine runs restic server (or just SSH)
+  for local resilience. Machine A dies → restic restore on B, rebuild
+  from flake, <10 minutes recovery.
+
+The Garage module stays in-tree as a v4 dependency but is demoted
+from v2 requirement. Multi-machine scaling uses Garage's replication
+when it's actually needed (50+ customers).
 
 #### Services (NixOS modules at `nix/nixos-modules/services/`)
 
-The four-option contract:
+The factory contract (`_contract.nix`):
 
-```nix
-cococoir.services.<name> = {
-  enable    = true;                       # opt-in toggle
-  domain    = "<service>.<base-domain>";  # Caddy vhost
-  public    = true;                       # Caddy reverse-proxies (false → 403)
-  bucket    = "<bucket-name>";            # S3-backed data dir (omit if no bucket)
-};
-```
+Every service calls `mkCococoirService` with a 3-line declaration
+(name, description, port, optional healthPath/bucket), and the
+factory generates: the NixOS option tree (enable/domain/public),
+the Caddy vhost with correct TLS, the systemd unit wiring, and
+the standard assertions (public → Caddy, bucket → storage, domain).
+The contract is enforced by code (ADR-020), not convention —
+`contract-conformance` L1 check fails the build on any divergence.
 
-Hidden options, not in the contract, filled in by the service
-module: `cococoir.services.<name>.journald.units` (systemd units
-to tail for the journald OTEL log stream),
-`cococoir.services.<name>.healthUrl` (URL the prober GETs for
-liveness), `cococoir.services.<name>.port` (local bind).
+The contract adapts per service class:
+- **Metadata-only services** (radarr, sonarr, lidarr, prowlarr):
+  3 options — no bucket/mount needed. `defaultHealthPath = "/ping"`.
+- **Data services** (jellyfin, cryptpad): 4 options — bucket +
+  FUSE mount (currently via Garage; future via ZFS dataset).
+- **Infra services** (dex): 3 options — no bucket, no health path
+  (dex exposes its own /.well-known/openid-configuration).
 
-Initial services: **Jellyfin** (FUSE mount, RF=1 `media` bucket)
-and **Nextcloud** (native S3, RF=3 `documents` bucket). Add
-PocketID + OIDC wiring as the third service.
+##### Existing services (7, all built on the factory)
 
-The prober and journald tailer read these options from the
-cococoir config (Nix → JSON) and the prober knows what URL to
-GET per service.
+| Service | Port | Health | Bucket | OIDC-integrated |
+|---------|------|--------|--------|-----------------|
+| jellyfin | 8096 | /health | media | Yes (via jellarr + jellyfin-oidc) |
+| cryptpad | 3000 | /checkup/ | cryptpad-data | Yes (via cryptpad-oidc) |
+| radarr | 7878 | /ping | — | — |
+| sonarr | 8989 | /ping | — | — |
+| lidarr | 8686 | /ping | — | — |
+| prowlarr | 9696 | /ping | — | — |
+| dex | 5556 | (self) | — | — (the OIDC provider itself) |
+
+##### Auth: Dex-only OIDC (see ADR-021)
+
+Dex is the sole OIDC provider. Users are declared in
+`cococoir.services.dex.staticPasswords` (a Nix attrset of
+username → bcrypt-hash). No PocketID, no Authentik, no admin
+dashboard — just a config file. The customer sets an admin
+user at provisioning time and can add more users by editing
+the config (which is a `nixos-rebuild` away). For v2's scale
+(<5 users per box), this sidesteps the "OIDC provider needs
+its own user management" problem entirely — Dex doesn't need
+a separate database, it just reads the hash from config.
+
+Services are wired to Dex declaratively:
+- `jellyfin-oidc.nix`: installs the OIDC RBAC plugin DLLs,
+  generates a client secret on first boot (oneshot), adds
+  the Jellyfin client to Dex's staticClients, configures
+  jellarr with Dex as the OIDC provider.
+- `cryptpad-oidc.nix`: similarly for CryptPad SSO.
+- The `vmtest-wiring` L1 check asserts both integrations
+  survive module composition (no mkForce/optionalAttrs dropping
+  them from the rendered config).
+
+Both integrations auto-activate when their parent service and Dex
+are both enabled — the customer sees one toggle ("enable jellyfin")
+and gets OIDC for free. No `cococoir.integrations.X.enable` option
+exists.
+
+##### Planned services
+
+- **Nextcloud** (v2.3): native S3 (when Garage is kept) or direct
+  filesystem storage. OIDC via Dex.
+- **qBittorrent** (v2.13): shared `media` volume.
+- **Jellyseerr** (v2.13): request management, OIDC via Dex.
 
 #### cococoir-client extensions (Go)
 
@@ -256,12 +308,14 @@ These are the rules v2 enforces. They are non-negotiable.
 - **sops-nix only.** No clan-core. No age-key-in-git. The
   encrypted file is the source of truth; the age key lives
   outside the repo.
-- **4-option service contract is sacred.** Adding a 5th option
-  is a deliberate decision, not an accident. v2 ships with 4.
-- **Native S3 > FUSE.** For services with a native S3 backend
-  (Nextcloud, Backblaze B2, etc.), use it. FUSE-mounting a bucket
-  as a service's data dir is the fallback for services without
-  native S3 support (Jellyfin, qBittorrent, Cryptpad).
+- **3-option (or 4-option) service contract is enforced by the factory, not by hand.**
+  `mkCococoirService` from `_contract.nix` owns the standard option surface
+  (enable / domain / public), the Caddy vhost, and the standard assertions.
+  Adding a 5th option requires careful justification; the factory provides
+  `extraConfig` for per-service additions without breaking the contract. See ADR-020.
+- **Native filesystem > S3 > FUSE.** Services get ZFS datasets (real filesystems)
+  as their data directories. S3 (Garage) is a v4 cluster concern. FUSE is the
+  fallback for services that need a specific path shape, not a v2 design goal.
 
 ## v3 — Control plane (deferred)
 
@@ -316,10 +370,13 @@ revisited.
   exposes exactly `enable / domain / public / bucket`. Adding a
   5th option (`otel`, `healthUrl`, `port`, …) is a deliberate
   decision, not an accident. The contract keeps the config
-  surface minimal for the non-technical customer.
-- **ADR-005: Native S3 > FUSE.** Services with a native S3
-  backend (Nextcloud) use it. FUSE-mounting a bucket as a service
-  data dir is the fallback for services without native S3 support.
+  surface minimal for the non-technical customer. *Extended by
+  ADR-020: the factory now enforces this by code.*
+- **ADR-005: Native filesystem > S3 > FUSE — superseded by ADR-023.**
+  Originally: services with a native S3 backend (Nextcloud) use S3;
+  FUSE-mounting a bucket is the fallback. *Superseded by ADR-023
+  for v2: ZFS datasets (native filesystems) are the primary storage;
+  S3 (Garage) is a v4 cluster concern; FUSE is last resort.*
 - **ADR-006: TLS keys never leave the box.** Caddy on the customer
   box owns TLS. The forwarder is L4 and never decrypts. The
   customer's x25519 keys only exist on their local device.
@@ -375,6 +432,46 @@ revisited.
   v0 ships bbolt. v2's bbolt usage is the same (no schema change
   in this slice). Badger was rejected as more complex with no
   benefit at this scale.
+- **ADR-020: Factory contract enforces the service contract.**
+  Every service module calls `mkCococoirService` from
+  `_contract.nix` with a 3-line declaration. The factory generates
+  the option tree, Caddy vhost, systemd wiring, and standard
+  assertions. The `contract-conformance` L1 check fails the build
+  if any service module diverges from the factory. Rejected
+  alternatives: convention (ADR-004's 4-option convention without
+  enforcement — led to drift in the prior pocket-id module);
+  per-service boilerplate (high duplication, silent-failure seams).
+- **ADR-021: Dex is the sole OIDC provider; PocketID is removed.**
+  Dex with `staticPasswords` handles all three requirements for v2:
+  (1) standard username/password auth, (2) admin user set in config
+  file (recovery path), (3) low resource overhead (~30MB). PocketID
+  was removed — it duplicated OIDC provider functionality without
+  adding password support, and the Dex-only chain (Dex → Jellyfin)
+  is one hop instead of two (PocketID → Dex → Jellyfin). Rejected:
+  Authentik (300MB+ RAM, overkill), PocketID (no password support,
+  redundant hop), LDAP (heavier protocol, less service support).
+- **ADR-022: L1 checks are structural tripwires, not style tests.**
+  `contract-conformance` asserts every service module uses the
+  factory (grep source). `doc-refs` asserts every referenced path
+  in AGENTS.md/PLAN.md/STATUS.md exists + every ADR cited in
+  module comments exists in PLAN.md. `vmtest-wiring` evaluates the
+  real vmtest nixosConfiguration and asserts OIDC integration
+  config (plugins, branding, boot activation) survives module
+  composition — catches the regression class where mkForce or
+  optionalAttrs on config silently drops the integration. All three
+  run as pure eval checks (L1); all three gate `nix flake check`.
+- **ADR-023: ZFS + restic replaces Garage+FUSE for v2 storage.**
+  v2's single-node deployment cannot benefit from Garage's
+  3-node replication. ZFS mirror provides HDD-failure resilience
+  without cluster complexity; ZFS datasets give each service a
+  quota'd virtual filesystem without FUSE overhead; restic provides
+  client-side-encrypted offsite backups to the hosted infrastructure.
+  Garage stays in-tree for v4 (multi-machine) but is demoted from
+  v2 requirement. Rejected: Btrfs RAID1 (less mature on NixOS,
+  ZFS datasets + snapshots map better to cococoir's service-per-dataset
+  model); single-drive + cloud-only backup (fails the "survive HDD
+  failure locally" requirement); distributed fs (Ceph/Gluster —
+  far too heavy for a single ARM board).
 
 ## Implementation backlog
 
@@ -396,60 +493,50 @@ verifies it. "Done" = shipped, tested, committed.
 
 ### v2 — Home server (in progress)
 
-- **v2.1: Storage option tree + Garage wiring.** Port v1's
-  `cococoir/storage` and `cococoir/garage` to v2 with sops-nix in
-  place of clan-core. Single-node only (multi-node is v4). ~1 day.
-  **Tests:** 1-VM nixosTest for storage at `nix/tests/storage/`.
-  This is the v2 gate.
-- **v2.2: Jellyfin service module.** Port v1's
-  `services/jellyfin.nix` to v2's 4-option contract. FUSE-mounted
-  data dir at `/media/entertain`. Caddy vhost, hardcoded port
-  8096, hidden options for `journald.units` and `healthUrl`.
-  ~half a day.
-- **v2.3: Nextcloud service module.** Port v1's
-  `services/nextcloud.nix` to v2. Native S3 backend
-  (`objectstore.s3`) pointed at the `documents` bucket. Caddy
-  vhost, hardcoded port, hidden options. ~half a day.
-- **v2.4: cococoir-client `internal/probe`.** HTTP GET prober
-  that reads the services list from config and emits one OTEL
-  span per probe. ~1 day. **Tests:** Go unit tests with a fake
-  HTTP server and an in-memory OTEL exporter.
-- **v2.5: cococoir-client `internal/journald`.** sd-journal
-  tailer that reads `services.<name>.journald.units` from config
-  and emits one OTEL log record per entry. ~1 day. **Tests:** Go
-  unit tests with a fake journal source.
-- **v2.6: cococoir-client `internal/otel`.** Wires the SDK:
-  tracer provider, logger provider, in-memory exporter, OTLP
-  exporter (no-op for v2). Reads OTEL config from cococoir
-  config. ~half a day.
-- **v2.7: Embedded dashboard.** `embed.FS` with HTML/JS, three
-  sections, auto-refresh. Extends `internal/health` with `/`,
-  `/api/probes`, `/api/logs`. ~1 day.
-- **v2.8: sops-nix helpers.** `nix run .#init` and
-  `nix run .#add-secret`. ~half a day.
-- **v2.9: 1-VM nixosTest for the v2 product.** Combines all of
-  the above. Asserts storage works, services respond, OTEL data
-  is emitted, secrets decrypt, dashboard renders. **Gate.**
+**Built (7 service modules, factory contract, OIDC integrations):**
 
-### v2.x — follow-on (deferred until v2.9 is green)
+- **Services**: jellyfin, cryptpad, dex, radarr, sonarr, lidarr,
+  prowlarr — all via the `_contract.nix` factory. `contract-conformance`
+  L1 check gates every service module.
+- **OIDC**: Dex is the sole provider. jellyfin-oidc integration
+  (jellarr + OIDC RBAC plugin) auto-activates when jellyfin + dex
+  are enabled. cryptpad-oidc similarly for CryptPad SSO.
+  `vmtest-wiring` L1 check asserts OIDC survives module composition.
+- **Storage**: Garage + geesefs (single-node); tests pass but this
+  is a v4 placeholder. v2 target is ZFS + restic (see ADR-023).
+- **L1 test infrastructure**: `contract-conformance` (factory usage),
+  `doc-refs` (doc path validity + ADR cross-check),
+  `vmtest-wiring` (OIDC integration presence in rendered config).
+- **L0**: forwarder Go unit tests (v0, shipped and unchanged).
 
-- **v2.10: PocketID + OIDC.** Add PocketID as the third service,
-  wire Nextcloud to it, assert the OIDC flow works. Second 1-VM
-  test or extension of v2.9.
-- **v2.11: Edge export.** Configure the OTLP exporter on
-  cococoir-client to point at cococoir-edge. Add a 2-VM test
-  (or extend the v0 2-VM test) that asserts OTEL data flows
-  from client to edge.
-- **v2.12: PII sanitization.** Strip user IDs and auth headers
-  from OTEL batches before export. Configurable denylist.
-- **v2.13: qBittorrent + autobrr + Jellyseerr.** Add the rest
-  of the *arr stack. RF=1 `media` bucket shared with Jellyfin.
-- **v2.14: Cryptpad.** FUSE-mounted data dir at
-  `/var/lib/cococoir/cryptpad`. RF=1 `documents` bucket shared
-  with Nextcloud (or separate `cryptpad` bucket, TBD).
-- **v2.15: External OTEL backend.** Decide between embedded
-  dashboard, Grafana, or both. v2.x is the place for this
-  decision.
+**P0 — blocked:**
+
+- **jellarr fails on fresh boot**: jellarr starts ~3s after
+  jellyfin restart and dies with `ECONNREFUSED 127.0.0.1:8096`.
+  Jellyfin health was 502 at the time. Either crash-looping
+  (check journal for OIDC plugin DLLs) or preStart readiness
+  probe racing the restart. Reproduce: `scripts/vmtest-e2e.sh`.
+  Nothing else ships until this is green.
+
+**Remaining v2 work (ordered):**
+- **v2.p0**: Fix P0 jellarr boot bug. Gate: `vmtest-e2e.sh` PASS.
+- **v2.storage**: Rewrite Garage module to ZFS mirror + ZFS
+  datasets + restic encrypted offsite backups. Remove FUSE
+  translation layer for services that want filesystems.
+- **v2.nextcloud**: Nextcloud service module with ZFS dataset
+  storage + OIDC via Dex.
+- **v2.probe**: `cococoir-client internal/probe` — HTTP GET
+  prober reading services list from config, emitting OTEL spans.
+- **v2.journald**: `cococoir-client internal/journald` — tails
+  systemd journal per service, emits OTEL log records.
+- **v2.otel**: OTEL SDK wiring (in-memory exporter).
+- **v2.dashboard**: Embedded HTML/JS dashboard serving probe +
+  log data.
+- **v2.sops**: `nix run .#init` + `nix run .#add-secret` helpers.
+- **v2.gate**: 1-VM nixosTest combining storage + services + OIDC.
+- **v2.arr**: qBittorrent + Jellyseerr (shared media volume).
+- **v2.sanitize**: PII sanitization for OTEL export.
+- **v2.otel-backend**: Decide between embedded dashboard, Grafana, or both.
 
 ### v3 — Control plane (deferred)
 

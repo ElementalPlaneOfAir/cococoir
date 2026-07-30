@@ -10,7 +10,7 @@
   3. Auto-wire it from sops-nix secrets (with `lib.optionalAttrs` on `cococoir.secrets.sopsFile` — see the cycle note below).
   4. Make the service always-on if the platform requires it.
   If none of those work, expose the option — but flag the cost.
-- **Don't foist integration complexity on the customer.** "jellyfin + jellarr" is one thing from the customer's perspective. If they enable jellyfin, jellarr runs. Same for "pocketid + OIDC integration with jellyfin" — one toggle. Exposing a separate `cococoir.integrations.X.enable` toggle is a code smell; the integration should be auto-activated by the service it pairs with.
+- **Don't foist integration complexity on the customer.** "jellyfin + jellarr" is one thing from the customer's perspective. If they enable jellyfin, jellarr runs. Same for "jellyfin + OIDC integration with dex" — one toggle. Exposing a separate `cococoir.integrations.X.enable` toggle is a code smell; the integration should be auto-activated by the service it pairs with.
 - **Module-system cycle note:** any module whose `config` block reads `config.cococoir.secrets.sopsFile` (or any other path in `config` that gates a contribution to the same module) creates an infinite recursion. The NixOS module system can't break this. Workarounds:
   - Move the gate to a different module (sibling, not child) and use `lib.optionalAttrs` — this is what the (currently-failed) `secrets-auto-wire.nix` attempted.
   - Use `config ? <attrset>.<key>` to check existence without reading the value. Tested: also recurses for paths inside `config`.

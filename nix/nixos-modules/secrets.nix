@@ -66,27 +66,6 @@ let
       mode = "0400";
       description = "S3 secret access key, paired with s3-access-key-id.";
     };
-    "pocketid-encryption-key" = {
-      owner = "pocketid";
-      group = "pocketid";
-      mode = "0400";
-      description = ''
-        Pocket-ID's ENCRYPTION_KEY. Base64-encoded 32 bytes.
-        The file MUST NOT have trailing CR/LF (pocket-id treats
-        line terminators as part of the key; a stray newline
-        fails decryption on restart).
-      '';
-    };
-    "pocketid-static-api-key" = {
-      owner = "pocketid";
-      group = "pocketid";
-      mode = "0400";
-      description = ''
-        Pocket-ID's STATIC_API_KEY. When set, pocket-id
-        auto-creates a "Static API User" admin on first boot.
-        Recommended for dev VMs and CI environments.
-      '';
-    };
     "jellarr-api-key" = {
       owner = "jellarr";
       group = "jellarr";

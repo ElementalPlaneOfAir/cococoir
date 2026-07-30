@@ -3,7 +3,7 @@
 # cococoir/services/_contract — the 4-option service contract
 # factory. Per PLAN.md "Services" and ADR-004.
 #
-# Every cococoir service module (jellyfin.nix, pocketid.nix, ...)
+# Every cococoir service module (jellyfin.nix, dex.nix, ...)
 # imports this factory and only adds its own specifics — system
 # user, systemd unit, FUSE mount, env vars, etc. The factory owns:
 #
@@ -23,12 +23,12 @@
 #
 # Adding a new service is then a single call to this factory with
 # the service's specifics. The 4-option contract is enforced by
-# code, not convention — drift (like pocket-id lacking
-# healthUrl/journald.units before this refactor) is impossible.
+# code, not convention — drift (a missing health prober contract)
+# is impossible.
 #
 # See:
 #   - nix/nixos-modules/services/jellyfin.nix — 4-option example
-#   - nix/nixos-modules/services/pocketid.nix — 3-option example
+#   - nix/nixos-modules/services/dex.nix — 3-option example
 #   - nix/tests/contract-conformance/default.nix — asserts every
 #     service module uses this factory and exposes the standard
 #     hidden options
