@@ -19,6 +19,39 @@
 
 
 
+# Context System
+
+Docs rot when living state is written in stable docs, and agent sessions lose the plot when there is no defined load order. This project keeps exactly three layers:
+
+- **AGENTS.md** — how to work here (process, style, protocols). Changes rarely.
+- **PLAN.md** — what we're building and why; ADRs live here. Changes on decisions.
+- **docs/STATUS.md** — where we are *right now*: what works (with proof), what's broken, current focus. Changes constantly.
+
+Session start (every agent, every session): read AGENTS.md → PLAN.md → docs/STATUS.md, in that order.
+
+Session end duties:
+
+- If you changed what works or broke something, update `docs/STATUS.md` **in the same commit**. A "works" claim must name its proof (an L1 check name or an e2e run); claims without proof are debt.
+- If you fix a bug, add its tripwire (L1 assertion or `scripts/vmtest-bootstrap.sh` check) in the same commit, so the bug cannot silently return.
+- Facts live in exactly one place: process here, decisions in PLAN.md, current state in docs/STATUS.md, per-line rationale in code comments. Link, don't copy.
+- Do not add new top-level docs. Three layers plus code comments is the whole system.
+
+# Spec System
+
+For features that need structured design, use the speckit workflow:
+
+```
+/speckit.specify  → define what (user stories, acceptance criteria)
+/speckit.plan     → define how (modules, files, test strategy)
+/speckit.tasks    → break into ordered, dependency-aware tasks
+/speckit.implement → execute tasks, verifying each step
+/speckit.converge → surface drift between code and spec
+```
+
+The governing principles live at `.specify/memory/constitution.md` (derived from this file and PLAN.md). Each skill loads it before producing output. Specs/plans/tasks live under `.specify/specs/<feature-name>/`.
+
+Skills are defined in `.opencode/skills/speckit-*/SKILL.md` and loaded on-demand. Only use the spec workflow for multi-file, multi-step features. Simple fixes don't need a spec — just do them and update STATUS.md.
+
 # Code Architecture Directives
 
 - Write and architect code with a **Zero technical debt** policy. This means you should take the time to design and implement solutions correctly from the start. And if you see a feature that is designed badly, fix and rearchitect it as soon as possible, before building anything else on top of it.
@@ -69,6 +102,16 @@ function clamp(x: number, lo: number, hi: number): number {
 - Tests are very important, and act as a force multiplier on top of assertions. Running extensive tests with your assertions drastically decreases the likelihood of assertions causing problems in production. And every test you run instead of just checking that the output matches, is testing for correctness 10-100 times inside the codebase itself. Do not forget to write them after you have finished writing or updating them after you have finished writing the main code body.
 
 - **When writing React code, follow the guidelines in `spec/REACT_GUIDELINES.md`.** This covers best practices for component design, preventing useEffect misuse, testing, and architecture.
+
+# Testing Protocol
+
+- **Never declare a change "working" from evaluation alone.** `nix eval` succeeding proves the option tree is well-formed; it says nothing about boot-time behavior. The OIDC integration regressed for exactly this reason — it was verified by hand on a long-lived VM, then broke silently on the next fresh boot.
+- Test layers (see `nix/tests/default.nix`):
+  - L0: Go unit tests (`go test` via flake checks).
+  - L1: pure eval checks (`nix flake check`) — includes `vmtest-wiring`, which asserts the *real* vmtest composition keeps the OIDC integration wired (plugins, branding, boot activation). Add an assertion there whenever you add cross-module wiring.
+  - L2: `scripts/vmtest-e2e.sh` — nukes `vmtest.qcow2`, rebuilds, boots headless, and asserts the running system (services active, jellarr applied its config, Dex discovery responds, the "Sign in with Dex" button renders). Run it before claiming any change under `nix/nixos-modules/` works.
+- **Silent-failure seams are bugs.** Never gate an integration on `options.services ? X` or override a submodule with `lib.mkForce` without an L1 assertion that the integration is present in the rendered config. If a config can be dropped silently, add the tripwire in the same commit.
+- When you fix a boot-time bug, add the corresponding assertion to `scripts/vmtest-bootstrap.sh` so the e2e script catches its regression.
 
 # Git Commit Directives
 

@@ -1,0 +1,35 @@
+---
+project: cococoir
+version: 1
+last_updated: 2026-07-29
+status: draft
+---
+# cococoir Constitution
+
+Governing principles. Every spec, plan, and task must conform.
+
+## Architecture
+
+1. **Factory contract.** Services use `mkCococoirService` from `_contract.nix`. 3-option contract: `enable`, `domain`, `public`. Optional: `bucket`, `mount`.
+2. **No foisting.** Integration complexity is the module's job, never the customer's. "jellyfin + jellarr" is one toggle. "pocketid + OIDC" is one toggle.
+3. **50-line surface.** Customer-facing config stays under 50 lines total. Auto-derive, auto-wire, or default before adding an option.
+4. **Integration auto-activation.** An integration pair (e.g. jellarr) activates when its parent service enables. No separate `.integrations.X.enable` toggle.
+
+## Quality
+
+5. **Zero technical debt.** Refactor before building on flawed code. Dead code removed via git commits for revertibility.
+6. **Assertions as documentation.** Every function averages ≥2 assertions. Assertions detect programmer errors, not user errors.
+7. **Tripwire protocol.** Every cross-module wiring gets an L1 eval assertion. Every boot-time bug fix gets a bootstrap.sh check. Bug fix → tripwire in the same commit.
+8. **No comments.** Code explains itself through naming and control flow. If it needs a comment, it needs a refactor.
+
+## Testing
+
+9. **Proof before "works".** Every "works" claim in STATUS.md names its proof (L1 check or e2e run). Unproven claims are debt.
+10. **Three test layers.** L0 (Go unit), L1 (nix flake check — pure eval), L2 (vmtest-e2e.sh — nuke, rebuild, boot, assert). L2 before shipping any nixos-modules change.
+11. **Silent-failure seams are bugs.** `options.services ? X` and `lib.mkForce` in integration config are banned unless paired with an L1 tripwire in the same commit.
+
+## Docs
+
+12. **Three layers only.** AGENTS.md (process), PLAN.md (decisions/ADRs), docs/STATUS.md (current state). No new top-level docs.
+13. **Living state.** STATUS.md changes in the same commit that changes reality. Claims without proof are removed.
+14. **Link, don't copy.** Facts live in exactly one place. Cross-reference by path, never duplicate.
