@@ -56,11 +56,19 @@
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
 
-      perSystem = {pkgs, self', ...}: {
+      perSystem = {pkgs, self', system, ...}: {
         checks = import ./nix/tests {
           inherit pkgs;
           sopsModule = inputs.sops-nix.nixosModules.sops;
-        };
+        }
+        # vmtest is pinned to x86_64-linux; only wire its eval
+        # tripwire into checks on that system.
+        // pkgs.lib.optionalAttrs (system == "x86_64-linux") (
+          import ./nix/tests/vmtest-wiring {
+            inherit pkgs;
+            vmtestConfig = vmtest.config;
+          }
+        );
         # The app's `program` field is just a string path. We avoid
         # interpolation of `vmtest.config.system.build.vm` (which
         # flake-parts mishandles) by shelling out to `nix run` on
