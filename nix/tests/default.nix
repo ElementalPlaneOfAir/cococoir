@@ -20,11 +20,6 @@ let
   edgeTests = let raw = import ./edge {inherit pkgs;}; in {
     edge-forward = raw.edge-forward.test;
   };
-  storageTests = let
-    raw = import ./storage {inherit pkgs; sopsModule = if sopsModule == null then [] else [ sopsModule ];};
-  in {
-    storage = raw.storage.test;
-  };
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
   cococoirPkg = pkgs.callPackage ../packages/cococoir {};
@@ -39,17 +34,10 @@ in {
     doCheck = true;
   });
 
-  # ── v2 gate: 1-VM nixosTest for the storage layer ──────────────
-  # Single NixOS VM with sops-nix + Garage + FUSE mount + native
-  # S3 PUT/GET. Exercises the storage option tree, sops-nix
-  # secret decryption, the bucket-init oneshot, the FUSE
-  # service, and the S3 client path.
-  # See nix/tests/storage/default.nix for the full design.
-
   # ── L2: edge <-> client over WireGuard ───────────────────────────
   # 2-VM nixosTest. Exercises the full L4-forwarder-over-WG path:
   # cococoir-edge (VPS, per-IP bind at 192.168.1.10:80) ->
   # WireGuard tunnel -> cococoir-client (box) -> 127.0.0.1:80
   # (python http server, Caddy stand-in). See
   # nix/tests/edge/default.nix for the full design.
-} // edgeTests // storageTests // contractConformanceTests // docRefsTests
+} // edgeTests // contractConformanceTests // docRefsTests

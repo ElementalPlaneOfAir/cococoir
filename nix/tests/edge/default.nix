@@ -58,6 +58,7 @@ in {
 
         cococoir.baseDomain = "edge-test.local";
         cococoir.storage.enable = false;
+        cococoir.services.dex.enable = false;
         services.cococoir-edge.enable = true;
 
         # Generate /etc/cococoir-edge.json from a Nix attrset. The
@@ -112,6 +113,7 @@ in {
 
         cococoir.baseDomain = "edge-test.local";
         cococoir.storage.enable = false;
+        cococoir.services.dex.enable = false;
         services.cococoir-client.enable = true;
 
         # Same pattern as the edge: forwards in Nix, JSON-serialized

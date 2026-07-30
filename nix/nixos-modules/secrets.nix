@@ -28,44 +28,8 @@
 # 50 lines.
 {lib, ...}:
 
-let
+  let
   inventory = {
-    "garage-rpc-secret" = {
-      owner = "garage";
-      group = "garage";
-      mode = "0400";
-      description = ''
-        Garage's RPC shared secret. Used by the bucket-init
-        oneshot to authenticate to the cluster.
-      '';
-    };
-    "garage-admin-token" = {
-      owner = "garage";
-      group = "garage";
-      mode = "0400";
-      description = ''
-        Garage's admin API token. Used by the bucket-init
-        oneshot and any admin operations.
-      '';
-    };
-    "garage-metrics-token" = {
-      owner = "garage";
-      group = "garage";
-      mode = "0400";
-      description = "Garage's Prometheus metrics token.";
-    };
-    "s3-access-key-id" = {
-      owner = "garage";
-      group = "garage";
-      mode = "0440";
-      description = "S3 access key id, used by all FUSE mounts and native-S3 services.";
-    };
-    "s3-secret-access-key" = {
-      owner = "garage";
-      group = "garage";
-      mode = "0400";
-      description = "S3 secret access key, paired with s3-access-key-id.";
-    };
     "jellarr-api-key" = {
       owner = "jellarr";
       group = "jellarr";

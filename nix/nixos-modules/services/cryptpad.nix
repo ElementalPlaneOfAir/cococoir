@@ -6,7 +6,6 @@
 #   enable  — opt-in toggle
 #   domain  — external FQDN for the Caddy vhost
 #   public  — true → Caddy reverse-proxies; false → 403
-#   bucket  — Garage bucket that backs cryptpad's data
 #
 # CryptPad needs TWO origins: httpUnsafeOrigin (main) and
 # httpSafeOrigin (sandbox for CSP isolation). We serve both from
@@ -29,8 +28,7 @@ mkCococoirService {
   description = "CryptPad collaborative office suite";
   defaultPort = 3000;
   defaultHealthPath = "/checkup/";
-  defaultBucket = "cryptpad-data";
-  defaultMount = "/var/lib/cococoir/cryptpad";
+  storageNeeded = true;
   extraConfig = {cfg, lib, pkgs, ...}: {
     services.cryptpad = {
       enable = true;
@@ -40,7 +38,7 @@ mkCococoirService {
         httpPort = cfg.port;
         httpUnsafeOrigin = "https://${cfg.domain}";
         httpSafeOrigin = "https://${cfg.domain}";
-        filePath = "/var/lib/cococoir/cryptpad";
+        filePath = "/data/cryptpad/data";
         blockDailyCheck = true;
         logToStdout = true;
         installMethod = "cococoir";
@@ -48,16 +46,14 @@ mkCococoirService {
     };
 
     systemd.services.cryptpad = {
-      after = ["cococoir-fuse-${cfg.bucket}.service"];
-      serviceConfig = {
-        BindPaths = ["-/var/lib/cococoir/cryptpad"];
-      };
+      after = ["cococoir-zfs-datasets.service"];
+      requires = ["cococoir-zfs-datasets.service"];
+      serviceConfig.RequiresMountsFor = ["/data/cryptpad/data"];
     };
 
-    cococoir.storage.buckets.${cfg.bucket}.replicationFactor = 1;
-    cococoir.storage.mounts.${cfg.bucket} = {
-      bucket = cfg.bucket;
-      mountPoint = "/var/lib/cococoir/cryptpad";
+    cococoir.storage.zfs.datasets."cryptpad-data" = {
+      mountpoint = "/data/cryptpad/data";
+      quota = "100G";
     };
   };
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 {
-  description = "Cococoir v2: NixOS + Garage + services for the home-server product. AGPL-3.0-or-later.";
+  description = "Cococoir v2: NixOS + ZFS + services for the home-server product. AGPL-3.0-or-later.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -48,7 +48,7 @@
 
       # Manual v2 dev VM: every cococoir service under test, each
       # behind its own Caddy vhost in the `vmtest.local`
-      # cookie-jar. Today that includes Jellyfin and Pocket-ID;
+      # cookie-jar. Today that includes Jellyfin and Dex;
       # nextcloud, gitea, etc. land here as the service modules
       # come online. Run with:
       #   nix run .#vmtest

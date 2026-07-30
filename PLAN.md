@@ -466,12 +466,16 @@ revisited.
   without cluster complexity; ZFS datasets give each service a
   quota'd virtual filesystem without FUSE overhead; restic provides
   client-side-encrypted offsite backups to the hosted infrastructure.
-  Garage stays in-tree for v4 (multi-machine) but is demoted from
-  v2 requirement. Rejected: Btrfs RAID1 (less mature on NixOS,
+  Garage was deleted entirely (v1 retained in archive/); resurrect
+  from git history for v4 multi-machine support if needed.
+  Rejected: Btrfs RAID1 (less mature on NixOS,
   ZFS datasets + snapshots map better to cococoir's service-per-dataset
   model); single-drive + cloud-only backup (fails the "survive HDD
   failure locally" requirement); distributed fs (Ceph/Gluster —
   far too heavy for a single ARM board).
+  *Implemented 2026-07-30: `storage/zfs.nix` — pool creation,
+  dataset management, service auto-declaration, auto-scrub,
+  hostId derivation. `nix flake check --no-build` PASS.*
 
 ## Implementation backlog
 
@@ -520,9 +524,14 @@ verifies it. "Done" = shipped, tested, committed.
 
 **Remaining v2 work (ordered):**
 - **v2.p0**: Fix P0 jellarr boot bug. Gate: `vmtest-e2e.sh` PASS.
-- **v2.storage**: Rewrite Garage module to ZFS mirror + ZFS
-  datasets + restic encrypted offsite backups. Remove FUSE
-  translation layer for services that want filesystems.
+- **v2.storage** (done 2026-07-30): ZFS pool + dataset management
+  replaces Garage+FUSE. Garage files, FUSE services, and 5 S3
+  secrets deleted. New `storage/zfs.nix` creates pool via
+  idempotent oneshot; services auto-declare ZFS datasets with
+  quotas. `nix flake check --no-build` PASS; L2 e2e still blocked
+  by P0 jellarr.
+- **v2.restic**: restic encrypted offsite backup. rclone backend
+  (S3/B2/rsync), password from secrets, timer on ZFS datasets.
 - **v2.nextcloud**: Nextcloud service module with ZFS dataset
   storage + OIDC via Dex.
 - **v2.probe**: `cococoir-client internal/probe` — HTTP GET

@@ -5,12 +5,12 @@
 #
 # Every cococoir service module (jellyfin.nix, dex.nix, ...)
 # imports this factory and only adds its own specifics — system
-# user, systemd unit, FUSE mount, env vars, etc. The factory owns:
+# user, systemd unit, ZFS dataset, env vars, etc. The factory owns:
 #
 #   - the standard option surface (enable / domain / public /
-#     [bucket] / port / healthUrl / journald.units)
-#   - the standard assertions (public → caddy, bucket → storage,
-#     baseDomain or explicit domain)
+#     port / healthUrl / journald.units)
+#   - the standard assertions (public → caddy, storageNeeded →
+#     storage, baseDomain or explicit domain)
 #   - the Caddy vhost with the right `tls` directive from
 #     cococoir.tls and the right `reverse_proxy` / 403 from
 #     `public`
@@ -19,7 +19,7 @@
 #   - per-service nixpkgs module activation (e.g. services.jellyfin)
 #   - per-service system user / group
 #   - per-service systemd unit
-#   - per-service storage (auto-declare bucket + FUSE mount)
+#   - per-service storage (auto-declare ZFS datasets)
 #
 # Adding a new service is then a single call to this factory with
 # the service's specifics. The 4-option contract is enforced by
@@ -28,7 +28,9 @@
 #
 # See:
 #   - nix/nixos-modules/services/jellyfin.nix — 4-option example
+#     with storageNeeded = true
 #   - nix/nixos-modules/services/dex.nix — 3-option example
+#     (storageNeeded = false)
 #   - nix/tests/contract-conformance/default.nix — asserts every
 #     service module uses this factory and exposes the standard
 #     hidden options
@@ -47,7 +49,7 @@ in
 args:
 let
   cfg = config.cococoir.services.${args.name};
-  hasBucket = args ? defaultBucket && args.defaultBucket != null;
+  hasBucket = args.storageNeeded or false;
   baseDomain = config.cococoir.baseDomain;
   sub = args.conventionalSubdomain or args.name;
 in
@@ -139,19 +141,6 @@ in
         internal = true;
       };
     }
-    // lib.optionalAttrs hasBucket {
-      bucket = mkOption {
-        type = types.str;
-        default = args.defaultBucket;
-        description = ''
-          Name of the Garage bucket that backs ${args.name}'s
-          data. The service module auto-declares it under
-          `cococoir.storage.buckets` and a FUSE mount under
-          `cococoir.storage.mounts` when enabled. Override
-          only to share a bucket between services.
-        '';
-      };
-    }
     // (args.extraOptions or {});
 
   config = lib.mkIf cfg.enable (
@@ -172,11 +161,11 @@ in
           }
         ]
         ++ lib.optional hasBucket {
-          assertion = config.cococoir.storage.enable;
+          assertion = cfg.storageNeeded or false -> config.cococoir.storage.enable;
           message = ''
             cococoir.services.${args.name}: `cococoir.storage.enable`
             is not set. ${args.name} requires the storage layer
-            (Garage + FUSE mount).
+            (ZFS pool + datasets).
           '';
         };
 

@@ -4,15 +4,15 @@
 #
 # 4-option contract (per PLAN.md "Services" + ADR-004; see
 # services/_contract.nix for the shared factory):
-#   enable    — opt-in toggle
-#   domain    — external FQDN for the Caddy vhost
-#   public    — true → Caddy reverse-proxies; false → 403
-#   bucket    — Garage bucket that backs the media library
+#   enable  — opt-in toggle
+#   domain  — external FQDN for the Caddy vhost
+#   public  — true → Caddy reverse-proxies; false → 403
 #
 # What the factory gives us for free:
-#   - the four options above + the hidden `port`, `healthUrl`,
+#   - the options above + the hidden `port`, `healthUrl`,
 #     `journald.units` options
-#   - assertions (public → caddy, bucket → storage, domain set)
+#   - assertions (public → caddy, storageNeeded → storage,
+#     domain set)
 #   - the Caddy vhost with the right `tls` directive from
 #     cococoir.tls and the right `reverse_proxy` / 403
 #
@@ -23,10 +23,10 @@
 #     "jellyfin + jellarr" is one toggle.
 #   - declares the jellyfin system user (with `render`/`video`
 #     extra groups for HW transcode)
-#   - waits on the FUSE mount of the backing bucket
-#   - auto-declares the bucket + FUSE mount under
-#     cococoir.storage.* so the user does not have to wire
-#     storage separately
+#   - auto-declares ZFS datasets under cococoir.storage.zfs.*
+#     so the user does not have to wire storage separately
+#   - RequiresMountsFor= on dataset mountpoints so Jellyfin
+#     waits for the ZFS pool import before starting
 #
 # Limitation: nixpkgs' services.jellyfin does not expose a bind
 # address or port option. Jellyfin's runtime default is bind on
@@ -50,8 +50,7 @@ mkCococoirService {
   description = "Jellyfin media server";
   defaultPort = 8096;
   defaultHealthPath = "/health";
-  defaultBucket = "media";
-  defaultMount = "/media/entertain";
+  storageNeeded = true;
   extraConfig = {cfg, lib, options, ...}: let
     base = {
       services.jellyfin = {
@@ -66,13 +65,34 @@ mkCococoirService {
         extraGroups = ["render" "video"];
       };
 
-      systemd.services.jellyfin.after =
-        ["cococoir-fuse-${cfg.bucket}.service"];
+      cococoir.storage.zfs.datasets = {
+        "media-movies" = {
+          mountpoint = "/data/media/movies";
+          quota = "2T";
+        };
+        "media-shows" = {
+          mountpoint = "/data/media/shows";
+          quota = "2T";
+        };
+        "media-music" = {
+          mountpoint = "/data/media/music";
+          quota = "1T";
+        };
+        "jellyfin-metadata" = {
+          mountpoint = "/data/jellyfin/metadata";
+          quota = "50G";
+        };
+      };
 
-      cococoir.storage.buckets.${cfg.bucket}.replicationFactor = 1;
-      cococoir.storage.mounts.${cfg.bucket} = {
-        bucket = cfg.bucket;
-        mountPoint = "/media/entertain";
+      systemd.services.jellyfin = {
+        after = ["cococoir-zfs-datasets.service"];
+        requires = ["cococoir-zfs-datasets.service"];
+        serviceConfig.RequiresMountsFor = [
+          "/data/media/movies"
+          "/data/media/shows"
+          "/data/media/music"
+          "/data/jellyfin/metadata"
+        ];
       };
     };
   in
@@ -93,10 +113,24 @@ mkCococoirService {
         startup.completeStartupWizard = true;
         library.virtualFolders = lib.mkDefault [
           {
-            name = "Entertainment";
+            name = "Movies";
             collectionType = "movies";
             libraryOptions.pathInfos = [
-              { path = "/media/entertain"; }
+              { path = "/data/media/movies"; }
+            ];
+          }
+          {
+            name = "TV Shows";
+            collectionType = "tvshows";
+            libraryOptions.pathInfos = [
+              { path = "/data/media/shows"; }
+            ];
+          }
+          {
+            name = "Music";
+            collectionType = "music";
+            libraryOptions.pathInfos = [
+              { path = "/data/media/music"; }
             ];
           }
         ];

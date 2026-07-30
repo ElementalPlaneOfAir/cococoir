@@ -34,8 +34,8 @@
 #       root@localhost
 #
 # The VM is hermetic: secrets and the TLS cert are generated at
-# build time, Garage runs single-node, no sops-nix, no real
-# network. Production uses sops-nix with the user's age key and
+# build time, ZFS pool runs with two virtual disks, no sops-nix,
+# no real network. Production uses sops-nix with the user's age key and
 # a real ACME certificate (see cococoir.tls.mode = "acme").
 {
   config,
@@ -44,24 +44,21 @@
   inputs,
   ...
 }: let
-  # Build-time secret generation, same pattern as the storage
-  # nixosTest. In production, sops-nix writes these files with
-  # mode 0440 / 0400 at /run/secrets/<name>; the cococoir.secrets
-  # module wires that automatically when `cococoir.secrets.sopsFile`
-  # is set. We keep the explicit `cococoir.storage.secrets.*File`
-  # wiring here because vmtest does NOT use sops-nix.
-  testSecrets =
-    pkgs.runCommand "vmtest-secrets" {
-      buildInputs = [pkgs.openssl pkgs.gnused];
+  # Build-time secret generation for the manual VM. In
+  # production, sops-nix writes these files with mode 0440 /
+  # 0400 at /run/secrets/<name>. We keep explicit wiring here
+  # because vmtest does NOT use sops-nix.
+
+  # Build-time empty disk images for the ZFS pool (2 × 2 GiB).
+  # The VM's root is on /dev/vda (ext4); these appear as
+  # /dev/vdb and /dev/vdc (virtio drives in order).
+  zfsVirtualDisks =
+    pkgs.runCommand "vmtest-zfs-disks" {
+      nativeBuildInputs = [ pkgs.qemu ];
     } ''
       mkdir -p $out
-      openssl rand -hex -out $out/rpc-secret 32
-      openssl rand -hex -out $out/admin-token 32
-      openssl rand -hex -out $out/metrics-token 32
-      printf 'GK%s' "$(openssl rand -hex 12)" > $out/access-key-id
-      openssl rand -hex -out $out/secret-access-key 32
-      chmod 0440 $out/access-key-id $out/secret-access-key
-      chmod 0400 $out/rpc-secret $out/admin-token $out/metrics-token
+      qemu-img create -f raw "$out/disk1.img" 2G >/dev/null
+      qemu-img create -f raw "$out/disk2.img" 2G >/dev/null
     '';
 
   # Build-time Dex secrets: OIDC client secret for Jellyfin
@@ -140,11 +137,9 @@ in {
     };
   };
 
-  # Build-time secrets mounted at well-known paths. Production
-  # would use `cococoir.secrets.sopsFile = ./secrets.yaml` instead.
+  # Build-time secrets mounted at well-known paths.
   environment.etc = {
     "vmtest-tls".source = testCerts;
-    "vmtest-secrets".source = testSecrets;
     "vmtest-dex-secrets".source = testDexSecrets;
   };
 
@@ -183,34 +178,11 @@ in {
     experimental-features = ["nix-command" "flakes"];
   };
 
-  # Storage layer. cococoir.storage.enable defaults to true
-  # (always-on). The `secrets` block sets the 5 secret file
-  # paths; production wires these from sops-nix. Single-node
-  # ports are hardcoded — no cluster config needed.
-  cococoir.storage.secrets = {
-      rpcSecretFile = "/etc/vmtest-secrets/rpc-secret";
-      adminTokenFile = "/etc/vmtest-secrets/admin-token";
-      metricsTokenFile = "/etc/vmtest-secrets/metrics-token";
-      accessKeyIdFile = "/etc/vmtest-secrets/access-key-id";
-      secretAccessKeyFile = "/etc/vmtest-secrets/secret-access-key";
-    };
-  cococoir.storage.buckets.media = {};
-  cococoir.storage.buckets.movies = { replicationFactor = 1; };
-  cococoir.storage.buckets.shows = { replicationFactor = 1; };
-  cococoir.storage.buckets.music = { replicationFactor = 1; };
-
-  cococoir.storage.mounts.movies = {
-    bucket = "movies";
-    mountPoint = "/media/movies";
-  };
-  cococoir.storage.mounts.shows = {
-    bucket = "shows";
-    mountPoint = "/media/shows";
-  };
-  cococoir.storage.mounts.music = {
-    bucket = "music";
-    mountPoint = "/media/music";
-  };
+  # ZFS pool. cococoir.storage.enable defaults to true
+  # (always-on). Two virtual virtio drives (2 GiB each) form
+  # a mirror pool. The jellyfin and cryptpad service modules
+  # auto-declare their ZFS datasets.
+  cococoir.storage.zfs.pool.devices = ["/dev/vdb" "/dev/vdc"];
 
   # Caddy: just enable. Every cococoir.services.<name> with
   # enable = true registers a vhost via the contract factory,
@@ -222,10 +194,9 @@ in {
   # `email = ""` is a parse error.
   services.caddy.enable = true;
 
-  # Jellyfin service. The factory's `defaultBucket = "media"`
-  # auto-declares the bucket + FUSE mount under
-  # cococoir.storage.*. Domain defaults to `jellyfin.vmtest.local`
-  # via cococoir.baseDomain.
+  # Jellyfin service. Domain defaults to jellyfin.vmtest.local
+  # via cococoir.baseDomain. Datasets auto-declared by the
+  # jellyfin module.
   cococoir.services.jellyfin = {
     enable = true;
     public = true;
@@ -302,31 +273,18 @@ in {
       {
         name = "Movies";
         collectionType = "movies";
-        libraryOptions.pathInfos = [{ path = "/media/movies"; }];
+        libraryOptions.pathInfos = [{ path = "/data/media/movies"; }];
       }
       {
         name = "TV Shows";
         collectionType = "tvshows";
-        libraryOptions.pathInfos = [{ path = "/media/shows"; }];
+        libraryOptions.pathInfos = [{ path = "/data/media/shows"; }];
       }
       {
         name = "Music";
         collectionType = "music";
-        libraryOptions.pathInfos = [{ path = "/media/music"; }];
+        libraryOptions.pathInfos = [{ path = "/data/media/music"; }];
       }
-    ];
-  };
-
-  systemd.services.jellyfin = {
-    after = [
-      "cococoir-fuse-movies.service"
-      "cococoir-fuse-shows.service"
-      "cococoir-fuse-music.service"
-    ];
-    serviceConfig.BindReadOnlyPaths = [
-      "/media/movies"
-      "/media/shows"
-      "/media/music"
     ];
   };
 
@@ -337,28 +295,26 @@ in {
   # free — not enough. Bump the disk to give /var room.
   virtualisation.diskSize = 10240; # 10 GiB, in MB
 
-  # Pre-seed the FUSE mount with a test file. The oneshot waits
-  # for cococoir-fuse-media.service to be up before writing, so
-  # the welcome.txt appears in the bucket at /media/entertain
-  # before Jellyfin starts scanning for libraries.
-  #
-  # NB: `writeShellApplication` returns a *package* (a directory
-  # with `bin/<name>` inside), so `ExecStart = pkg` is "Is a
-  # directory". `writeShellScript` returns a single file, which is
-  # what ExecStart wants.
+  virtualisation.qemu.options = [
+    "-drive file=${zfsVirtualDisks}/disk1.img,format=raw,if=virtio"
+    "-drive file=${zfsVirtualDisks}/disk2.img,format=raw,if=virtio"
+  ];
+
+  # Pre-seed the ZFS dataset with a test file. The oneshot waits
+  # for cococoir-zfs-datasets.service before writing.
   systemd.services.cococoir-pre-seed-media = {
-    description = "Pre-seed the media bucket with a test file";
+    description = "Pre-seed the jellyfin dataset with a test file";
     wantedBy = ["multi-user.target"];
-    after = ["cococoir-fuse-media.service"];
-    requires = ["cococoir-fuse-media.service"];
+    after = ["cococoir-zfs-datasets.service"];
+    requires = ["cococoir-zfs-datasets.service"];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = pkgs.writeShellScript "pre-seed-media" ''
-        cat > /media/entertain/welcome.txt <<'EOF'
+        cat > /data/media/movies/welcome.txt <<'EOF'
         Hello from cococoir v2!
         This file was pre-seeded by the cococoir vmtest VM config.
-        The v2 single-machine stack (Garage S3 + FUSE mount + Jellyfin + Caddy)
+        The v2 single-machine stack (ZFS pool + Jellyfin + Caddy)
         served it to you across the QEMU port forward.
         EOF
       '';
