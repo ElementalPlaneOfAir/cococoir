@@ -1,16 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 {
-  description = "Cococoir v2: NixOS + ZFS + services for the home-server product. AGPL-3.0-or-later.";
+  description = "Cococoir v2: NixOS + btrfs + services for the home-server product. AGPL-3.0-or-later.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     import-tree.url = "github:denful/import-tree";
     sops-nix.url = "github:Mic92/sops-nix";
-    disko = {
-      url = "github:nix-community/disko";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     # Declarative Jellyfin configuration (libraries, users,
     # plugin config, startup-wizard skip) via the official
     # Jellyfin REST API. The jellyfin service module activates
@@ -32,14 +28,12 @@
         ./nixosConfigurations/vmtest.nix
         "${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
         inputs.jellarr.nixosModules.default
-        inputs.disko.nixosModules.disko
       ];
     };
 
     nixosModulesWithJellarr = {
       imports = [
         inputs.jellarr.nixosModules.default
-        inputs.disko.nixosModules.disko
         ./nix/nixos-modules
       ];
     };

@@ -2,7 +2,7 @@
 # Cococoir v2 — module aggregator.
 #
 # The flake's `nixosModules.default` imports this file. Sub-modules are
-# added here as v0 progresses (zfs.nix,
+# added here as v0 progresses (btrfs.nix,
 # caddy.nix, services/<name>.nix, ...).
 {
   imports = [

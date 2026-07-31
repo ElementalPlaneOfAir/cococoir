@@ -11,7 +11,7 @@
 #   - cococoir.baseDomain — apex domain; service domains derive
 #     from it so customer configs stay small
 #   - cococoir.secrets — sops-nix secret inventory (Phase 2)
-#   - cococoir.storage.* — ZFS pool + datasets (ADR-023)
+#   - cococoir.storage.* — btrfs pool + subvolumes (ADR-023)
 #   - cococoir.services.<name> — 4-option (or 3-option for
 #     infra) contract; built via services/_contract.nix
 #   - services.cococoir-{edge,client} — v0 L4 forwarder systemd
@@ -21,7 +21,7 @@
     ./tls.nix
     ./base-domain.nix
     ./secrets.nix
-    ./storage/zfs.nix
+    ./storage/btrfs.nix
     ./edge.nix
     ./client.nix
     ./services/jellyfin.nix

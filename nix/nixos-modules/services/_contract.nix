@@ -5,7 +5,7 @@
 #
 # Every cococoir service module (jellyfin.nix, dex.nix, ...)
 # imports this factory and only adds its own specifics — system
-# user, systemd unit, ZFS dataset, env vars, etc. The factory owns:
+# user, systemd unit, btrfs subvolume, env vars, etc. The factory owns:
 #
 #   - the standard option surface (enable / domain / public /
 #     port / healthUrl / journald.units)
@@ -19,7 +19,7 @@
 #   - per-service nixpkgs module activation (e.g. services.jellyfin)
 #   - per-service system user / group
 #   - per-service systemd unit
-#   - per-service storage (auto-declare ZFS datasets)
+#   - per-service storage (auto-declare btrfs subvolumes)
 #
 # Adding a new service is then a single call to this factory with
 # the service's specifics. The 4-option contract is enforced by
@@ -165,7 +165,7 @@ in
           message = ''
             cococoir.services.${args.name}: `cococoir.storage.enable`
             is not set. ${args.name} requires the storage layer
-            (ZFS pool + datasets).
+            (btrfs pool + subvolumes).
           '';
         };
 

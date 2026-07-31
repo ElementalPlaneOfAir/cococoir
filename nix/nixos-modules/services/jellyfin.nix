@@ -23,10 +23,10 @@
 #     "jellyfin + jellarr" is one toggle.
 #   - declares the jellyfin system user (with `render`/`video`
 #     extra groups for HW transcode)
-#   - auto-declares ZFS datasets under cococoir.storage.zfs.*
+#   - auto-declares btrfs subvolumes under cococoir.storage.btrfs.*
 #     so the user does not have to wire storage separately
-#   - RequiresMountsFor= on dataset mountpoints so Jellyfin
-#     waits for the ZFS pool import before starting
+#   - unitConfig.RequiresMountsFor on subvolume paths so Jellyfin
+#     waits for the btrfs pool mount before starting
 #
 # Limitation: nixpkgs' services.jellyfin does not expose a bind
 # address or port option. Jellyfin's runtime default is bind on
@@ -65,7 +65,7 @@ mkCococoirService {
         extraGroups = ["render" "video"];
       };
 
-      cococoir.storage.zfs.datasets = {
+      cococoir.storage.btrfs.subvolumes = {
         "media-movies" = {
           mountpoint = "/data/media/movies";
           quota = "2T";
@@ -85,9 +85,9 @@ mkCococoirService {
       };
 
       systemd.services.jellyfin = {
-        after = ["cococoir-zfs-datasets.service"];
-        requires = ["cococoir-zfs-datasets.service"];
-        serviceConfig.RequiresMountsFor = [
+        after = ["cococoir-btrfs-subvolumes.service"];
+        requires = ["cococoir-btrfs-subvolumes.service"];
+        unitConfig.RequiresMountsFor = [
           "/data/media/movies"
           "/data/media/shows"
           "/data/media/music"
@@ -97,6 +97,12 @@ mkCococoirService {
     };
   in
   lib.recursiveUpdate base (lib.optionalAttrs (options.services ? jellarr) {
+    systemd.services.jellarr.serviceConfig = {
+      Restart = "on-failure";
+      RestartSec = 5;
+      StartLimitBurst = 10;
+    };
+
     services.jellarr = {
       enable = true;
       user = "jellyfin";

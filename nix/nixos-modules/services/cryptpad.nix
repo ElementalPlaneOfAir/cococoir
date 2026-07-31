@@ -46,12 +46,12 @@ mkCococoirService {
     };
 
     systemd.services.cryptpad = {
-      after = ["cococoir-zfs-datasets.service"];
-      requires = ["cococoir-zfs-datasets.service"];
-      serviceConfig.RequiresMountsFor = ["/data/cryptpad/data"];
+      after = ["cococoir-btrfs-subvolumes.service"];
+      requires = ["cococoir-btrfs-subvolumes.service"];
+      unitConfig.RequiresMountsFor = "/data/cryptpad/data";
     };
 
-    cococoir.storage.zfs.datasets."cryptpad-data" = {
+    cococoir.storage.btrfs.subvolumes."cryptpad-data" = {
       mountpoint = "/data/cryptpad/data";
       quota = "100G";
     };

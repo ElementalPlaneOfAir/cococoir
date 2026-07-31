@@ -166,11 +166,11 @@ in {
     experimental-features = ["nix-command" "flakes"];
   };
 
-  # ZFS pool. cococoir.storage.enable defaults to true
+  # btrfs pool. cococoir.storage.enable defaults to true
   # (always-on). Two virtual virtio drives (2 GiB each) form
-  # a mirror pool. The jellyfin and cryptpad service modules
-  # auto-declare their ZFS datasets.
-  cococoir.storage.zfs.pool.devices = ["/dev/vdb" "/dev/vdc"];
+  # a btrfs RAID1 pool. The jellyfin and cryptpad service modules
+  # auto-declare their subvolumes.
+  cococoir.storage.btrfs.pool.devices = ["/dev/vdb" "/dev/vdc"];
 
   # Caddy: just enable. Every cococoir.services.<name> with
   # enable = true registers a vhost via the contract factory,
@@ -282,15 +282,15 @@ in {
   # nixpkgs qemu-vm disk is 1024MB, which leaves /var with ~887MB
   # free — not enough. Bump the disk to give /var room.
   virtualisation.diskSize = 10240; # 10 GiB, in MB
-  virtualisation.emptyDiskImages = [2048 2048]; # 2 × 2 GiB for ZFS mirror
+  virtualisation.emptyDiskImages = [2048 2048]; # 2 x 2 GiB for btrfs pool
 
-  # Pre-seed the ZFS dataset with a test file. The oneshot waits
-  # for cococoir-zfs-datasets.service before writing.
+  # Pre-seed the btrfs subvolume with a test file. The oneshot waits
+  # for cococoir-btrfs-subvolumes.service before writing.
   systemd.services.cococoir-pre-seed-media = {
-    description = "Pre-seed the jellyfin dataset with a test file";
+    description = "Pre-seed the jellyfin subvolume with a test file";
     wantedBy = ["multi-user.target"];
-    after = ["cococoir-zfs-datasets.service"];
-    requires = ["cococoir-zfs-datasets.service"];
+    after = ["cococoir-btrfs-subvolumes.service"];
+    requires = ["cococoir-btrfs-subvolumes.service"];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
