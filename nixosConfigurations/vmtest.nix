@@ -49,18 +49,6 @@
   # 0400 at /run/secrets/<name>. We keep explicit wiring here
   # because vmtest does NOT use sops-nix.
 
-  # Build-time empty disk images for the ZFS pool (2 × 2 GiB).
-  # The VM's root is on /dev/vda (ext4); these appear as
-  # /dev/vdb and /dev/vdc (virtio drives in order).
-  zfsVirtualDisks =
-    pkgs.runCommand "vmtest-zfs-disks" {
-      nativeBuildInputs = [ pkgs.qemu ];
-    } ''
-      mkdir -p $out
-      qemu-img create -f raw "$out/disk1.img" 2G >/dev/null
-      qemu-img create -f raw "$out/disk2.img" 2G >/dev/null
-    '';
-
   # Build-time Dex secrets: OIDC client secret for Jellyfin
   # and a bcrypt password hash for the test admin user.
   # Dex's replace-secret reads the client secret file at
@@ -294,11 +282,7 @@ in {
   # nixpkgs qemu-vm disk is 1024MB, which leaves /var with ~887MB
   # free — not enough. Bump the disk to give /var room.
   virtualisation.diskSize = 10240; # 10 GiB, in MB
-
-  virtualisation.qemu.options = [
-    "-drive file=${zfsVirtualDisks}/disk1.img,format=raw,if=virtio"
-    "-drive file=${zfsVirtualDisks}/disk2.img,format=raw,if=virtio"
-  ];
+  virtualisation.emptyDiskImages = [2048 2048]; # 2 × 2 GiB for ZFS mirror
 
   # Pre-seed the ZFS dataset with a test file. The oneshot waits
   # for cococoir-zfs-datasets.service before writing.

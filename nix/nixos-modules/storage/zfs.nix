@@ -11,23 +11,27 @@
 # ZFS pool with per-service datasets, each with an optional quota.
 # restic encrypted offsite backups to follow in a later change.
 #
-# Pool lifecycle:
-#   1. First boot: boot.zfs.extraPools attempts import (fails
-#      silently — pool doesn't exist yet). cococoir-zfs-pool-create
-#      runs after udev settles, creates the pool, imports it.
-#   2. Subsequent boots: boot.zfs.extraPools imports the pool from
-#      disk. cococoir-zfs-pool-create is a no-op (pool exists).
+# Pool lifecycle (disko integration):
+#   1. disko creates the ZFS pool in the initrd on first boot
+#      (format mode). Idempotent — skips if pool already exists.
+#   2. boot.zfs.extraPools imports the pool on every boot.
+#   3. cococoir-zfs-datasets creates per-service ZFS datasets
+#      idempotently after multi-user.target.
+#   4. Services use RequiresMountsFor= on their mountpoints.
 #
-# Datasets are created idempotently by cococoir-zfs-datasets.
-# Services use RequiresMountsFor= on their mountpoints.
+# Disko owns the disk→pool translation (partitioning, ashift,
+# vdev layout). This module owns the application layer: dataset
+# auto-declarations from service modules, contract assertions,
+# hostId, auto-scrub.
 { config,
   lib,
   pkgs,
+  options,
   ...
 }:
 let
-  inherit (lib) mkOption mkEnableOption types optionalString concatStringsSep
-    concatMapStringsSep mapAttrsToList escapeShellArg;
+  inherit (lib) mkOption types optionalString concatMapStringsSep
+    mapAttrsToList escapeShellArg imap1 optionalAttrs;
 
   cfg = config.cococoir.storage;
   poolName = cfg.zfs.pool.name;
@@ -42,29 +46,12 @@ let
     recordsize = ds.recordsize;
   }) cfg.zfs.datasets;
 
-  layoutArg = if layout == "stripe" then " " else "${layout} ";
-
-  poolCreate = pkgs.writeShellScript "cococoir-zfs-pool-create" ''
-    set -euo pipefail
-    if ${pkgs.zfs}/bin/zpool list -H -o name 2>/dev/null | grep -qx '${poolName}'; then
-      echo "[cococoir-zfs] pool ${poolName} already exists"
-      exit 0
-    fi
-    echo "[cococoir-zfs] creating pool ${poolName}"
-    ${pkgs.zfs}/bin/zpool create -f \
-      -o ashift=${toString ashift} \
-      -O mountpoint=none \
-      -O compression=lz4 \
-      ${poolName} \
-      ${layoutArg}${concatStringsSep " " (map escapeShellArg devices)}
-  '';
-
   datasetCreateLine = ds: ''
     if ${pkgs.zfs}/bin/zfs list -H -o name ${ds.zfsName} >/dev/null 2>&1; then
       echo "[cococoir-zfs] dataset ${ds.zfsName} exists"
     else
       echo "[cococoir-zfs] creating dataset ${ds.zfsName}"
-      ${pkgs.zfs}/bin/zfs create \
+      ${pkgs.zfs}/bin/zfs create -p \
         ${optionalString (ds.mountpoint != "") "-o mountpoint=${escapeShellArg ds.mountpoint}"} \
         ${optionalString (ds.quota != null) "-o quota=${escapeShellArg ds.quota}"} \
         ${optionalString (ds.recordsize != null) "-o recordsize=${escapeShellArg ds.recordsize}"} \
@@ -77,7 +64,17 @@ let
     ${concatMapStringsSep "\n" datasetCreateLine datasetEntries}
   '';
 
-  mountpoints = map (ds: ds.mountpoint) datasetEntries;
+  diskoDisks = builtins.listToAttrs (imap1 (i: dev: {
+    name = "zfs${toString i}";
+    value = {
+      type = "disk";
+      device = dev;
+      content = {
+        type = "zfs";
+        pool = poolName;
+      };
+    };
+  }) devices);
 in
 {
   options.cococoir.storage = {
@@ -161,58 +158,64 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = devices != [];
-        message = ''
-          cococoir.storage: zfs.pool.devices is empty.
-          Set block device paths (use /dev/disk/by-id for
-          stable identification).
-          Example:
-            cococoir.storage.zfs.pool.devices = [
-              "/dev/disk/by-id/ata-WDC_WD40EFRX-68WT0N0_WD-XXXX"
-              "/dev/disk/by-id/ata-WDC_WD40EFRX-68WT0N0_WD-YYYY"
-            ];
-        '';
-      }
-    ];
+  config = lib.mkMerge [
+    (lib.mkIf cfg.enable {
+      assertions = [
+        {
+          assertion = devices != [];
+          message = ''
+            cococoir.storage: zfs.pool.devices is empty.
+            Set block device paths (use /dev/disk/by-id for
+            stable identification).
+            Example:
+              cococoir.storage.zfs.pool.devices = [
+                "/dev/disk/by-id/ata-WDC_WD40EFRX-68WT0N0_WD-XXXX"
+                "/dev/disk/by-id/ata-WDC_WD40EFRX-68WT0N0_WD-YYYY"
+              ];
+          '';
+        }
+      ];
 
-    boot.supportedFilesystems = ["zfs"];
-    boot.zfs.extraPools = [poolName];
+      boot.initrd.systemd.enable = true;
+      boot.supportedFilesystems = ["zfs"];
+      boot.zfs.extraPools = [poolName];
+      boot.zfs.forceImportRoot = false;
 
-    networking.hostId = lib.mkDefault
-      (builtins.substring 0 8 (builtins.hashString "sha256" config.networking.hostName));
+      networking.hostId = lib.mkDefault
+        (builtins.substring 0 8 (builtins.hashString "sha256" config.networking.hostName));
 
-    services.zfs.autoScrub.enable = true;
+      services.zfs.autoScrub.enable = true;
 
-    environment.systemPackages = [pkgs.zfs];
+      environment.systemPackages = [pkgs.zfs];
 
-    systemd.services.cococoir-zfs-pool-create = {
-      description = "cococoir ZFS pool creation (idempotent)";
-      wantedBy = ["multi-user.target"];
-      after = ["systemd-udev-settle.service"];
-      wants = ["systemd-udev-settle.service"];
-      before = ["cococoir-zfs-datasets.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = poolCreate;
+      systemd.services.cococoir-zfs-datasets = {
+        description = "cococoir ZFS dataset creation (idempotent)";
+        wantedBy = ["multi-user.target"];
+        after = ["zfs-import.target"];
+        wants = ["zfs-import.target"];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = datasetCreate;
+        };
+        path = [pkgs.zfs pkgs.coreutils];
       };
-      path = [pkgs.zfs pkgs.gnugrep pkgs.coreutils];
-    };
+    })
 
-    systemd.services.cococoir-zfs-datasets = {
-      description = "cococoir ZFS dataset creation (idempotent)";
-      wantedBy = ["multi-user.target"];
-      after = ["cococoir-zfs-pool-create.service"];
-      requires = ["cococoir-zfs-pool-create.service"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = datasetCreate;
+    (lib.optionalAttrs (options ? disko) {
+      disko.devices = lib.mkIf cfg.enable {
+        disk = diskoDisks;
+        zpool.${poolName} = {
+          type = "zpool";
+          options.ashift = toString ashift;
+          rootFsOptions = {
+            mountpoint = "none";
+            compression = "lz4";
+          };
+        } // optionalAttrs (layout != "stripe") {
+          mode = layout;
+        };
       };
-      path = [pkgs.zfs pkgs.coreutils];
-    };
-  };
+    })
+  ];
 }
