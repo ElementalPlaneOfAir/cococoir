@@ -135,6 +135,35 @@ case "$cp_code" in
 esac
 
 echo ""
+echo "─── CryptPad SSO (fresh-boot bearer secret) ───"
+# Proves SSO_AUTH_CB returns a JWT. On a broken first boot cryptpad
+# never applies the generated SET_BEARER_SECRET decree to the running
+# process, so this fails with "secretOrPrivateKey must have a value"
+# and the /ssoauth page hangs. The cococoir-cryptpad-seed-bearer
+# ExecStartPre must make it pass from the first boot.
+cp_node=$(readlink -f /proc/$(systemctl show cryptpad -p MainPID --value)/exe 2>/dev/null || echo "")
+if [ -n "$cp_node" ] && timeout 90 "$cp_node" /tmp/ssoauth-probe.js >/dev/null 2>&1; then
+  pass "cryptpad SSO_AUTH_CB" "JWT"
+else
+  fail "cryptpad SSO_AUTH_CB" "no JWT"
+fi
+
+echo ""
+echo "─── Storage writability (service owns its subvolume) ───"
+# Subvolumes created root:root 0755 are read-only to the service's
+# runtime user; any service that persists data breaks (cryptpad SSO
+# hung on mkdir EACCES; jellyfin could not init metadata). The btrfs
+# module chowns subvolumes to the declaring service's owner.
+for pair in "cococoir-cryptpad:/data/cryptpad/data" "jellyfin:/data/jellyfin/metadata"; do
+  user="${pair%%:*}"; path="${pair#*:}"
+  if runuser -u "$user" -- sh -c "touch '$path/.cococoir-write-test' && rm '$path/.cococoir-write-test'" 2>/dev/null; then
+    pass "$user -> $path" "writable"
+  else
+    fail "$user -> $path" "EACCES"
+  fi
+done
+
+echo ""
 echo "─── Dex test user (admin@example.com / password) ───"
 TOKEN=$(curl -sk -X POST https://auth.vmtest.local/dex/token \
   -H 'Authorization: Basic dm10ZXN0LWNsaTo=' \
@@ -174,5 +203,8 @@ ENDOFSCRIPT
 
 "${SPASS[@]}" scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   "$VMSH" root@localhost:/tmp/vmtest-bootstrap.sh 2>/dev/null
+
+"${SPASS[@]}" scp -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  "$(dirname "$0")/ssoauth-probe.js" root@localhost:/tmp/ssoauth-probe.js 2>/dev/null
 
 "${SPASS[@]}" "${SSH[@]}" 'bash /tmp/vmtest-bootstrap.sh' 2>&1

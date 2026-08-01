@@ -49,13 +49,20 @@ mkIf oidcEnabled {
         DST="/var/lib/cococoir/cryptpad-config.js"
         mkdir -p "$(dirname "$DST")"
         cp ${builtins.toFile "cryptpad_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings}")} "$DST" || exit 1
+        cp ${builtins.toFile "cryptpad_sso_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings.sso}")} "/var/lib/cococoir/cryptpad-sso-config.js" || exit 1
         SECRET="$(${pkgs.coreutils}/bin/cat "${secretFile}")"
         ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "$DST" || exit 1
+        ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "/var/lib/cococoir/cryptpad-sso-config.js" || exit 1
         if ${pkgs.gnugrep}/bin/grep -q '@CRYPTPAD_SSO_SECRET@' "$DST"; then
           echo "cococoir-cryptpad-oidc: unreplaced placeholder in $DST" >&2
           exit 1
         fi
+        if ${pkgs.gnugrep}/bin/grep -q '@CRYPTPAD_SSO_SECRET@' "/var/lib/cococoir/cryptpad-sso-config.js"; then
+          echo "cococoir-cryptpad-oidc: unreplaced placeholder in cryptpad-sso-config.js" >&2
+          exit 1
+        fi
         chmod 0444 "$DST"
+        chmod 0444 "/var/lib/cococoir/cryptpad-sso-config.js"
       '';
     };
   };
@@ -69,7 +76,7 @@ mkIf oidcEnabled {
     {
       id = "cryptpad";
       name = "CryptPad";
-      redirectURIs = [ "https://${cp.domain}/oauth2/callback" ];
+      redirectURIs = [ "https://${cp.domain}/ssoauth" ];
       secretFile = secretFile;
     }
   ];
@@ -79,9 +86,11 @@ mkIf oidcEnabled {
     serviceConfig = {
       Environment = lib.mkAfter [
         "CRYPTPAD_CONFIG=/var/lib/cococoir/cryptpad-config.js"
+        "CRYPTPAD_SSO_CONFIG=/var/lib/cococoir/cryptpad-sso-config.js"
       ];
       BindReadOnlyPaths = lib.mkAfter [
         "/var/lib/cococoir/cryptpad-config.js"
+        "/var/lib/cococoir/cryptpad-sso-config.js"
       ];
     };
   };
