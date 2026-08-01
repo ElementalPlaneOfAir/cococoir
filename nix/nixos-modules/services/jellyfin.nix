@@ -69,18 +69,38 @@ mkCococoirService {
         "media-movies" = {
           mountpoint = "/data/media/movies";
           quota = "2T";
+          owner = {
+            user = "jellyfin";
+            group = "jellyfin";
+            mode = "770";
+          };
         };
         "media-shows" = {
           mountpoint = "/data/media/shows";
           quota = "2T";
+          owner = {
+            user = "jellyfin";
+            group = "jellyfin";
+            mode = "770";
+          };
         };
         "media-music" = {
           mountpoint = "/data/media/music";
           quota = "1T";
+          owner = {
+            user = "jellyfin";
+            group = "jellyfin";
+            mode = "770";
+          };
         };
         "jellyfin-metadata" = {
           mountpoint = "/data/jellyfin/metadata";
           quota = "50G";
+          owner = {
+            user = "jellyfin";
+            group = "jellyfin";
+            mode = "770";
+          };
         };
       };
 

@@ -71,6 +71,7 @@ let
   subvolumeEntries = mapAttrsToList (name: sv: {
     path = sv.mountpoint;
     quota = sv.quota;
+    owner = sv.owner;
   }) cfg.btrfs.subvolumes;
 
   subvolumeCreateLine = sv: ''
@@ -85,6 +86,12 @@ let
           ${pkgs.btrfs-progs}/bin/btrfs qgroup limit ${escapeShellArg sv.quota} ${escapeShellArg sv.path}
         ''}
       }
+    ${optionalString (sv.owner != null) ''
+      ${pkgs.coreutils}/bin/chown ${escapeShellArg (sv.owner.user + (if sv.owner.group != null then ":" + sv.owner.group else ""))} ${escapeShellArg sv.path}
+      ${optionalString (sv.owner.mode != null) ''
+        ${pkgs.coreutils}/bin/chmod ${escapeShellArg sv.owner.mode} ${escapeShellArg sv.path}
+      ''}
+    ''}
   '';
 
   subvolumeCreate = pkgs.writeShellScript "cococoir-btrfs-subvolume-create" ''
@@ -162,6 +169,36 @@ in
               default = null;
               example = "2T";
               description = "btrfs qgroup size limit. null = unlimited.";
+            };
+
+            owner = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  user = mkOption {
+                    type = types.str;
+                    description = "System user that owns the subvolume (the service's runtime user).";
+                  };
+                  group = mkOption {
+                    type = types.nullOr types.str;
+                    default = null;
+                    description = "Owning group. Defaults to the user's primary group when null.";
+                  };
+                  mode = mkOption {
+                    type = types.nullOr types.str;
+                    default = null;
+                    example = "770";
+                    description = "Permission bits applied at creation. null = leave btrfs default.";
+                  };
+                };
+              });
+              default = null;
+              description = ''
+                Ownership applied to the subvolume at creation (and on
+                every boot, so existing pools converge). Services that
+                write data must own their subvolume; subvolumes created
+                root:root 0755 are read-only to the service's runtime
+                user, which breaks any service that persists data.
+              '';
             };
           };
         });
