@@ -541,6 +541,11 @@ verifies it. "Done" = shipped, tested, committed.
 - **v2.otel**: OTEL SDK wiring (in-memory exporter).
 - **v2.dashboard**: Embedded HTML/JS dashboard serving probe +
   log data.
+- **v2.cryptpad-password**: Decide the CryptPad SSO password default.
+  `settings.sso.cpPassword = false` today, so the "Add a CryptPad
+  password" form is skipped and account keys are admin-readable.
+  `cpPassword = true` lets each user set one (skip → admin-readable
+  keys). Pick the v2 default and expose/verify the form flow.
 - **v2.sops**: `nix run .#init` + `nix run .#add-secret` helpers.
 - **v2.gate**: 1-VM nixosTest combining storage + services + OIDC.
 - **v2.arr**: qBittorrent + Jellyseerr (shared media volume).
