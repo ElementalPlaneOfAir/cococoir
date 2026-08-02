@@ -16,7 +16,11 @@ mkIf oidcEnabled {
   services.cryptpad.settings.sso = {
     enabled = true;
     enforced = true;
-    cpPassword = false;
+    # Users may set a personal encryption password at registration or
+    # later via Settings → Account → Own your drive. Without one the
+    # drive key is derived from the seed alone, which the server
+    # stores — so the admin can recover any password-less drive.
+    cpPassword = true;
     forceCpPassword = false;
     list = [
       {

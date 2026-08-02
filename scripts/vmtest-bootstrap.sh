@@ -149,6 +149,20 @@ else
 fi
 
 echo ""
+echo "─── CryptPad SSO encryption-password config ───"
+# The browser reads /api/config; sso.password 0/1/2 → registration
+# shows no/optional/forced CryptPad password form. If the oidc
+# integration drops cpPassword, users can't opt into a drive key the
+# admin can't read. Assert the served value is optional (1).
+served=$(curl -sk https://cryptpad.vmtest.local/api/config 2>/dev/null || echo "")
+served_pw=$(printf '%s' "$served" | grep -o '"password":[0-9]' | head -1)
+if printf '%s' "$served_pw" | grep -q '"password":1'; then
+  pass "cryptpad sso.password" "optional (1)"
+else
+  fail "cryptpad sso.password" "${served_pw:-missing}"
+fi
+
+echo ""
 echo "─── Storage writability (service owns its subvolume) ───"
 # Subvolumes created root:root 0755 are read-only to the service's
 # runtime user; any service that persists data breaks (cryptpad SSO

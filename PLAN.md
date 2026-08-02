@@ -542,10 +542,12 @@ verifies it. "Done" = shipped, tested, committed.
 - **v2.dashboard**: Embedded HTML/JS dashboard serving probe +
   log data.
 - **v2.cryptpad-password**: Decide the CryptPad SSO password default.
-  `settings.sso.cpPassword = false` today, so the "Add a CryptPad
-  password" form is skipped and account keys are admin-readable.
-  `cpPassword = true` lets each user set one (skip → admin-readable
-  keys). Pick the v2 default and expose/verify the form flow.
+  `settings.sso.cpPassword = true` now — users may set a personal
+  encryption password at registration or later via Settings → Account
+  → Own your drive (skip → admin-readable keys). Decided: **optional
+  (`cpPassword=true`, not forced)** so forgotten passwords never lock
+  the admin out of recoverable data. Verified via vmtest-bootstrap
+  (served `sso.password` == 1).
 - **v2.sops**: `nix run .#init` + `nix run .#add-secret` helpers.
 - **v2.gate**: 1-VM nixosTest combining storage + services + OIDC.
 - **v2.arr**: qBittorrent + Jellyseerr (shared media volume).

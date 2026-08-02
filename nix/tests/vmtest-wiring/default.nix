@@ -55,6 +55,8 @@ assert lib.assertMsg (cpSso.enabled or false)
   "vmtest-wiring: cryptpad SSO is not enabled — the cryptpad-oidc integration was dropped";
 assert lib.assertMsg (cpSso.enforced or false)
   "vmtest-wiring: cryptpad SSO is not enforced — local password login would be allowed";
+assert lib.assertMsg (cpSso.cpPassword or false)
+  "vmtest-wiring: cryptpad SSO has cpPassword disabled — users could not set an encryption password at registration";
 assert lib.assertMsg (dexProvider != null)
   "vmtest-wiring: cryptpad SSO provider list has no 'dex' entry — OIDC provider not wired";
 assert lib.assertMsg (dexProvider != null && dexProvider.client_id == "cryptpad")
