@@ -6,10 +6,11 @@ building, in what order, against what gate. Older plans live in
 
 ## Product
 
-A home server in a box. NixOS + Garage (S3) + a small catalog of
-services (Jellyfin, Nextcloud, Cryptpad, qBittorrent, …) + WireGuard
-remote access (later) + sops-nix for secrets. See `BUISNESS-PLAN.md`
-for the customer-facing rationale and the unit economics.
+A home server in a box. NixOS + a small catalog of services
+(Jellyfin, Nextcloud, Cryptpad, qBittorrent, …) + WireGuard remote
+access (later) + btrfs storage + sops-nix for secrets. See
+`BUISNESS-PLAN.md` for the customer-facing rationale and the unit
+economics.
 
 The product target is the residential customer. The technical debt
 problem we're solving: traditional homelab setups fail non-technical
@@ -27,7 +28,7 @@ customer-facing scope, not internal implementation order.
 |---------|-----------|--------|------|
 | **v0** | L4 forwarder (`cococoir-edge` + `cococoir-client` Go binaries, NixOS modules, health endpoint, bbolt store) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
 | **v1** | Legacy home server (clan-core, Garage, FUSE mounts, services, rathole tunnel) at `v1/` | Frozen — soft deprecated. Features port to v2; no new development. | (n/a) |
-| **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, ZFS storage, 7 services with Dex OIDC) | Target | 1-VM nixosTest (Jellyfin + dex + cryptpad + storage + sops) |
+| **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, btrfs storage, 7 services with Dex OIDC) | Target | `scripts/vmtest-e2e.sh` PASS (Jellyfin + dex + cryptpad + btrfs + sops) |
 | **v3** | Control plane (Postgres + auto-provisioning + web UI, multi-tenant) | Deferred. Trigger: 10-20 customers. | (n/a yet) |
 | **v4** | Cluster expansion (multiple VPSes, each holding a slice of customers) | Deferred. Trigger: 50-100 customers or geographic need. | (n/a yet) |
 
@@ -91,8 +92,8 @@ OTEL observability.
 - **Single-machine deployment.** No remote access in v2 — that's
   v3. The forwarder is in the binary but does nothing until a
   WireGuard peer is configured (later).
-- **ZFS-based local storage with encrypted offsite backups.**
-  Two drives in a ZFS mirror pool; datasets per service with
+- **btrfs-based local storage with encrypted offsite backups.**
+  Two drives in a btrfs RAID1 pool; subvolumes per service with
   quotas. Restic pushes encrypted snapshots to the hosted infra
   (the customer's data stays encrypted at rest offsite). No FUSE,
   no S3 API at the service layer — apps get real filesystems.
@@ -107,32 +108,26 @@ OTEL observability.
 
 ### Components
 
-#### Storage (NixOS module at `nix/nixos-modules/storage/garage.nix`, to be rewritten)
+#### Storage (NixOS module at `nix/nixos-modules/storage/btrfs.nix`)
 
-The current implementation uses single-node Garage + geesefs FUSE
-mounts for S3-compatible storage per service. This is a v4 placeholder —
-single-node Garage provides no HDD-failure resilience (replication
-requires 3 nodes) and the FUSE layer adds I/O overhead for services
-that want filesystems, not S3.
+v2 storage is **btrfs + restic** (see ADR-023):
 
-The v2 target is **ZFS + restic** (see ADR-020):
-
-- **ZFS mirror pool** across two drives. HDD failure → data survives
-  on the surviving drive.
-- **ZFS datasets** per service (e.g. `tank/media`, `tank/documents`,
-  `tank/config`). Each gets a quota. Services mount these directly —
-  no FUSE, no S3 translation layer.
+- **btrfs RAID1 pool** across two drives. HDD failure → data survives
+  (RAID1 keeps 2 copies on any 2 devices, so drives need not match
+  in size).
+- **btrfs subvolumes** per service (e.g. `tank/media/movies`,
+  `tank/cryptpad-data`). Each gets a qgroup quota. Services mount
+  these directly — no FUSE, no S3 translation layer.
+- **btrfs over ZFS**: drives can be added, removed, or replaced at
+  any time (`btrfs device add/remove/replace`); ZFS mirror pairs are
+  fixed at pool creation.
 - **Restic** (single Go binary, client-side encryption, deduplication,
   compression) runs as a systemd timer. Pushes encrypted snapshots
   to the hosted endpoint (any S3-compatible target — MinIO, Backblaze
-  B2, etc.). The hosted infra sees only encrypted blobs.
+  B2, etc. — via rclone). The hosted infra sees only encrypted blobs.
 - **Cold spare**: a second machine runs restic server (or just SSH)
   for local resilience. Machine A dies → restic restore on B, rebuild
   from flake, <10 minutes recovery.
-
-The Garage module stays in-tree as a v4 dependency but is demoted
-from v2 requirement. Multi-machine scaling uses Garage's replication
-when it's actually needed (50+ customers).
 
 #### Services (NixOS modules at `nix/nixos-modules/services/`)
 
@@ -148,17 +143,18 @@ The contract is enforced by code (ADR-020), not convention —
 
 The contract adapts per service class:
 - **Metadata-only services** (radarr, sonarr, lidarr, prowlarr):
-  3 options — no bucket/mount needed. `defaultHealthPath = "/ping"`.
-- **Data services** (jellyfin, cryptpad): 4 options — bucket +
-  FUSE mount (currently via Garage; future via ZFS dataset).
-- **Infra services** (dex): 3 options — no bucket, no health path
+  3 options — no storage needed. `defaultHealthPath = "/ping"`.
+- **Data services** (jellyfin, cryptpad): standard options + the
+  factory auto-declares the service's btrfs subvolumes (quota +
+  owner set in the module, not by the customer).
+- **Infra services** (dex): 3 options — no storage, no health path
   (dex exposes its own /.well-known/openid-configuration).
 
 ##### Existing services (7, all built on the factory)
 
-| Service | Port | Health | Bucket | OIDC-integrated |
-|---------|------|--------|--------|-----------------|
-| jellyfin | 8096 | /health | media | Yes (via jellarr + jellyfin-oidc) |
+| Service | Port | Health | Subvolume | OIDC-integrated |
+|---------|------|--------|-----------|-----------------|
+| jellyfin | 8096 | /health | media (movies/shows/music) + metadata | Yes (via jellarr + jellyfin-oidc) |
 | cryptpad | 3000 | /checkup/ | cryptpad-data | Yes (via cryptpad-oidc) |
 | radarr | 7878 | /ping | — | — |
 | sonarr | 8989 | /ping | — | — |
@@ -195,8 +191,7 @@ exists.
 
 ##### Planned services
 
-- **Nextcloud** (v2.3): native S3 (when Garage is kept) or direct
-  filesystem storage. OIDC via Dex.
+- **Nextcloud** (v2.3): btrfs subvolume storage. OIDC via Dex.
 - **qBittorrent** (v2.13): shared `media` volume.
 - **Jellyseerr** (v2.13): request management, OIDC via Dex.
 
@@ -249,9 +244,10 @@ binary serves the dashboard at `:9090/` and the JSON endpoints at
 Two `nix run` commands at the flake root:
 
 - `nix run .#init` — generates an age keypair if missing, creates
-  an encrypted `secrets.yaml` template with placeholders for the
-  Garage RPC secret, admin token, metrics token, S3 access key id,
-  and S3 secret access key, prints the public key for committing
+  an encrypted `secrets.yaml` template with random values for every
+  key in the secret inventory (`jellarr-api-key`,
+  `jellyfin-admin-password`; see `nix/nixos-modules/secrets.nix`),
+  prints the public key for committing
   to `.sops.yaml`, and tells the user to commit and rebuild.
 - `nix run .#add-secret <name>` — prompts for a single secret
   value, encrypts it, and adds it to the encrypted file.
@@ -260,34 +256,32 @@ Both run the standard `sops` CLI with the user's age key. The
 flake provides the right command-line flags for the encrypted
 file's path and key.
 
-#### 1-VM nixosTest (the v2 gate)
+#### vmtest-e2e (the v2 gate)
 
-`nix/tests/storage/default.nix`. Single NixOS VM. Asserts:
+`scripts/vmtest-e2e.sh`. Nukes `vmtest.qcow2`, rebuilds the
+`vmtest` nixosConfiguration (`nixosConfigurations/vmtest.nix`:
+Jellyfin + dex + cryptpad + btrfs + sops), boots headless, and
+runs the assertion suite (`scripts/vmtest-bootstrap.sh`):
 
-1. **Storage**: Garage is up (admin API on `:3903` responds), the
-   `media` bucket exists (`garage bucket info media` succeeds), the
-   FUSE mount at `/media/entertain` is writable (touch + read
-   round-trip), the S3 access key works (PUT/GET a small object
-   via `mc` or the AWS CLI).
-2. **Secrets**: a sops-nix encrypted secret is decrypted at
-   activation, the file lands at the right path with the right
-   permissions.
-3. **Reproducibility**: rebuild twice, same bucket list, same
-   permissions, same FUSE mounts.
+1. **Boot**: the btrfs pool + subvolumes are created, each service
+   subvolume is writable by its owner, all services are active,
+   jellarr applied its config (the Jellyfin login page renders
+   "Sign in with Dex").
+2. **Auth**: Dex OIDC discovery responds; CryptPad SSO `/ssoauth`
+   returns a JWT.
+3. **Secrets**: build-time-generated secrets land at the right
+   paths with the right permissions.
 
-The test is hermetic: it generates its own age keypair, encrypts
-test secrets, embeds them in the VM. No external network calls.
-
-When the v2 product grows (cococoir-client extensions, service
-modules, dashboard), the test grows alongside it. The 1-VM test
-is the **v2 gate** — the thing that has to pass for v2 to ship.
+The test is hermetic: it generates its own secrets and uses two
+virtual disks for the pool. No external network calls. This is the
+**v2 gate** — the thing that has to pass for v2 to ship.
 
 ### Architecture rules
 
 These are the rules v2 enforces. They are non-negotiable.
 
 - **L4 forwarder has no service knowledge.** The forwarder reads
-  `forwards = [...]` from config; it does not know about Garage,
+  `forwards = [...]` from config; it does not know about storage,
   S3, or any service. If you find yourself adding service logic to
   the forwarder, write a test for the prober/journald/dashboard
   instead.
@@ -313,9 +307,10 @@ These are the rules v2 enforces. They are non-negotiable.
   (enable / domain / public), the Caddy vhost, and the standard assertions.
   Adding a 5th option requires careful justification; the factory provides
   `extraConfig` for per-service additions without breaking the contract. See ADR-020.
-- **Native filesystem > S3 > FUSE.** Services get ZFS datasets (real filesystems)
-  as their data directories. S3 (Garage) is a v4 cluster concern. FUSE is the
-  fallback for services that need a specific path shape, not a v2 design goal.
+- **Native filesystem > S3 > FUSE.** Services get btrfs subvolumes
+  (real filesystems) as their data directories. S3 is a v4 cluster
+  concern. FUSE is the fallback for services that need a specific
+  path shape, not a v2 design goal.
 
 ## v3 — Control plane (deferred)
 
@@ -375,14 +370,14 @@ revisited.
 - **ADR-005: Native filesystem > S3 > FUSE — superseded by ADR-023.**
   Originally: services with a native S3 backend (Nextcloud) use S3;
   FUSE-mounting a bucket is the fallback. *Superseded by ADR-023
-  for v2: ZFS datasets (native filesystems) are the primary storage;
-  S3 (Garage) is a v4 cluster concern; FUSE is last resort.*
+  for v2: btrfs subvolumes (native filesystems) are the primary
+  storage; S3 is a v4 cluster concern; FUSE is last resort.*
 - **ADR-006: TLS keys never leave the box.** Caddy on the customer
   box owns TLS. The forwarder is L4 and never decrypts. The
   customer's x25519 keys only exist on their local device.
 - **ADR-007: L4 forwarder has no service knowledge.** The
   forwarder reads `forwards = [...]` from config. It does not
-  know about Garage, S3, or any service. Service logic lives in
+  know about storage, S3, or any service. Service logic lives in
   the prober/journald/dashboard extensions of `cococoir-client`.
 - **ADR-008: Prober / journald / dashboard live in cococoir-client.**
   One binary, three internal packages. They share the JSON
@@ -460,22 +455,28 @@ revisited.
   composition — catches the regression class where mkForce or
   optionalAttrs on config silently drops the integration. All three
   run as pure eval checks (L1); all three gate `nix flake check`.
-- **ADR-023: ZFS + restic replaces Garage+FUSE for v2 storage.**
+- **ADR-023: btrfs + restic replaces Garage+FUSE for v2 storage.**
   v2's single-node deployment cannot benefit from Garage's
-  3-node replication. ZFS mirror provides HDD-failure resilience
-  without cluster complexity; ZFS datasets give each service a
-  quota'd virtual filesystem without FUSE overhead; restic provides
-  client-side-encrypted offsite backups to the hosted infrastructure.
+  3-node replication. A btrfs RAID1 pool provides HDD-failure
+  resilience without cluster complexity; btrfs subvolumes give each
+  service a quota'd virtual filesystem without FUSE overhead;
+  restic provides client-side-encrypted offsite backups to the
+  hosted infrastructure.
+  btrfs over ZFS: drives can be added, removed, or replaced at any
+  time (`btrfs device add/remove/replace`) and mixed drive sizes
+  work (RAID1 keeps 2 copies on any 2 devices, not fixed mirror
+  pairs), so growing storage is a hot operation instead of a pool
+  rebuild.
   Garage was deleted entirely (v1 retained in archive/); resurrect
   from git history for v4 multi-machine support if needed.
-  Rejected: Btrfs RAID1 (less mature on NixOS,
-  ZFS datasets + snapshots map better to cococoir's service-per-dataset
-  model); single-drive + cloud-only backup (fails the "survive HDD
-  failure locally" requirement); distributed fs (Ceph/Gluster —
-  far too heavy for a single ARM board).
-  *Implemented 2026-07-30: `storage/zfs.nix` — pool creation,
-  dataset management, service auto-declaration, auto-scrub,
-  hostId derivation. `nix flake check --no-build` PASS.*
+  Rejected: ZFS (fixed mirror pairs; drive add/remove requires
+  pool-level surgery), single-drive + cloud-only backup (fails the
+  "survive HDD failure locally" requirement), distributed fs
+  (Ceph/Gluster — far too heavy for a single ARM board).
+  *Implemented 2026-07-31: `storage/btrfs.nix` — pool creation
+  (idempotent oneshot), subvolume management with quota + owner,
+  service auto-declaration, auto-scrub, zstd compression.
+  Fresh-boot verified 2026-07-31 + 2026-08-01.*
 
 ## Implementation backlog
 
@@ -506,8 +507,8 @@ verifies it. "Done" = shipped, tested, committed.
   (jellarr + OIDC RBAC plugin) auto-activates when jellyfin + dex
   are enabled. cryptpad-oidc similarly for CryptPad SSO.
   `vmtest-wiring` L1 check asserts OIDC survives module composition.
-- **Storage**: Garage + geesefs (single-node); tests pass but this
-  is a v4 placeholder. v2 target is ZFS + restic (see ADR-023).
+- **Storage**: btrfs pool + subvolumes (see ADR-023), verified on
+  fresh boots 2026-07-31 + 2026-08-01.
 - **L1 test infrastructure**: `contract-conformance` (factory usage),
   `doc-refs` (doc path validity + ADR cross-check),
   `vmtest-wiring` (OIDC integration presence in rendered config).
@@ -524,15 +525,16 @@ verifies it. "Done" = shipped, tested, committed.
 
 **Remaining v2 work (ordered):**
 - **v2.p0**: Fix P0 jellarr boot bug. Gate: `vmtest-e2e.sh` PASS.
-- **v2.storage** (done 2026-07-30): ZFS pool + dataset management
-  replaces Garage+FUSE. Garage files, FUSE services, and 5 S3
-  secrets deleted. New `storage/zfs.nix` creates pool via
-  idempotent oneshot; services auto-declare ZFS datasets with
-  quotas. `nix flake check --no-build` PASS; L2 e2e still blocked
-  by P0 jellarr.
+- **v2.storage** (done 2026-07-31): btrfs pool + subvolume
+  management replaces Garage+FUSE. Garage files, FUSE services,
+  and 5 S3 secrets deleted; the earlier ZFS attempt was replaced
+  by btrfs for hot drive add/remove. New `storage/btrfs.nix`
+  creates the pool via idempotent oneshot; services auto-declare
+  subvolumes with quotas + owners. Fresh-boot verified 2026-07-31
+  + 2026-08-01; L2 e2e still blocked by P0 jellarr.
 - **v2.restic**: restic encrypted offsite backup. rclone backend
-  (S3/B2/rsync), password from secrets, timer on ZFS datasets.
-- **v2.nextcloud**: Nextcloud service module with ZFS dataset
+  (S3/B2/rsync), password from secrets, timer on btrfs subvolumes.
+- **v2.nextcloud**: Nextcloud service module with btrfs subvolume
   storage + OIDC via Dex.
 - **v2.probe**: `cococoir-client internal/probe` — HTTP GET
   prober reading services list from config, emitting OTEL spans.

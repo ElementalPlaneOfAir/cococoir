@@ -1,7 +1,7 @@
 # Cococoir
 
-A home server in a box. NixOS + Garage (S3) + a small catalog of
-services, shipped as a complete product to non-technical customers.
+A home server in a box. NixOS + a small catalog of services,
+shipped as a complete product to non-technical customers.
 AGPL-3.0-or-later.
 
 ## What it is
@@ -20,9 +20,9 @@ deterministic, reproducible NixOS builds.
 
 - **v0 (shipped):** Go L4 TCP/UDP forwarder (`cococoir-edge` +
   `cococoir-client`), health endpoints, bbolt store, 2-VM nixosTest.
-- **v2 (target):** Single-machine home server. Garage S3 storage,
+- **v2 (target):** Single-machine home server. btrfs storage,
   Jellyfin + Dex OIDC, Caddy reverse proxy with auto-TLS,
-  sops-nix for secrets. 1-VM nixosTest gate.
+  sops-nix for secrets. `scripts/vmtest-e2e.sh` gate.
 - **v3 (deferred):** Multi-tenant control plane (Postgres, web UI,
   auto-provisioning). Trigger: 10-20 customers.
 - **v4 (deferred):** Cluster expansion across multiple VPSes.
@@ -36,7 +36,7 @@ in place.
 | Layer | Technology | Why |
 |---|---|---|
 | OS & config | NixOS + flake-parts | Deterministic, reproducible, native performance |
-| Storage | Garage (S3-compatible) | CAP-aware, single-binary, FUSE mounts via geesefs |
+| Storage | btrfs RAID1 pool + subvolumes | Drive add/remove anytime, per-service quotas, restic backups (planned) |
 | Reverse proxy | Caddy | Auto-TLS, simple vhost config |
 | Auth | Dex | OIDC provider with static password users |
 | Secrets | sops-nix (age encryption) | Encrypted in repo, decrypted at activation |
@@ -48,13 +48,16 @@ in place.
 
 - **Time to running trumps everything.** Plug in, turn on, use. No
   dashboards, no app stores, no configuration wizards.
-- **4-option service contract.** Every service exposes exactly
-  `enable / domain / public / bucket`. Adding a 5th option is a
-  deliberate decision. See `nix/nixos-modules/services/_contract.nix`.
+- **Factory-enforced service contract.** Every service exposes
+  `enable / domain / public` (plus service-specific options) via
+  the `mkCococoirService` factory, which owns the Caddy vhost,
+  systemd wiring, and btrfs subvolume declaration. See
+  `nix/nixos-modules/services/_contract.nix`.
 - **TLS keys never leave the box.** Caddy on the customer device
   owns TLS. The forwarding layer is L4 only.
-- **Native S3 > FUSE.** Services with native S3 backends use them.
-  FUSE mounts are the fallback for services that need a filesystem.
+- **Native filesystem > S3 > FUSE.** Services get real btrfs
+  subvolumes as data directories. S3 is a cluster (v4) concern;
+  FUSE is the last-resort fallback.
 - **Nix is the source of truth.** Every machine config is a Nix
   attribute set. Never edit files on a live machine.
 - **Customer-facing config under 50 lines.** Every option the customer
@@ -76,15 +79,16 @@ cococoir/
 │   │   │   ├── jellyfin.nix   #   Jellyfin media server
 │   │   │   └── dex.nix        #   Dex OIDC provider
 │   │   ├── storage/
-│   │   │   └── garage.nix     #   Garage daemon + FUSE mounts
+│   │   │   └── btrfs.nix      #   btrfs pool + subvolumes
 │   │   ├── edge.nix           #   Go forwarder (VPS side)
 │   │   └── client.nix         #   Go forwarder (customer side)
 │   ├── packages/
 │   │   └── cocococoir/        # Go module (2 binaries)
 │   └── tests/
-│       ├── storage/           # 1-VM nixosTest (v2 gate)
 │       ├── edge/              # 2-VM nixosTest (v0 gate)
-│       └── contract-conformance/  # Factory usage check
+│       ├── contract-conformance/  # Factory usage check
+│       ├── doc-refs/          # Doc path + ADR cross-check
+│       └── vmtest-wiring/     # OIDC wiring presence check
 ├── nixosConfigurations/
 │   └── vmtest.nix             # Dev VM (all services, self-signed TLS)
 ├── v1/                        # Legacy codebase (frozen, read-only reference)
@@ -98,6 +102,7 @@ cococoir/
 
 ```bash
 nix flake check         # Run all checks (L0 go tests + L1 derivations + L2 nixosTests)
+scripts/vmtest-e2e.sh   # Nuke qcow2, rebuild, boot headless, assert fresh boot (v2 gate)
 nix run .#vmtest        # Boot the dev VM with all services
 ```
 

@@ -34,7 +34,7 @@
 #       root@localhost
 #
 # The VM is hermetic: secrets and the TLS cert are generated at
-# build time, ZFS pool runs with two virtual disks, no sops-nix,
+# build time, btrfs pool runs with two virtual disks, no sops-nix,
 # no real network. Production uses sops-nix with the user's age key and
 # a real ACME certificate (see cococoir.tls.mode = "acme").
 {
@@ -298,7 +298,7 @@ in {
         cat > /data/media/movies/welcome.txt <<'EOF'
         Hello from cococoir v2!
         This file was pre-seeded by the cococoir vmtest VM config.
-        The v2 single-machine stack (ZFS pool + Jellyfin + Caddy)
+        The v2 single-machine stack (btrfs pool + Jellyfin + Caddy)
         served it to you across the QEMU port forward.
         EOF
       '';
