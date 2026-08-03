@@ -1,39 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — consolidated Go module.
+# Cococoir v2 — consolidated Rust crate.
 #
-# One module, two binaries:
+# One crate, two binaries:
 #   bin/cococoir-edge   — VPS-side L4 forwarder
 #   bin/cococoir-client — customer-box-side L4 forwarder
 #
-# Both wrap the same internal/forwarder package. The 225-line
-# duplication of v0 is gone; per-IP binding, retry-with-backoff, and
-# graceful shutdown all live in the shared package. See PLAN_2.md
-# ADR-006 and the v0.5 PR 1 spec.
+# Both wrap the same src/lib.rs (forwarder, health, logger, app). The
+# v0 Go module (buildGoModule) was replaced by this Rust crate in the
+# rust-forwarder-port arc; the CLI flags, config JSON schema, and
+# /status contract are unchanged, so the systemd units in
+# nix/nixos-modules/{edge,client}.nix and the edge-forward nixosTest
+# need no edits.
 #
-# v0.5 added: internal/store (bbolt-backed customer records),
-# internal/logger (structured slog setup), -log-format flag in
-# both binaries. vendorHash pins the bbolt + transitive deps.
+# Cargo.lock is committed; nixpkgs vendors deps from it (cargoLock).
 {
   lib,
-  buildGoModule,
+  rustPlatform,
 }:
-let
-  version = "0.1.0";
-in
-buildGoModule {
+rustPlatform.buildRustPackage {
   pname = "cococoir";
-  inherit version;
+  version = "0.1.0";
 
   src = ./.;
 
-  vendorHash = "sha256-sZ2i3aCVufv5d2/NWb2OpM7/omEo1RmVmfOou+WyVKM=";
+  cargoLock.lockFile = ./Cargo.lock;
 
-  subPackages = [
-    "cmd/edge"
-    "cmd/client"
-  ];
-
-  # buildGoModule names binaries after each subpackage's basename
+  # buildRustPackage names binaries after each src/bin basename
   # (`edge`, `client`). Rename to `cococoir-edge` / `cococoir-client`
   # so the systemd units in nix/nixos-modules/{edge,client}.nix find
   # a single, predictable name.
@@ -42,7 +34,9 @@ buildGoModule {
     mv $out/bin/client $out/bin/cococoir-client
   '';
 
-  ldflags = [ "-s" "-w" ];
+  # Do not let buildRustPackage strip the test executable name; the
+  # lib target produces no bin of its own. Strip the two renamed bins.
+  doCheck = true;
 
   meta = with lib; {
     description = "Cococoir v2 — L4 TCP/UDP forwarder (edge and client binaries)";
