@@ -26,7 +26,7 @@ customer-facing scope, not internal implementation order.
 
 | Version | What it is | Status | Gate |
 |---------|-----------|--------|------|
-| **v0** | L4 forwarder (`cococoir-edge` + `cococoir-client` Go binaries, NixOS modules, health endpoint, bbolt store) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
+| **v0** | L4 forwarder (`cococoir-edge` + `cococoir-client` Rust binaries, NixOS modules, health endpoint) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
 | **v1** | Legacy home server (clan-core, Garage, FUSE mounts, services, rathole tunnel) at `v1/` | Frozen — soft deprecated. Features port to v2; no new development. | (n/a) |
 | **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, btrfs storage, 7 services with Dex OIDC) | Target | `scripts/vmtest-e2e.sh` PASS (Jellyfin + dex + cryptpad + btrfs + sops) |
 | **v3** | Control plane (Postgres + auto-provisioning + web UI, multi-tenant) | Deferred. Trigger: 10-20 customers. | (n/a yet) |
@@ -48,7 +48,7 @@ need to keep working — we only read it as a source of patterns.
 
 ## v0 — L4 forwarder (shipped)
 
-Two Go binaries at `nix/packages/cococoir/`:
+One Rust crate at `nix/packages/cococoir/` producing two binaries:
 
 - **`cococoir-edge`** — VPS-side L4 forwarder. Per-IP binding, retry
   with backoff on transient bind errors, graceful shutdown.
@@ -58,16 +58,17 @@ Two Go binaries at `nix/packages/cococoir/`:
   journald tailer, an OTEL SDK, and an embedded dashboard
   (those land in v2 work; v0 ships the forwarder + health endpoint).
 
-Shared packages in `nix/packages/cococoir/internal/`:
+Shared modules in `nix/packages/cococoir/src/` (ADR-024, ported from
+Go):
 
 - **`forwarder`** — TCP + UDP forwarding, retry, drain, signal
   handling. ~15 unit tests.
 - **`health`** — `/healthz` (always 200), `/readyz` (200 if any
   forward is bound), `/status` (JSON snapshot of forwarder state
-  with `Component`, `Forwards`, `TCPConns`, `UDPFlows`). ~9 tests.
-- **`logger`** — structured slog with `text` and `json` formats.
-  ~4 tests.
-- **`store`** — bbolt-backed customer record store. ~13 tests.
+  with `component`, `forwards`, `tcp_connections`, `udp_flows`).
+  ~9 tests.
+- **`logger`** — tracing-based structured logging with `text` and
+  `json` formats.
 
 The 2-VM nixosTest at `nix/tests/edge/default.nix` exercises the
 full data path (`curl → cococoir-edge :80 → WG → cococoir-client :80
@@ -195,32 +196,31 @@ exists.
 - **qBittorrent** (v2.13): shared `media` volume.
 - **Jellyseerr** (v2.13): request management, OIDC via Dex.
 
-#### cococoir-client extensions (Go)
+#### cococoir-client extensions (Rust)
 
-The `cococoir-client` binary (v0) gets three new internal
-packages:
+The `cococoir-client` binary (v0, Rust) gets three new modules:
 
-- **`internal/probe`** — HTTP GET prober, periodic (default 60s),
+- **`probe`** — HTTP GET prober, periodic (default 60s),
   one OTEL span per probe: `{name: "probe <url>", kind: CLIENT,
   attributes: {http.url, http.status_code, http.method}, status:
   OK/ERROR, duration: <measured>}`. Reads `services` list from the
   cococoir config.
-- **`internal/journald`** — tails `systemd` journal for each
+- **`journald`** — tails `systemd` journal for each
   service's declared units. Emits one OTEL log record per entry:
   `{time, observed_time, severity_number, severity_text, body,
   attributes: {pid, exe, unit}}`. Reads `services.<name>.journald.units`
   from config.
-- **`internal/otel`** — wires the OTEL SDK. `tracerProvider` and
+- **`otel`** — wires the OTEL SDK. `tracerProvider` and
   `loggerProvider` configured with a custom in-memory exporter
   (capped slices for the dashboard). OTLP exporter configured but
   pointed at a non-existent endpoint for v2 (edge export is v3).
 
-The existing `internal/health` server grows three new endpoints:
+The existing `health` server grows three new endpoints:
 `/` (HTML dashboard), `/api/probes` (recent probe results as JSON),
 `/api/logs` (recent log records as JSON). The existing
 `/healthz`, `/readyz`, `/status` endpoints stay.
 
-The forwarder (`internal/forwarder`) does not change for v2. It
+The forwarder (`forwarder`) does not change for v2. It
 already supports an empty `forwards = []` config (no-op), which is
 the v2 single-machine default.
 
@@ -235,7 +235,8 @@ Three sections, vanilla HTML + JS, no framework:
 3. **Recent logs** — last 50 OTEL log records from the journald
    tailer, filtered by service unit. Time, severity, message.
 
-HTML and JS are embedded in the Go binary via `embed.FS`. The
+HTML and JS are embedded in the Rust binary via `include_str!` /
+`include_bytes!`. The
 binary serves the dashboard at `:9090/` and the JSON endpoints at
 `:9090/api/{probes,logs}`. No external dependencies. No build step.
 
@@ -315,9 +316,8 @@ These are the rules v2 enforces. They are non-negotiable.
 ## v3 — Control plane (deferred)
 
 The piece that replaces "operator edits git" with a real backend.
-Go service + Postgres + HTTP API + web UI. Reads v2's bbolt files
-as seed data. Triggered when the operator workflow gets painful at
-10-20 customers.
+Rust service + Postgres + HTTP API + web UI. Triggered when the
+operator workflow gets painful at 10-20 customers.
 
 - Customer records, subscriptions, usage, infrastructure state
 - Auto-provisions IPv4 on the VPS via Hetzner API
@@ -416,10 +416,12 @@ revisited.
   the device. The only configuration that satisfies all three is
   per-customer IPv4. v3 implements the Hetzner API client; v2
   is single-machine and skips this.
-- **ADR-017: Go service is the spine of v2.** Bounded scope: L4
-  forwarder + prober + journald tailer + OTEL SDK + embedded
-  dashboard. No control plane in Go (that's v3's separate
-  service). No service logic in Go (services are NixOS modules).
+- **ADR-017: Go service is the spine of v2 — superseded by ADR-024.**
+  Bounded scope: L4 forwarder + prober + journald tailer + OTEL SDK +
+  embedded dashboard. No control plane in Go (that's v3's separate
+  service). No service logic in Go (services are NixOS modules). *The
+  bounded-scope statement survives; only the language changed — see
+  ADR-024.*
 - **ADR-018: Config generation via `environment.etc` + `builtins.toJSON`.**
   Module `configFile` defaults to `/etc/cococoir-{edge,client}.json`.
   Operators can override with a custom path.
@@ -477,6 +479,21 @@ revisited.
   (idempotent oneshot), subvolume management with quota + owner,
   service auto-declaration, auto-scrub, zstd compression.
   Fresh-boot verified 2026-07-31 + 2026-08-01.*
+- **ADR-024: The cococoir service is Rust, not Go (supersedes
+  ADR-017's language).** The entire Go role — forwarder, edge/client
+  mains, health server, logger — is ported to a single Rust crate
+  (`nix/packages/cococoir`). The CLI flags, config JSON schema,
+  binary names, and `/status` JSON contract are unchanged, so the
+  systemd modules and the `edge-forward` L2 test needed no edits.
+  Rationale (see `writing/llm/rust-rewrite.md`): schema/type modeling
+  for the v2+v3 config-agent thesis, the LLM compile-time feedback
+  loop, and boundary strictness on untrusted telemetry input. The
+  usual justifications — memory safety, performance — are a wash and
+  were explicitly rejected. `internal/store` (bbolt, orphaned) was
+  deleted, not ported: nothing imported it, and v3's control plane
+  targets Postgres. The port is verified by the L2 `edge-forward`
+  nixosTest (`edge-forward: PASS`), which now runs against the Rust
+  binaries.
 
 ## Implementation backlog
 
@@ -486,15 +503,14 @@ verifies it. "Done" = shipped, tested, committed.
 ### v0 — L4 forwarder (done)
 
 - Forwarder: TCP+UDP, retry, drain, signal handling. **Tests:**
-  `internal/forwarder` Go unit tests (8), 2-VM nixosTest data-path.
+  `forwarder` Rust unit tests (29 total across the crate), 2-VM
+  nixosTest data-path. (Ported from Go, ADR-024.)
 - Health endpoint: `/healthz`, `/readyz`, `/status`. **Tests:**
-  `internal/health` Go unit tests (9), 2-VM nixosTest health
-  assertions.
-- Structured logging: slog, text/json formats, per-component
-  attribute. **Tests:** `internal/logger` Go unit tests (4).
-- bbolt store: `internal/store` with `Get`, `Put`, `Delete`,
-  `List`, `Customer` typed layer. **Tests:** `internal/store` Go
-  unit tests (13).
+  `health` Rust unit tests, 2-VM nixosTest health assertions.
+- Structured logging: tracing, text/json formats, per-component
+  span. **Tests:** `logger` Rust unit tests.
+- bbolt store: `internal/store` **deleted with the Go port** — it had
+  no consumers; v3's control plane targets Postgres (ADR-024).
 
 ### v2 — Home server (in progress)
 
@@ -512,7 +528,8 @@ verifies it. "Done" = shipped, tested, committed.
 - **L1 test infrastructure**: `contract-conformance` (factory usage),
   `doc-refs` (doc path validity + ADR cross-check),
   `vmtest-wiring` (OIDC integration presence in rendered config).
-- **L0**: forwarder Go unit tests (v0, shipped and unchanged).
+- **L0**: forwarder Rust unit tests (v0, shipped — 42 tests via
+  `cargo test`).
 
 **P0 — blocked:**
 
