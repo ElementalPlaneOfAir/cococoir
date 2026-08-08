@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Small HTTP `/healthz`, `/readyz`, and `/status` server.
+//! HTTP `/healthz`, `/readyz`, `/status` server + OpenAPI docs.
 //!
 //! Port of Go `internal/health/server.go`. The forwarder calls
 //! `HealthServer::new` with a status closure returning its current
@@ -13,17 +13,22 @@
 //!   `forwards[].bound == true`, else 503.
 //! - `/status` returns the status value as pretty JSON.
 //! - An empty addr disables the server: `run` returns immediately.
+//!
+//! The endpoints are `#[oai]` operations, so the OpenAPI v3 spec is
+//! derived from the code itself ("compiles ⟹ spec-correct", no doc
+//! rot). The spec is served at `/openapi.json` and a fully bundled
+//! swagger UI at `/docs` (poem-openapi embeds JS/CSS via `include_str!`,
+//! no CDN, so the box never needs network egress).
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::extract::State;
-use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
-use tokio::net::TcpListener;
-use tokio::sync::watch;
+use poem::listener::TcpAcceptor;
+use poem::{Route, Server};
+use poem_openapi::payload::{Json, PlainText};
+use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService};
 use thiserror::Error;
+use tokio::sync::watch;
 use tracing::info;
 
 /// Returns the current state of the service as JSON. Called on every
@@ -38,6 +43,69 @@ pub struct HealthServer {
     status_func: StatusFunc,
 }
 
+/// The `/readyz` response body.
+#[derive(Object)]
+struct ReadyBody {
+    ready: bool,
+}
+
+/// `/readyz` is 200 once a forward is bound, else 503.
+#[derive(ApiResponse)]
+enum ReadyResponse {
+    /// At least one forward is bound.
+    #[oai(status = "200")]
+    Ready(Json<ReadyBody>),
+    /// No forward is bound yet.
+    #[oai(status = "503")]
+    NotReady(Json<ReadyBody>),
+}
+
+/// `/status` returns the raw status value as pretty JSON. The body is
+/// built by hand (`to_string_pretty` + trailing newline) to keep the
+/// byte-exact contract; `actual_type` documents the response honestly
+/// as an arbitrary JSON object while leaving the runtime body alone.
+#[derive(ApiResponse)]
+enum StatusResponse {
+    #[oai(status = "200", actual_type = "Json<serde_json::Value>")]
+    Status(PlainText<String>),
+}
+
+/// The three endpoints, declared as OpenAPI operations.
+struct HealthApi {
+    status_func: StatusFunc,
+}
+
+#[OpenApi]
+impl HealthApi {
+    /// Liveness: 200 if the process is alive.
+    #[oai(path = "/healthz", method = "get")]
+    async fn healthz(&self) -> PlainText<&'static str> {
+        PlainText("ok\n")
+    }
+
+    /// Readiness: 200 iff at least one forward is bound.
+    #[oai(path = "/readyz", method = "get")]
+    async fn readyz(&self) -> ReadyResponse {
+        let ready = ready_from_status(&(self.status_func)());
+        if ready {
+            ReadyResponse::Ready(Json(ReadyBody { ready: true }))
+        } else {
+            ReadyResponse::NotReady(Json(ReadyBody { ready: false }))
+        }
+    }
+
+    /// Full forwarder state as pretty JSON.
+    #[oai(path = "/status", method = "get")]
+    async fn status(&self) -> StatusResponse {
+        // Pretty-printed with 2-space indent + trailing newline to match
+        // the Go original's `json.MarshalIndent(s.statusFunc(), "", "  ")`.
+        // The L2 edge-forward nixosTest asserts on the exact spaced JSON.
+        let body = serde_json::to_string_pretty(&(self.status_func)())
+            .unwrap_or_else(|_| "{}".to_string());
+        StatusResponse::Status(PlainText(body + "\n"))
+    }
+}
+
 impl HealthServer {
     /// Returns a Server bound to `addr`. `status_func` is called on
     /// every `/readyz` and `/status` request. An empty `addr` means
@@ -46,13 +114,19 @@ impl HealthServer {
         Self { addr, status_func }
     }
 
-    /// Builds the axum router for the three endpoints.
-    fn router(&self) -> Router {
-        Router::new()
-            .route("/healthz", get(handle_healthz))
-            .route("/readyz", get(handle_readyz))
-            .route("/status", get(handle_status))
-            .with_state(self.status_func.clone())
+    /// Builds the poem route: the three health endpoints plus the
+    /// OpenAPI spec and its bundled swagger UI.
+    fn router(&self) -> Route {
+        let api = HealthApi {
+            status_func: self.status_func.clone(),
+        };
+        let service = OpenApiService::new(api, "cococoir", "0.1.0");
+        let ui = service.swagger_ui();
+        let spec = service.spec_endpoint();
+        Route::new()
+            .nest("/", service)
+            .nest("/docs", ui)
+            .nest("/openapi.json", spec)
     }
 
     /// Binds `addr` and serves until the shutdown signal fires.
@@ -65,20 +139,31 @@ impl HealthServer {
             info!("health server disabled (empty addr)");
             return Ok(());
         }
-        let ln = TcpListener::bind(&self.addr)
+        // Bind before serving so a busy addr surfaces as `Bind`, not `Serve`.
+        let listener = tokio::net::TcpListener::bind(&self.addr)
             .await
-            .map_err(|err| HealthError::Bind {
+            .map_err(|source| HealthError::Bind {
                 addr: self.addr.clone(),
-                source: err,
+                source,
             })?;
+        let acceptor = TcpAcceptor::from_tokio(listener).map_err(|source| {
+            HealthError::Bind {
+                addr: self.addr.clone(),
+                source,
+            }
+        })?;
+        let app = self.router();
         info!(addr = %self.addr, "health server listening");
-        let router = self.router();
-        axum::serve(ln, router)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown.wait_for(|v| *v).await;
-            })
+        Server::new_with_acceptor(acceptor)
+            .run_with_graceful_shutdown(
+                app,
+                async move {
+                    let _ = shutdown.wait_for(|v| *v).await;
+                },
+                Some(Duration::from_secs(5)),
+            )
             .await
-            .map_err(|err| HealthError::Serve { source: err })
+            .map_err(|source| HealthError::Serve { source })
     }
 }
 
@@ -96,38 +181,6 @@ pub enum HealthError {
         #[source]
         source: std::io::Error,
     },
-}
-
-async fn handle_healthz() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "ok\n",
-    )
-}
-
-async fn handle_readyz(State(status_func): State<StatusFunc>) -> impl IntoResponse {
-    let status = status_func();
-    let ready = ready_from_status(&status);
-    let body = Json(serde_json::json!({ "ready": ready }));
-    if ready {
-        (StatusCode::OK, body)
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, body)
-    }
-}
-
-async fn handle_status(State(status_func): State<StatusFunc>) -> impl IntoResponse {
-    // Pretty-printed with 2-space indent to match the Go original's
-    // `json.MarshalIndent(s.statusFunc(), "", "  ")`. The L2
-    // edge-forward nixosTest asserts on the exact spaced JSON.
-    let status = status_func();
-    let body = serde_json::to_string_pretty(&status).unwrap_or_else(|_| "{}".to_string());
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        body + "\n",
-    )
 }
 
 /// True iff the status value has at least one `forwards[]` entry with
@@ -148,10 +201,9 @@ fn ready_from_status(status: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
+    use poem::http::StatusCode;
+    use poem::test::TestClient;
+
     fn status_func_bound() -> StatusFunc {
         Arc::new(|| {
             serde_json::json!({
@@ -170,14 +222,11 @@ mod tests {
         })
     }
 
-    async fn get_body(router: Router, path: &str) -> (StatusCode, String) {
-        let response = router
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    async fn get_body(router: Route, path: &str) -> (StatusCode, String) {
+        let resp = TestClient::new(router).get(path).send().await;
+        let status = resp.0.status();
+        let body = resp.0.into_body().into_string().await.unwrap();
+        (status, body)
     }
 
     #[tokio::test]
@@ -221,17 +270,8 @@ mod tests {
     async fn readyz_rejects_non_get() {
         let s = HealthServer::new("".to_string(), status_func_bound());
         let router = s.router();
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/readyz")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let resp = TestClient::new(router).post("/readyz").send().await;
+        assert_eq!(resp.0.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]
