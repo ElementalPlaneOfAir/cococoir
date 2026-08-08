@@ -6,6 +6,9 @@ Session 2026-08-07: reviewed with user. Sequencing confirmed (dashboard
 first, config editor deferred, OTEL deferred but data-shape-first). T5
 journald decision made: `sdjournal` crate (see T5). Ready to implement.
 
+Session 2026-08-08: T0 (axum→poem + OpenAPI) implemented and verified
+(L0 + L1 + L2 green), committed `de0c195`. Next task: T1.
+
 ## Premise
 
 The v2 home server needs a dashboard: a customer-facing way to see, on the
@@ -81,9 +84,8 @@ customer-visible surface. Nothing else.
   explicitly deferred OTEL. The store is built to the OTEL data shape now so
   the SDK wiring is an adapter. Deferred by design.
 - **`reqwest` for the prober** — case for: familiar. Case against: heavy
-  dep for a GET. Use `tokio`'s HTTP via axum's already-present `hyper` /
-  minimal client; if that proves awkward, `reqwest` is the fallback. Decided
-  in T4.
+  dep for a GET. poem ships no HTTP client, so the choice stays open; a minimal
+  `hyper`-based GET or `reqwest` with default features off is the decision in T4.
 - **`journalctl -f -o json` subprocess for the tailer** — case for: zero
   deps, trivially testable. Case against: keeps a whole subprocess + pipe
   buffer alive for the box's lifetime (memory footprint on a constrained
@@ -100,6 +102,11 @@ customer-visible surface. Nothing else.
   and the v2 "OTEL SDK in-process, in-memory" rule with the OTEL-data-shape
   store; records a small amendment in PLAN.md that the dashboard is HTMX
   rather than vanilla JS (the "no framework" wording was about build steps).
+- **Framework: poem + poem-openapi (2026-08-08).** The health server migrates
+  from axum to poem so the whole web surface documents itself as OpenAPI v3
+  with bundled swagger UI (offline-safe). One framework for health + dashboard;
+  the swap is bounded to `health.rs` because that is the crate's only web
+  surface. See T0.
 - The store's record types mirror the OTEL spec shapes (log record with
   severity/body/attributes; span with name/kind/status/duration/attributes) so
   v3's OTLP exporter consumes them directly.
@@ -111,6 +118,36 @@ customer-visible surface. Nothing else.
   the forwarder's; empty list is a no-op.
 
 ## Tasks
+
+### T0: migrate health.rs axum → poem + OpenAPI
+**Depends on:** none
+**Verification:** `/healthz`, `/readyz`, `/status` byte-identical on the wire
+(pretty JSON with 2-space indent + trailing `\n`, content-type `application/json`);
+swagger UI serves at `:9090/docs` and the spec at `:9090/openapi.json`, both fully
+offline (poem-openapi's `swagger-ui` feature bundles JS/CSS via `include_str!`,
+no CDN — verified from source); port all 6 health tests from `tower::ServiceExt`
+to `poem::test::TestClient` unchanged in assertion; `cargo test` passes; L2
+`edge-forward` nixosTest still green (it curls the same three endpoints).
+**Files:** `nix/packages/cococoir/Cargo.toml`,
+`nix/packages/cococoir/src/health.rs`
+
+- [x] DONE 2026-08-08. `cargo test` 42/42 pass; live curl at `:19095` shows
+      `/healthz` `ok\n`, `/readyz` 200 `{"ready":true}`, `/status` byte-exact
+      pretty JSON, `/docs` serves bundled swagger UI (1.6 MB HTML, no CDN),
+      `/openapi.json` serves the v3 spec with all three paths and honest schemas
+      (`/status` → `{}` any object, `/readyz` → 200+503 typed). L2
+      `edge-forward` nixosTest ran and PASSed in `nix flake check` (boots real
+      VMs, curls all three endpoints byte-exact). `nix flake check` all green.
+      Committed as `de0c195`.
+
+**Why a framework swap:** the user has first-hand repeated pain with axum+OpenAPI
+addons (utoipa/aide); poem-openapi derives the OpenAPI v3 spec from the code
+("compiles ⟹ spec-correct", no doc rot), serves swagger UI at `/docs`, and the
+crate's entire web surface is one file (`health.rs` ~170 lines) — cheap to swap
+now, expensive later once T3–T7 pile routes on. The health endpoints become
+`#[oai]` operations; `/status`'s byte-exact body is preserved by a derived
+`ApiResponse` with `actual_type = "Json<serde_json::Value>"` (runtime header +
+body kept byte-identical, spec schema honest as an arbitrary JSON object).
 
 ### T1: allow empty `forwards` (fix PLAN-vs-code drift)
 **Depends on:** none
