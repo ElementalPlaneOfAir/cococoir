@@ -19,6 +19,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+askama = "0.16.0"
 
 [dev-dependencies]
 poem = { version = "3", features = ["test"] }
