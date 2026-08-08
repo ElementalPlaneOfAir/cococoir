@@ -1,3 +1,4 @@
+mod components;
 mod nix_config_parser;
 use poem::{
     get, handler, listener::TcpListener, web::Html, web::Path, IntoResponse, Route, Server,
