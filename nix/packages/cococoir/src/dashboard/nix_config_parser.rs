@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet};
+use std::collections::BTreeSet;
 
 struct CococoirConfig {
     hostname: String,
@@ -21,6 +21,10 @@ impl CocoUser {
         self.groups.contains(&"wheel".to_string())
     }
     fn set_admin(&mut self, admin_flag: bool) {
-        match self.groups.contains("wheel".to_string())
+        if admin_flag {
+            self.groups.insert("wheel".to_string());
+        } else {
+            self.groups.remove(&"wheel".to_string());
+        }
     }
 }

@@ -1,30 +1,25 @@
-mod components;
+pub mod components;
 mod nix_config_parser;
 use poem::{
-    get, handler, listener::TcpListener, web::Html, web::Path, IntoResponse, Route, Server,
+    get, handler,
+    http::StatusCode,
+    listener::TcpListener,
+    web::{Html, Path},
+    IntoResponse, Route, Server,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use askama::Template; // bring trait in scope
-
-#[derive(Template)] // this will generate the code...
-#[template(path = "hello.html")] // using the template in this path, relative
-struct HelloTemplate<'a> {
-    // the name of the struct can be anything
-    name: &'a str, // the field name should match the variable name
-    // in your template
-    times_loaded: usize,
-}
+use crate::dashboard::components::{IndexPage, IndexProps};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
 #[handler]
-fn hello(Path(name): Path<String>) -> Html<String> {
+fn hello(Path(name): Path<String>) -> impl IntoResponse {
     let times_loaded = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let template = HelloTemplate {
-        name: &name,
-        times_loaded,
+    let props = IndexProps {
+        count: times_loaded,
     };
-    Html(template.render().unwrap())
+    let node = IndexPage(&props);
+    Html(node.to_html()).with_status(StatusCode::OK)
 }
 pub async fn dashboard_entry() -> Result<(), std::io::Error> {
     let app = Route::new().at("/hello/:name", get(hello));

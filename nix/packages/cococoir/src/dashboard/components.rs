@@ -20,10 +20,24 @@ fn Button(props: &ButtonProps) -> Node {
     )
 }
 
-// Use it anywhere!
-let button = rsx!(
-    <Button text="Click me" variant="primary">
-        <span>"→"</span>
-    </Button>
-);
-
+#[derive(Default)]
+pub struct IndexProps {
+    pub count: usize,
+}
+// #[component]
+pub fn IndexPage(props: &IndexProps) -> Node {
+    let countstr = format!("{}", props.count);
+    rsx!(
+    <html lang="en">
+    <head>
+    <title/>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <link href="css/style.css" rel="stylesheet"/>
+    </head>
+    <body>
+    "This page has been loaded: " {countstr} " times."
+    </body>
+    </html>
+    )
+}
