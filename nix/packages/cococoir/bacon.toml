@@ -1,0 +1,11 @@
+[settings]
+default_job = "check"
+
+[jobs.check]
+command = ["cargo", "check", "--all-targets"]
+
+[jobs.dashboard]
+command = ["cargo", "run", "--bin", "dashboard"]
+
+[keybindings]
+d = "job:dashboard"

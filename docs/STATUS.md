@@ -92,3 +92,15 @@ backups.
 In-flight: HTMX dashboard arc (`.specify/specs/htmx-dashboard/proposal.md`).
 T0 done (poem + OpenAPI, commit `de0c195`); next task T1 (empty-`forwards`
 no-op, the PLAN-vs-code drift fix).
+
+HTMX dashboard scratch work (2026-08-09): htmx 2.0 via `data-hx-*`
+attributes (momenta whitelist escape hatch), `/update` POST + `bacon.toml`
+(`d` = dashboard job). Runtime storage: plain sqlite via sqlx (`sqlite`
+feature — libsql/Turso dropped, sqlx has no Turso driver and boring sqlite
+wins) at `$XDG_DATA_HOME/cococoir/dashboard.db` (file auto-created).
+Sessions (`POST /session`, `GET|DELETE /session/:token`, 24h TTL) +
+namespaced kv for misc state. Proof: `cargo test` 49/49 (db unit + poem
+endpoint tests) and live curl: session create/read/delete (201/200/204→404);
+the page-load counter survived a driver swap AND process restart
+(loaded: 3 → 4, row written by libsql read back by sqlx).
+Open: htmx SRI dropped from the CDN tag (vendoring is the clean fix).
