@@ -17,6 +17,12 @@ struct CocoUser {
 }
 
 impl CocoUser {
+    fn is_password_correct(&self, password_attempt: &str) -> bool {
+        todo!()
+    }
+    fn set_password(&mut self, new_password: &str) {
+        todo!()
+    }
     fn is_admin(&self) -> bool {
         self.groups.contains(&"wheel".to_string())
     }

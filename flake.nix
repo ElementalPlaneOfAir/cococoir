@@ -37,6 +37,18 @@
         ./nix/nixos-modules
       ];
     };
+
+    # Dashboard dev environment. Not a bootable machine — a minimal
+    # evaluation that renders only the Dex config for
+    # `apps.dashboard-dev`, which runs Dex next to a bacon-watched
+    # dashboard for the live-edit loop. See
+    # nixosConfigurations/dashboard-dev.nix.
+    dashboardDev = inputs.nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./nixosConfigurations/dashboard-dev.nix
+      ];
+    };
   in
     inputs.flake-parts.lib.mkFlake {inherit inputs;} {
       systems = [
@@ -45,6 +57,7 @@
       ];
 
       flake.nixosModules.default = nixosModulesWithJellarr;
+      flake.dashboardDev = dashboardDev;
 
       # Manual v2 dev VM: every cococoir service under test, each
       # behind its own Caddy vhost in the `vmtest.local`
@@ -56,7 +69,18 @@
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
 
-      perSystem = {pkgs, self', system, ...}: {
+      perSystem = {pkgs, self', system, ...}: let
+        # Dev Dex config: generated from the module system's own
+        # services.dex.settings with the same pkgs.formats.yaml the
+        # nixpkgs module uses, so the dev and VM renders can't drift.
+        # Uses the nixosSystem's pkgs (not flake-parts' perSystem pkgs,
+        # which come from a vendored nixpkgs fork — its `dex` is the
+        # DesktopEntry launcher, not the OIDC provider).
+        dexPkgs = dashboardDev._module.args.pkgs;
+        dexBinary = "${dexPkgs.dex-oidc}/bin/dex";
+        devDexConfig = (dexPkgs.formats.yaml { }).generate "dex.yaml"
+          dashboardDev.config.services.dex.settings;
+      in {
         checks = import ./nix/tests {
           inherit pkgs;
           sopsModule = inputs.sops-nix.nixosModules.sops;
@@ -79,6 +103,63 @@
           type = "app";
           program = toString (pkgs.writeShellScript "vmtest-run" ''
             exec nix run .#nixosConfigurations.vmtest.config.system.build.vm -- "$@"
+          '');
+        };
+        # Dashboard live-edit loop: render the dev Dex config
+        # (rebuilds only when the nix config changes), start Dex
+        # against a durable dev DB, then run bacon's dashboard job
+        # in the crate. Run from the repo root:
+        #   nix run .#dashboard-dev
+        # The dashboard crate is compiled by bacon in your checkout
+        # (the store is read-only), so edits hot-reload.
+        apps.dashboard-dev = {
+          type = "app";
+          program = toString (pkgs.writeShellScript "dashboard-dev" ''
+            set -euo pipefail
+            if [ ! -f ./nix/packages/cococoir/Cargo.toml ]; then
+              echo "dashboard-dev: run from the cococoir repo root" >&2
+              exit 1
+            fi
+
+            data_dir="''${XDG_DATA_HOME:-$HOME/.local/share}/cococoir"
+            mkdir -p "$data_dir"
+
+            # OIDC env contract for the dashboard crate. The crate
+            # consumes these once its OAuth flow lands; set now so
+            # the harness and the client registration above agree.
+            export COCOCOIR_OIDC_ISSUER=http://127.0.0.1:5556/dex
+            export COCOCOIR_OIDC_CLIENT_ID=cococoir-dashboard
+            export COCOCOIR_OIDC_CLIENT_SECRET=dev-secret
+
+            dex_pid=""
+            cleanup() {
+              [ -n "$dex_pid" ] && kill "$dex_pid" 2>/dev/null || true
+            }
+            trap 'cleanup; exit 0' EXIT INT TERM
+
+            # Dex resolves its relative DB path ("dex.db") from its
+            # own cwd; start it in the data dir so sessions survive
+            # restarts (and bacon restarts never touch it).
+            (cd "$data_dir" && exec ${dexBinary} serve ${devDexConfig}) &
+            dex_pid=$!
+
+            ready=0
+            for _ in $(seq 1 100); do
+              if curl -sf http://127.0.0.1:5556/dex/.well-known/openid-configuration >/dev/null 2>&1; then
+                ready=1
+                break
+              fi
+              sleep 0.2
+            done
+            if [ "$ready" != 1 ]; then
+              echo "dashboard-dev: dex failed to become healthy on :5556" >&2
+              exit 1
+            fi
+
+            cd ./nix/packages/cococoir
+            # bacon needs a TTY (alternate screen); `script` gives it
+            # one so both interactive and headless runs work.
+            ${dexPkgs.util-linux}/bin/script -qec "${pkgs.bacon}/bin/bacon dashboard" /dev/null
           '');
         };
       };

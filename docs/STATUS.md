@@ -104,3 +104,16 @@ endpoint tests) and live curl: session create/read/delete (201/200/204→404);
 the page-load counter survived a driver swap AND process restart
 (loaded: 3 → 4, row written by libsql read back by sqlx).
 Open: htmx SRI dropped from the CDN tag (vendoring is the clean fix).
+
+Dashboard dev environment (2026-08-10): `nix run .#dashboard-dev` starts
+a dev Dex (rendered from the *same* module system — `services.dex.settings`
+via `pkgs.formats.yaml`, so dev/VM renders can't drift; dev overrides:
+`issuer` extraOption → http://127.0.0.1:5556/dex, durable dev DB, static
+client `cococoir-dashboard` + test user dev/password) and runs bacon's
+dashboard job (pseudo-TTY via `script`, live reload on save). Proof: live
+run — dex discovery JSON at :5556, dashboard 200 at :3000, both killed
+cleanly; `dex.db` persists at `$XDG_DATA_HOME/cococoir/`. Gotchas
+discovered: flake-parts' perSystem pkgs come from a vendored nixpkgs fork
+(`dex` there is the DesktopEntry launcher, not dex-oidc; `formats` differs)
+— always pull service binaries/config renders from
+`dashboardDev._module.args.pkgs`.

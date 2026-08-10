@@ -42,12 +42,23 @@ mkCococoirService {
   defaultPort = 5556;
   defaultHealthPath = "/dex/.well-known/openid-configuration";
   conventionalSubdomain = "auth";
+  extraOptions = {
+    issuer = lib.mkOption {
+      type = lib.types.str;
+      default = "https://${config.cococoir.services.dex.domain}/dex";
+      description = ''
+        OIDC issuer URL advertised in the discovery document.
+        Defaults to the conventional https URL; dev/test configs
+        override with a localhost http URL.
+      '';
+    };
+  };
   extraConfig = {cfg, ...}: {
     services.dex = {
       enable = true;
       settings = lib.mkMerge [
         {
-          issuer = "https://${cfg.domain}/dex";
+          issuer = cfg.issuer;
           web.http = "127.0.0.1:${toString cfg.port}";
           storage.type = "sqlite3";
           storage.config.file = "/var/lib/dex/dex.db";
