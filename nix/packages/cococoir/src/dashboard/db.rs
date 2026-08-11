@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, str::FromStr, time::Duration};
 
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -48,6 +48,7 @@ struct KvRow {
 
 /// Shared handle to the dashboard database. sqlx pools connections
 /// internally, so every async handler can query concurrently.
+#[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
 }
@@ -56,7 +57,7 @@ impl Db {
     /// Open the local database file and ensure the schema exists.
     /// File lives at `$XDG_DATA_HOME/cococoir/dashboard.db`
     /// (fallback: `$HOME/.local/share/cococoir/dashboard.db`).
-    pub async fn open() -> Result<Arc<Self>, DbError> {
+    pub async fn open() -> Result<Self, DbError> {
         let path = local_db_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -67,13 +68,13 @@ impl Db {
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
         let db = Db { pool };
         db.migrate().await?;
-        Ok(Arc::new(db))
+        Ok(db)
     }
 
     /// In-memory database for tests. A single connection so all
     /// queries hit the same in-memory database.
     #[cfg(test)]
-    pub async fn open_in_memory() -> Result<Arc<Self>, DbError> {
+    pub async fn open_in_memory() -> Result<Self, DbError> {
         let options = SqliteConnectOptions::from_str("sqlite::memory:")
             .expect("memory url parses")
             .create_if_missing(true);
@@ -83,7 +84,7 @@ impl Db {
             .await?;
         let db = Db { pool };
         db.migrate().await?;
-        Ok(Arc::new(db))
+        Ok(db)
     }
 
     /// Create a session for `user_id`, returning its opaque token.

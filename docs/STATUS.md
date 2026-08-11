@@ -105,6 +105,19 @@ the page-load counter survived a driver swap AND process restart
 (loaded: 3 → 4, row written by libsql read back by sqlx).
 Open: htmx SRI dropped from the CDN tag (vendoring is the clean fix).
 
+Dashboard auth scaffold (2026-08-11): OIDC login gate for the
+dashboard. `AuthMode` enum (`Dev` vs `Oidc(AuthConfig)`), read once
+via `LazyLock`; `Db: Clone` replaced the redundant `Arc<Db>` (Db wraps
+a `SqlitePool`, itself an Arc). `/`, `/hello`, `/update`, `/session*`
+are gated; `/auth/login` → Dex authorize URL + state cookie, `/auth/
+callback` verifies state + exchanges code (exchange STUBBED — returns
+501 until openidconnect/reqwest+jsonwebtoken lands), `/auth/logout`
+deletes the session. htmx requests get 401 + `HX-Redirect`, page loads
+get 303. Proof: `cargo test` 56/56; live curl both modes — dev `/` and
+`/hello` 200; with OIDC env, `/` 303 → /auth/login, htmx 401 + `hx-redirect`.
+Security seam: the ID-token signature/iss/aud/exp check is the not-yet-
+implemented part (`exchange_code_and_verify`); do not ship without it.
+
 Dashboard dev environment (2026-08-10): `nix run .#dashboard-dev` starts
 a dev Dex (rendered from the *same* module system — `services.dex.settings`
 via `pkgs.formats.yaml`, so dev/VM renders can't drift; dev overrides:
@@ -116,4 +129,10 @@ cleanly; `dex.db` persists at `$XDG_DATA_HOME/cococoir/`. Gotchas
 discovered: flake-parts' perSystem pkgs come from a vendored nixpkgs fork
 (`dex` there is the DesktopEntry launcher, not dex-oidc; `formats` differs)
 — always pull service binaries/config renders from
-`dashboardDev._module.args.pkgs`.
+`dashboardDev._module.args.pkgs`. Also: dex static-password bcrypt hashes
+MUST be cost >= 10 (a cost-5 hash 500s every login with "hash cost does
+not meet minimum" — vmtest's htpasswd `-BC 10` was right, mkpasswd's
+default was not). Full scripted login flow proven live (2026-08-11):
+authorize → form POST (dev@cococoir.local/password) → approval → 303
+`/auth/callback?code=...` — the seed for the future
+`scripts/dashboard-oidc-e2e.sh`.

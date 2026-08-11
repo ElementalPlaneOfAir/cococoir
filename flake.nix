@@ -105,61 +105,21 @@
             exec nix run .#nixosConfigurations.vmtest.config.system.build.vm -- "$@"
           '');
         };
-        # Dashboard live-edit loop: render the dev Dex config
-        # (rebuilds only when the nix config changes), start Dex
-        # against a durable dev DB, then run bacon's dashboard job
-        # in the crate. Run from the repo root:
+        # Dashboard live-edit loop, managed by process-compose: dex
+        # (readiness-gated) + bacon's dashboard job, torn down together
+        # on Ctrl-C. Run from the repo root:
         #   nix run .#dashboard-dev
-        # The dashboard crate is compiled by bacon in your checkout
-        # (the store is read-only), so edits hot-reload.
-        apps.dashboard-dev = {
+        # The pc spec lives in nix/dev/process-compose.nix — dev
+        # tooling, deliberately outside the nixos modules.
+        apps.dashboard-dev = let
+          devPcConfig = (dexPkgs.formats.yaml {}).generate "dashboard-dev.yaml"
+            (import ./nix/dev/process-compose.nix {
+              inherit dexPkgs dexBinary devDexConfig;
+            });
+        in {
           type = "app";
-          program = toString (pkgs.writeShellScript "dashboard-dev" ''
-            set -euo pipefail
-            if [ ! -f ./nix/packages/cococoir/Cargo.toml ]; then
-              echo "dashboard-dev: run from the cococoir repo root" >&2
-              exit 1
-            fi
-
-            data_dir="''${XDG_DATA_HOME:-$HOME/.local/share}/cococoir"
-            mkdir -p "$data_dir"
-
-            # OIDC env contract for the dashboard crate. The crate
-            # consumes these once its OAuth flow lands; set now so
-            # the harness and the client registration above agree.
-            export COCOCOIR_OIDC_ISSUER=http://127.0.0.1:5556/dex
-            export COCOCOIR_OIDC_CLIENT_ID=cococoir-dashboard
-            export COCOCOIR_OIDC_CLIENT_SECRET=dev-secret
-
-            dex_pid=""
-            cleanup() {
-              [ -n "$dex_pid" ] && kill "$dex_pid" 2>/dev/null || true
-            }
-            trap 'cleanup; exit 0' EXIT INT TERM
-
-            # Dex resolves its relative DB path ("dex.db") from its
-            # own cwd; start it in the data dir so sessions survive
-            # restarts (and bacon restarts never touch it).
-            (cd "$data_dir" && exec ${dexBinary} serve ${devDexConfig}) &
-            dex_pid=$!
-
-            ready=0
-            for _ in $(seq 1 100); do
-              if curl -sf http://127.0.0.1:5556/dex/.well-known/openid-configuration >/dev/null 2>&1; then
-                ready=1
-                break
-              fi
-              sleep 0.2
-            done
-            if [ "$ready" != 1 ]; then
-              echo "dashboard-dev: dex failed to become healthy on :5556" >&2
-              exit 1
-            fi
-
-            cd ./nix/packages/cococoir
-            # bacon needs a TTY (alternate screen); `script` gives it
-            # one so both interactive and headless runs work.
-            ${dexPkgs.util-linux}/bin/script -qec "${pkgs.bacon}/bin/bacon dashboard" /dev/null
+          program = toString (dexPkgs.writeShellScript "dashboard-dev" ''
+            exec ${dexPkgs.process-compose}/bin/process-compose -f ${devPcConfig}
           '');
         };
       };

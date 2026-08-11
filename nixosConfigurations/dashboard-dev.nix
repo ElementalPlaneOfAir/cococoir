@@ -44,7 +44,10 @@
     }];
     staticPasswords = [{
       email = "dev@cococoir.local";
-      hash = "$2b$05$nPBAhDEyEhhwwbYPam5.peutBqPPTmdR0C6KFieULWt3smhGHL6ca";
+      # bcrypt cost MUST be >= 10 (dex minimum) or login 500s with
+      # "given hash cost = 5 does not meet minimum cost requirement = 10".
+      # Regenerate with: mkpasswd -m bcrypt -R 10 password
+      hash = "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
       username = "dev";
       userID = "3d85863c-910e-42ba-b5ea-0507593aca75";
       groups = ["admins"];
