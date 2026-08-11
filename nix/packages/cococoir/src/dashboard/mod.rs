@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod components;
 mod db;
 mod nix_config_parser;

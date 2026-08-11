@@ -61,6 +61,9 @@ pub fn IndexPage(props: &IndexProps) -> Node {
     <h1>
     "Hello " {&props.name}
     </h1>
+
+
+    <a href="/auth/logout"> "sign out" </a>
     <HtmxTest count={props.count}/>
 
     </body>
