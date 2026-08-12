@@ -40,6 +40,36 @@ pub fn HtmxTest(props: &HtmxTestProps) -> Node {
     )
 }
 
+pub struct LoginPageProps {
+    pub error: bool,
+}
+
+#[component]
+pub fn LoginPage(props: &LoginPageProps) -> Node {
+    rsx!(
+    <html lang="en">
+    <head>
+    <title/>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
+    </head>
+    <body>
+    <h1>
+    "Admin sign in"
+    </h1>
+    <form method="post" action="/auth/login">
+        <label for="password">"Password"</label>
+        <input id="password" type="password" name="password" required/>
+        <button type="submit">"Sign in"</button>
+    </form>
+    {if props.error { rsx!(<p class="error">"Incorrect password."</p>) } else { Node::Empty }}
+    </body>
+    </html>
+    )
+}
+
 pub struct IndexProps {
     pub name: String,
     pub count: usize,

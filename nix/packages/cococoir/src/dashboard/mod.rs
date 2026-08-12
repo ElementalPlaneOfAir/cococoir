@@ -4,25 +4,25 @@ mod db;
 mod nix_config_parser;
 
 use crate::dashboard::auth::{
-    clear_session_cookie_header, exchange_code_and_verify, gate_request, read_cookie,
-    session_cookie_header, state_cookie_header, AuthMode, SESSION_COOKIE, STATE_COOKIE,
+    clear_session_cookie_header, gate_request, read_cookie, session_cookie_header, verify_password,
+    AuthMode, SESSION_COOKIE,
 };
 use crate::dashboard::db::{Db, DbError};
+use crate::dashboard::components::{
+    HtmxTest, HtmxTestProps, IndexPage, IndexProps, LoginPage, LoginPageProps,
+};
 use momenta::prelude::*;
 use poem::{
     get, handler,
     http::{header, StatusCode},
     listener::TcpListener,
     post,
-    web::{Data, Html, Path, Query, Redirect},
+    web::{Data, Form, Html, Path, Redirect},
     Endpoint, EndpointExt, IntoResponse, Request, Response, Route, Server,
 };
 use serde::Deserialize;
 use std::time::Duration;
 use tokio::time::sleep;
-use uuid::Uuid;
-
-use crate::dashboard::components::{HtmxTest, HtmxTestProps, IndexPage, IndexProps};
 
 const PAGE_LOAD_KEY: &str = "page_loads";
 
@@ -120,61 +120,55 @@ async fn end_session(Data(db): Data<&Db>, Path(token): Path<String>) -> Response
     }
 }
 
-#[handler]
-async fn login(Data(auth): Data<&AuthMode>) -> Response {
-    let Some(config) = auth.config() else {
-        return Redirect::see_other("/").into_response();
-    };
-    let state = Uuid::new_v4().to_string();
-    let location = config.authorize_url(&state);
-    Response::builder()
-        .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, location)
-        .header(header::SET_COOKIE, state_cookie_header(&state, config.secure()))
-        .finish()
-}
-
 #[derive(Debug, Deserialize)]
-struct OAuthCallbackParams {
-    code: Option<String>,
-    state: Option<String>,
+struct LoginForm {
+    password: Option<String>,
+}
+
+/// The admin login page. Rendered on GET; a wrong password re-renders
+/// it with the error flag set so the browser keeps the page.
+fn login_page(error: bool) -> Response {
+    let props = LoginPageProps { error };
+    Html(component::<LoginPage>(props).to_html())
+        .with_status(StatusCode::OK)
+        .into_response()
 }
 
 #[handler]
-async fn callback(
+async fn login_page_get(Data(auth): Data<&AuthMode>) -> Response {
+    if auth.config().is_none() {
+        return Redirect::see_other("/").into_response();
+    }
+    login_page(false)
+}
+
+#[handler]
+async fn login_page_post(
     Data(db): Data<&Db>,
     Data(auth): Data<&AuthMode>,
-    Query(params): Query<OAuthCallbackParams>,
-    req: &Request,
+    Form(form): Form<LoginForm>,
 ) -> Response {
     let Some(config) = auth.config() else {
         return Redirect::see_other("/").into_response();
     };
-    if read_cookie(req, STATE_COOKIE).as_deref() != params.state.as_deref() {
-        return StatusCode::BAD_REQUEST.into_response();
+    // A missing password field fails the same way as a wrong one.
+    let Some(password) = form.password.as_deref() else {
+        return login_page(true);
+    };
+    if !verify_password(password, &config.password_hash) {
+        return login_page(true);
     }
-    let Some(code) = params.code.as_ref() else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let sub = match exchange_code_and_verify(config, code).await {
-        Ok(sub) => sub,
-        Err(error) => {
-            tracing::error!(error = %error, "token exchange not implemented");
-            return StatusCode::NOT_IMPLEMENTED.into_response();
-        }
-    };
-    let token = match db.create_session(&sub).await {
-        Ok(token) => token,
+    match db.create_session("admin").await {
+        Ok(token) => Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(header::LOCATION, "/")
+            .header(header::SET_COOKIE, session_cookie_header(&token, false))
+            .finish(),
         Err(error) => {
             tracing::error!(error = %error, "session creation failed after login");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
-    };
-    Response::builder()
-        .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, "/")
-        .header(header::SET_COOKIE, session_cookie_header(&token, config.secure()))
-        .finish()
+    }
 }
 
 #[handler]
@@ -203,8 +197,7 @@ fn app(db: Db, auth: AuthMode) -> impl Endpoint {
         });
 
     Route::new()
-        .at("/auth/login", get(login))
-        .at("/auth/callback", get(callback))
+        .at("/auth/login", get(login_page_get).post(login_page_post))
         .at("/auth/logout", get(logout))
         .nest("/", protected)
         .data(db)
@@ -227,11 +220,8 @@ mod tests {
     use poem::test::TestClient;
 
     fn test_auth() -> AuthMode {
-        AuthMode::Oidc(auth::AuthConfig {
-            issuer: "http://127.0.0.1:5556/dex".to_string(),
-            client_id: "cococoir-dashboard".to_string(),
-            client_secret: "dev-secret".to_string(),
-            redirect_uri: "http://localhost:3000/auth/callback".to_string(),
+        AuthMode::Password(auth::AdminConfig {
+            password_hash: "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W".to_string(),
         })
     }
 
@@ -342,23 +332,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_rejects_state_mismatch() {
+    async fn login_page_renders_in_password_mode() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let client = TestClient::new(app(db, test_auth()));
-        let response = client.get("/auth/callback?code=abc&state=stolen").send().await;
-        response.assert_status(StatusCode::BAD_REQUEST);
+        let response = client.get("/auth/login").send().await;
+        response.assert_status(StatusCode::OK);
+        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        assert!(body.contains("Admin sign in"));
     }
 
     #[tokio::test]
-    async fn callback_returns_not_implemented_for_valid_state() {
+    async fn login_grants_session_with_correct_password() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let client = TestClient::new(app(db, test_auth()));
         let response = client
-            .get("/auth/callback?code=abc&state=good")
-            .header(header::COOKIE, "cococoir_oauth_state=good")
+            .post("/auth/login")
+            .content_type("application/x-www-form-urlencoded")
+            .body("password=password")
             .send()
             .await;
-        response.assert_status(StatusCode::NOT_IMPLEMENTED);
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response
+            .0
+            .headers()
+            .get(header::LOCATION)
+            .expect("redirect location")
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/");
+        let set_cookie = response
+            .0
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("session cookie set")
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.contains("cococoir_session="));
+        let token = set_cookie
+            .split("cococoir_session=")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("cookie token");
+        let gate = client
+            .get("/hello/alice")
+            .header(header::COOKIE, format!("cococoir_session={token}"))
+            .send()
+            .await;
+        gate.assert_status(StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn login_rejects_wrong_password() {
+        let db = Db::open_in_memory().await.expect("in-memory db opens");
+        let client = TestClient::new(app(db, test_auth()));
+        let response = client
+            .post("/auth/login")
+            .content_type("application/x-www-form-urlencoded")
+            .body("password=hunter2")
+            .send()
+            .await;
+        response.assert_status(StatusCode::OK);
+        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        assert!(body.contains("Incorrect password."));
+        let bounced = client.get("/").send().await;
+        bounced.assert_status(StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn login_redirects_in_dev_mode() {
+        let db = Db::open_in_memory().await.expect("in-memory db opens");
+        let client = TestClient::new(app(db, AuthMode::Dev));
+        let response = client.get("/auth/login").send().await;
+        response.assert_status(StatusCode::SEE_OTHER);
+        let location = response
+            .0
+            .headers()
+            .get(header::LOCATION)
+            .expect("redirect location")
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/");
     }
 
     #[tokio::test]

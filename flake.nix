@@ -37,18 +37,6 @@
         ./nix/nixos-modules
       ];
     };
-
-    # Dashboard dev environment. Not a bootable machine — a minimal
-    # evaluation that renders only the Dex config for
-    # `apps.dashboard-dev`, which runs Dex next to a bacon-watched
-    # dashboard for the live-edit loop. See
-    # nixosConfigurations/dashboard-dev.nix.
-    dashboardDev = inputs.nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        ./nixosConfigurations/dashboard-dev.nix
-      ];
-    };
   in
     inputs.flake-parts.lib.mkFlake {inherit inputs;} {
       systems = [
@@ -57,7 +45,6 @@
       ];
 
       flake.nixosModules.default = nixosModulesWithJellarr;
-      flake.dashboardDev = dashboardDev;
 
       # Manual v2 dev VM: every cococoir service under test, each
       # behind its own Caddy vhost in the `vmtest.local`
@@ -70,16 +57,15 @@
       flake.nixosConfigurations.vmtest = vmtest;
 
       perSystem = {pkgs, self', system, ...}: let
-        # Dev Dex config: generated from the module system's own
-        # services.dex.settings with the same pkgs.formats.yaml the
-        # nixpkgs module uses, so the dev and VM renders can't drift.
-        # Uses the nixosSystem's pkgs (not flake-parts' perSystem pkgs,
-        # which come from a vendored nixpkgs fork — its `dex` is the
-        # DesktopEntry launcher, not the OIDC provider).
-        dexPkgs = dashboardDev._module.args.pkgs;
-        dexBinary = "${dexPkgs.dex-oidc}/bin/dex";
-        devDexConfig = (dexPkgs.formats.yaml { }).generate "dex.yaml"
-          dashboardDev.config.services.dex.settings;
+        # Real nixpkgs for dev tooling. flake-parts' perSystem `pkgs`
+        # come from a vendored nixpkgs fork (its `dex` is the
+        # DesktopEntry launcher, not the OIDC provider), so service
+        # binaries and config renders always come from here.
+        realPkgs = inputs.nixpkgs.legacyPackages.${system};
+        # Dev admin login for the dashboard: password = "password".
+        # Generate a fresh one with `mkpasswd -m bcrypt -R 10 <pw>`.
+        devAdminHash =
+          "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
       in {
         checks = import ./nix/tests {
           inherit pkgs;
@@ -105,21 +91,28 @@
             exec nix run .#nixosConfigurations.vmtest.config.system.build.vm -- "$@"
           '');
         };
-        # Dashboard live-edit loop, managed by process-compose: dex
-        # (readiness-gated) + bacon's dashboard job, torn down together
+        # Dashboard live-edit loop, managed by process-compose: bacon's
+        # dashboard job with the admin login enabled, torn down cleanly
         # on Ctrl-C. Run from the repo root:
         #   nix run .#dashboard-dev
         # The pc spec lives in nix/dev/process-compose.nix — dev
         # tooling, deliberately outside the nixos modules.
         apps.dashboard-dev = let
-          devPcConfig = (dexPkgs.formats.yaml {}).generate "dashboard-dev.yaml"
+          devPcConfig = (realPkgs.formats.yaml {}).generate "dashboard-dev.yaml"
             (import ./nix/dev/process-compose.nix {
-              inherit dexPkgs dexBinary devDexConfig;
+              pkgs = realPkgs;
+              inherit devAdminHash;
             });
         in {
           type = "app";
-          program = toString (dexPkgs.writeShellScript "dashboard-dev" ''
-            exec ${dexPkgs.process-compose}/bin/process-compose -f ${devPcConfig}
+          program = toString (realPkgs.writeShellScript "dashboard-dev" ''
+            # TUI when attached to a terminal; -t=false keeps the
+            # process tree managed the same way in headless runs.
+            if [ -t 0 ]; then
+              exec ${realPkgs.process-compose}/bin/process-compose -f ${devPcConfig}
+            else
+              exec ${realPkgs.process-compose}/bin/process-compose -t=false -f ${devPcConfig}
+            fi
           '');
         };
       };

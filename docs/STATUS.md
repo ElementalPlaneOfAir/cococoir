@@ -123,9 +123,16 @@ a dev Dex (rendered from the *same* module system — `services.dex.settings`
 via `pkgs.formats.yaml`, so dev/VM renders can't drift; dev overrides:
 `issuer` extraOption → http://127.0.0.1:5556/dex, durable dev DB, static
 client `cococoir-dashboard` + test user dev/password) and runs bacon's
-dashboard job (pseudo-TTY via `script`, live reload on save). Proof: live
-run — dex discovery JSON at :5556, dashboard 200 at :3000, both killed
-cleanly; `dex.db` persists at `$XDG_DATA_HOME/cococoir/`. Gotchas
+dashboard job. Lifecycle now managed by **process-compose** (2026-08-11):
+the spec lives in `nix/dev/process-compose.nix` (dev tooling, outside the
+nixos modules — containment by design), serialized with the same
+`formats.yaml`, readiness-gated (`depends_on: process_healthy`), and
+Ctrl-C/SIGINT tears down the whole tree (dex + bacon + cargo). Proof:
+headless run — dex 200, dashboard 303 (OIDC env flows through pc),
+SIGINT → process-compose, dex, bacon, dashboard, script, cargo all dead,
+ports released. Gotchas: pc's `environment` is a list of `KEY=VALUE`, not
+a map; `-t=false` needed when no TTY; `pkill -f "bacon"` matches its own
+shell (use `pkill -x`). Gotchas
 discovered: flake-parts' perSystem pkgs come from a vendored nixpkgs fork
 (`dex` there is the DesktopEntry launcher, not dex-oidc; `formats` differs)
 — always pull service binaries/config renders from

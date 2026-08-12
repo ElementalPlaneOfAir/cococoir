@@ -8,68 +8,47 @@ use crate::dashboard::db::Db;
 /// `sessions` table; the browser re-sends it automatically on every
 /// same-origin request, so htmx never handles auth itself.
 pub const SESSION_COOKIE: &str = "cococoir_session";
-/// Short-lived cookie pinning the OAuth `state` value to this browser.
-pub const STATE_COOKIE: &str = "cococoir_oauth_state";
-const STATE_COOKIE_TTL: u32 = 10 * 60;
 
-/// OIDC provider configuration. The `COCOCOIR_OIDC_*` contract is set
-/// by `apps.dashboard-dev` and, in production, by the dashboard's
-/// nixos module.
+/// Admin login configuration. The only credential is a bcrypt hash of
+/// the admin password (set by `COCOCOIR_ADMIN_PASSWORD_HASH`; production
+/// sources it from the box's secret store). The dashboard is the control
+/// plane of the box, so it must NOT be reachable through the user-facing
+/// OIDC provider — a compromise of Dex (or another provider) must never
+/// grant full control of the system.
 #[derive(Debug, Clone)]
-pub struct AuthConfig {
-    pub issuer: String,
-    pub client_id: String,
-    pub client_secret: String,
-    pub redirect_uri: String,
+pub struct AdminConfig {
+    pub password_hash: String,
 }
 
-impl AuthConfig {
+impl AdminConfig {
     fn from_env() -> Option<Self> {
         Some(Self {
-            issuer: std::env::var("COCOCOIR_OIDC_ISSUER").ok()?,
-            client_id: std::env::var("COCOCOIR_OIDC_CLIENT_ID").ok()?,
-            client_secret: std::env::var("COCOCOIR_OIDC_CLIENT_SECRET").ok()?,
-            redirect_uri: std::env::var("COCOCOIR_OIDC_REDIRECT_URI")
-                .unwrap_or_else(|_| "http://localhost:3000/auth/callback".to_string()),
+            password_hash: std::env::var("COCOCOIR_ADMIN_PASSWORD_HASH").ok()?,
         })
-    }
-
-    /// Dex authorize URL for a fresh login attempt.
-    pub fn authorize_url(&self, state: &str) -> String {
-        format!(
-            "{}/auth?client_id={}&redirect_uri={}&response_type=code&scope=openid+email&state={}",
-            self.issuer, self.client_id, self.redirect_uri, state
-        )
-    }
-
-    /// `Secure` only for https redirect URIs, so local http dev keeps working.
-    pub fn secure(&self) -> bool {
-        self.redirect_uri.starts_with("https://")
     }
 }
 
-/// Auth posture. `Dev` = no OIDC configured: the login gate is off and
-/// the raw `/session` API stays usable as the test seam. `Oidc` carries
-/// the provider config and turns the gate on.
+/// Auth posture. `Dev` = no login (local iteration); `Password` requires
+/// a valid session cookie established by `POST /auth/login`.
 #[derive(Debug, Clone)]
 pub enum AuthMode {
     Dev,
-    Oidc(AuthConfig),
+    Password(AdminConfig),
 }
 
 impl AuthMode {
     fn from_env() -> Self {
-        match AuthConfig::from_env() {
-            Some(config) => Self::Oidc(config),
+        match AdminConfig::from_env() {
+            Some(config) => Self::Password(config),
             None => Self::Dev,
         }
     }
 
-    /// Provider config, or `None` in dev mode.
-    pub fn config(&self) -> Option<&AuthConfig> {
+    /// Admin config, or `None` in dev mode.
+    pub fn config(&self) -> Option<&AdminConfig> {
         match self {
             Self::Dev => None,
-            Self::Oidc(config) => Some(config),
+            Self::Password(config) => Some(config),
         }
     }
 
@@ -81,6 +60,14 @@ impl AuthMode {
         static AUTH_MODE: LazyLock<AuthMode> = LazyLock::new(AuthMode::from_env);
         &AUTH_MODE
     }
+}
+
+/// Verify a submitted password against a bcrypt hash (cost >= 10).
+/// Verification is constant-time inside the bcrypt crate. Any error —
+/// malformed hash, invalid cost, unsupported format — reads as `false`:
+/// a broken credential config must fail closed, never open.
+pub fn verify_password(password: &str, hash: &str) -> bool {
+    bcrypt::verify(password, hash).unwrap_or(false)
 }
 
 /// Read a cookie value by name from the request. `None` when absent.
@@ -112,16 +99,6 @@ pub fn clear_session_cookie_header() -> HeaderValue {
     .expect("cleared session cookie header is valid")
 }
 
-pub fn state_cookie_header(state: &str, secure: bool) -> HeaderValue {
-    let mut cookie = format!(
-        "{STATE_COOKIE}={state}; Path=/auth/callback; HttpOnly; SameSite=Lax; Max-Age={STATE_COOKIE_TTL}"
-    );
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    HeaderValue::from_str(&cookie).expect("state cookie header is valid")
-}
-
 /// Login gate body. [`AuthMode::Dev`] passes every request through;
 /// otherwise the session cookie must name a valid, unexpired session
 /// row — else the request is bounced to the login page. The `Arc<E>`
@@ -131,7 +108,7 @@ pub async fn gate_request<E: Endpoint<Output = Response>>(
     endpoint: Arc<E>,
     req: Request,
 ) -> poem::Result<Response> {
-    let AuthMode::Oidc(_config) = auth else {
+    let AuthMode::Password(_config) = auth else {
         return endpoint.call(req).await;
     };
     let authenticated = match (req.data::<Db>(), read_cookie(&req, SESSION_COOKIE)) {
@@ -157,16 +134,25 @@ fn login_response(req: &Request) -> Response {
     }
 }
 
-/// Exchange the authorization code for tokens and return the verified
-/// subject. NOT IMPLEMENTED — the real flow is:
-///   1. POST {issuer}/token with grant_type=authorization_code, code,
-///      redirect_uri, client_id, client_secret.
-///   2. Verify the ID token signature against {issuer}/keys (RS256)
-///      plus exp / iss / aud — without this, anyone can mint a login.
-///   3. Return the `sub` claim to feed `Db::create_session`.
-/// Candidate implementations: openidconnect (discovery + exchange +
-/// verify in one) or reqwest + jsonwebtoken.
-pub async fn exchange_code_and_verify(config: &AuthConfig, code: &str) -> Result<String, String> {
-    let _ = (config, code);
-    Err("token exchange not implemented; login cannot complete yet".to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEV_HASH: &str = "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
+
+    #[test]
+    fn verify_password_accepts_correct_password() {
+        assert!(verify_password("password", DEV_HASH));
+    }
+
+    #[test]
+    fn verify_password_rejects_wrong_password() {
+        assert!(!verify_password("hunter2", DEV_HASH));
+    }
+
+    #[test]
+    fn verify_password_fails_closed_on_garbage_hash() {
+        assert!(!verify_password("password", "not-a-bcrypt-hash"));
+        assert!(!verify_password("password", ""));
+    }
 }
