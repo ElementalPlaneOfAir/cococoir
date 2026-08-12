@@ -101,7 +101,7 @@
           devPcConfig = (realPkgs.formats.yaml {}).generate "dashboard-dev.yaml"
             (import ./nix/dev/process-compose.nix {
               pkgs = realPkgs;
-              inherit devAdminHash;
+              adminPasswordHash = devAdminHash;
             });
         in {
           type = "app";
