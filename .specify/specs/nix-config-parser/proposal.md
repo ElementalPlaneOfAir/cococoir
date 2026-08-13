@@ -1,6 +1,6 @@
 # Nix config parser — lossless round-trip for the dashboard config editor
 
-Status: proposal (not yet implemented).
+Status: implemented + verified 2026-08-13 (L0 + L1 green). T1–T4 done.
 
 Session 2026-08-13: user interview. Three decisions made:
 - File shape: the dashboard edits a NixOS-module-style file (function
@@ -34,19 +34,23 @@ foundation the editor UI builds on later.
 
 ## Acceptance criteria
 
-- [ ] L0: `cargo test` passes. New tests cover: round-trip identity
+- [x] L0: `cargo test` passes. New tests cover: round-trip identity
       (parse→serialize with no edits is byte-identical, including a
       vmtest.nix-style fixture); known-field extraction from a
       vmtest-style file; lossless field replacement (only the target
       value's span changes, everything else byte-identical); missing
       known field reports cleanly. Maps to T1–T4.
-- [ ] The parser rejects non-Nix / malformed Nix with a typed error and
+      Verified 2026-08-13: `cargo test` 76/76 pass (15 parser tests new).
+- [x] The parser rejects non-Nix / malformed Nix with a typed error and
       never panics on hostile input (empty string, unmatched braces,
       garbage tokens). Maps to T1, T2.
-- [ ] L1: `nix flake check` passes — `rnix` builds under the flake's
+      Verified: `rejects_malformed_input_without_panicking` covers all
+      hostile inputs.
+- [x] L1: `nix flake check` passes — `rnix` builds under the flake's
       cargoLock and the existing checks (`doc-refs`, `contract-conformance`,
       `vmtest-wiring`, L0 crate tests) stay green. Maps to T1.
-- [ ] No dashboard UI, no NixOS-module wiring, no new customer-facing
+      Verified 2026-08-13: all 20 flake checks pass.
+- [x] No dashboard UI, no NixOS-module wiring, no new customer-facing
       option in this arc. The parser is `pub` but nothing calls it from
       routes yet. Maps to the task DAG being parser-only.
 
@@ -132,6 +136,10 @@ header + `let` + nested attrsets) and on empty/garbage input (typed error,
 no panic). L0 + flake build.
 **Files:** `nix/packages/cococoir/Cargo.toml`,
 `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+- [x] DONE 2026-08-13. `rnix 0.14` + `rowan 0.16` added; `NixConfigFile`
+      with `parse`/`to_source`; `rejects_malformed_input_without_panicking`
+      passes on `""`, `"{"`, `"}{"`, `"cococoir = "`, garbage. Round-trip
+      identity green.
 
 ### T2: attrpath navigation over the CST
 **Depends on:** T1
@@ -140,6 +148,10 @@ no panic). L0 + flake build.
 node + `TextRange`; `inherit` handled; missing path → `None`; a path that
 lands mid-expression (not a value) → `None`, not a panic. L0.
 **Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+- [x] DONE 2026-08-13. `find_attrpath` handles dotted keys
+      (`services.radarr.enable = false;`), nested attrsets, `let ... in`,
+      function headers, `inherit` (skipped → `None`), mid-expression
+      descent → `None`. `attrset_keys` added for user enumeration.
 
 ### T3: known-field extraction into the schema
 **Depends on:** T2
@@ -149,6 +161,12 @@ services_enabled, users) with their spans; unknown content is untouched.
 Field values parsed from CST nodes: string literals (plain and
 interpolated), booleans (`true`/`false`), string lists. L0.
 **Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+- [x] DONE 2026-08-13. `ConfigSchema` (default paths match vmtest.nix
+      shape) + `CococoirConfig::extract`. Strings, bools, string lists
+      parsed; interpolated strings fall back to `NixValue::Other` (raw).
+      SERVICE_LIST aligned to shipped services (dropped scaffold's
+      vaultwarden — not a real cococoir service; PLAN lists jellyfin,
+      cryptpad, radarr, sonarr, lidarr, prowlarr, dex).
 
 ### T4: in-place value replacement (the write path)
 **Depends on:** T3
@@ -160,6 +178,10 @@ re-parsing the output round-trips (edit is idempotent and lossless).
 Missing attrpath → `SetError::NotFound`, no insertion in this task
 (insertion is the UI arc). L0.
 **Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+- [x] DONE 2026-08-13. `set_attrpath` splices exactly the value span and
+      validates the result re-parses before committing (failed edits leave
+      the file untouched). `SetError::{NotFound, InvalidValue}`;
+      `set_then_set_back_round_trips` proves idempotence.
 
 ## Strongest objection
 

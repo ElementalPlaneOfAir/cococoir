@@ -68,6 +68,22 @@ Regenerated: 2026-08-08T14:10:25Z — git de0c195
   `1` (optional, not forced).
 - Spec system as control loop + computed status block — proof:
   AUTO-STATUS block above, regenerated PASS by `scripts/status.sh`.
+- Nix config parser (2026-08-13) — lossless round-trip parser for the
+  future config editor, at `dashboard/nix_config_parser.rs`.
+  `NixConfigFile::{parse, to_source, find_attrpath, attrset_keys,
+  set_attrpath}` on rnix 0.14 + rowan 0.16. Round-trip law: no edits =
+  byte-identical input; an edit replaces only the target value's span
+  (comments/format/unknown bindings survive). Shape-agnostic — handles a
+  vmtest.nix-style function header + `let...in` + nested/dotted attrsets +
+  `inherit`-skip. Schema layer (`ConfigSchema`, `CococoirConfig::extract`)
+  decouples known attrpaths from the parser, so a config-language change
+  touches only the schema. The scaffold's `extra_config: String` was
+  replaced by span preservation (a String blob cannot keep comments or
+  position; approved in the proposal). SERVICE_LIST aligned to shipped
+  services (dropped scaffold's vaultwarden — not a real cococoir service).
+  Proof: `cargo test` 76/76 (15 parser tests new), `nix flake check` all
+  20 green (crate builds via cargoLock with the new deps).
+  Proposal: `.specify/specs/nix-config-parser/proposal.md`.
 
 ## Broken / landmines
 
@@ -81,7 +97,10 @@ Regenerated: 2026-08-08T14:10:25Z — git de0c195
 
 ## Todo
 
-- (empty)
+- Config editor UI arc: wire `NixConfigFile` into dashboard routes
+  (read file → render known fields → apply edits → save). Binding
+  *insertion* for missing fields is deferred to that arc; the parser
+  only replaces existing values today.
 
 ## Current focus
 

@@ -1,7 +1,7 @@
 pub mod auth;
 pub mod components;
 mod db;
-mod nix_config_parser;
+pub mod nix_config_parser;
 
 use crate::dashboard::auth::{
     clear_session_cookie_header, gate_request, read_cookie, session_cookie_header, verify_password,
