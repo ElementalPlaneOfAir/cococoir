@@ -234,6 +234,8 @@ mod tests {
         let first_body = first.0.into_body().into_string().await.expect("utf8 body");
         assert!(first_body.contains("alice"));
         assert!(first_body.contains(" 1 times."));
+        assert!(first_body.contains("data-theme=\"dark\""));
+        assert!(first_body.contains("daisyui@5"));
         let second = client.get("/hello/alice").send().await;
         let second_body = second.0.into_body().into_string().await.expect("utf8 body");
         assert!(second_body.contains(" 2 times."));
@@ -338,7 +340,9 @@ mod tests {
         let response = client.get("/auth/login").send().await;
         response.assert_status(StatusCode::OK);
         let body = response.0.into_body().into_string().await.expect("utf8 body");
-        assert!(body.contains("Admin sign in"));
+        assert!(body.contains("Sign in to the admin dashboard"));
+        assert!(body.contains("btn btn-primary"));
+        assert!(body.contains("data-theme=\"dark\""));
     }
 
     #[tokio::test]

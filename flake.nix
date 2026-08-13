@@ -108,10 +108,12 @@
           program = toString (realPkgs.writeShellScript "dashboard-dev" ''
             # TUI when attached to a terminal; -t=false keeps the
             # process tree managed the same way in headless runs.
+            # --no-server: pc's web UI is unused and its 8080 binding
+            # collides with anything else on that port.
             if [ -t 0 ]; then
-              exec ${realPkgs.process-compose}/bin/process-compose -f ${devPcConfig}
+              exec ${realPkgs.process-compose}/bin/process-compose --no-server -f ${devPcConfig}
             else
-              exec ${realPkgs.process-compose}/bin/process-compose -t=false -f ${devPcConfig}
+              exec ${realPkgs.process-compose}/bin/process-compose --no-server -t=false -f ${devPcConfig}
             fi
           '');
         };
