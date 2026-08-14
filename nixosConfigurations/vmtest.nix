@@ -87,11 +87,11 @@
     '';
 in {
   imports = [
+    ./dashboard.nix
     (import ../nix/nixos-modules)
   ];
 
   system.stateVersion = "25.11";
-  networking.hostName = "vmtest";
   networking.useDHCP = true;
   networking.firewall = {
     enable = true;
@@ -107,8 +107,9 @@ in {
     (builtins.readFile "${testCerts}/cert.pem")
   ];
 
-  # Platform-wide config. baseDomain + tls.mode do the work that
-  # used to live in every per-vhost `extraConfig`:
+  # Platform-wide config. baseDomain + hostname come from
+  # dashboard.nix (the customer-edited file). tls.mode does the work
+  # that used to live in every per-vhost `extraConfig`:
   #   - service `domain` options default to `<svc>.vmtest.local`
   #     (override per-service if you need a non-conventional name)
   #   - Caddy's `tls` directive is emitted automatically from
@@ -117,7 +118,6 @@ in {
   #     `cococoir.services.<name>.enable = true` together drive
   #     vhost creation via the contract factory
   cococoir = {
-    baseDomain = "vmtest.local";
     tls = {
       mode = "self-signed";
       certFile = "/etc/vmtest-tls/cert.pem";
@@ -182,33 +182,27 @@ in {
   # `email = ""` is a parse error.
   services.caddy.enable = true;
 
-  # Jellyfin service. Domain defaults to jellyfin.vmtest.local
-  # via cococoir.baseDomain. Datasets auto-declared by the
-  # jellyfin module.
+  # Jellyfin service. `enable` comes from dashboard.nix. Domain defaults
+  # to jellyfin.vmtest.local via cococoir.baseDomain. Datasets
+  # auto-declared by the jellyfin module.
   cococoir.services.jellyfin = {
-    enable = true;
     public = true;
   };
 
   cococoir.services.cryptpad = {
-    enable = true;
     public = true;
   };
 
   cococoir.services.radarr = {
-    enable = true;
     public = false;
   };
   cococoir.services.sonarr = {
-    enable = true;
     public = false;
   };
   cococoir.services.lidarr = {
-    enable = true;
     public = false;
   };
   cococoir.services.prowlarr = {
-    enable = true;
     public = false;
   };
 

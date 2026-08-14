@@ -26,6 +26,9 @@
       '';
       environment = [
         "COCOCOIR_ADMIN_PASSWORD_HASH=${adminPasswordHash}"
+        # The dashboard command cd's into nix/packages/cococoir,
+        # so climb back to the repo root.
+        "COCOCOIR_CONFIG_PATH=../../../nixosConfigurations/dashboard.nix"
       ];
     };
   };

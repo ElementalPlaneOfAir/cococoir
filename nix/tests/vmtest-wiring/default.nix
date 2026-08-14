@@ -16,6 +16,14 @@
 let
   lib = pkgs.lib;
 
+  # ── dashboard.nix extraction ─────────────────────────────────
+  # The six service enables live in nixosConfigurations/dashboard.nix
+  # (the customer-edited file). A silent drop of one during a refactor
+  # would disable a service with no trace — assert they all render.
+  dashboardServices = ["jellyfin" "cryptpad" "radarr" "sonarr" "lidarr" "prowlarr"];
+  dashboardServiceEnabled = name:
+    vmtestConfig.cococoir.services.${name}.enable or false;
+
   # ── jellyfin OIDC ────────────────────────────────────────────
   jellarrCfg = vmtestConfig.services.jellarr;
   plugins = jellarrCfg.config.plugins or null;
@@ -36,6 +44,11 @@ let
   cryptpadPkg = vmtestConfig.services.cryptpad.package;
   cryptpadPkgHasSSO = lib.strings.hasInfix "-with-sso" (cryptpadPkg.name or "");
 in
+# ── dashboard.nix assertions ──────────────────────────────────
+# Every service declared in the customer-edited dashboard.nix must
+# render enabled in the real composition.
+assert lib.assertMsg (builtins.all dashboardServiceEnabled dashboardServices)
+  "vmtest-wiring: a service enable from nixosConfigurations/dashboard.nix was dropped from the rendered config — the dashboard.nix extraction is broken";
 # ── jellyfin assertions ────────────────────────────────────────
 assert lib.assertMsg (jellarrCfg.enable)
   "vmtest-wiring: services.jellarr is not enabled — the jellyfin service module must activate it";
