@@ -66,6 +66,45 @@ pub enum NixValue {
     Other(String),
 }
 
+impl NixValue {
+    /// Render this value as Nix source text, ready to be spliced by
+    /// [`NixConfigFile::set_attrpath`]. `Other` values carry their raw
+    /// source, so re-emitting them is lossless by construction.
+    pub fn to_source(&self) -> String {
+        match self {
+            NixValue::Bool(true) => "true".to_string(),
+            NixValue::Bool(false) => "false".to_string(),
+            NixValue::Str(s) => quote_nix_string(s),
+            NixValue::StrList(items) => {
+                let rendered: Vec<String> = items.iter().map(|s| quote_nix_string(s)).collect();
+                format!("[ {} ]", rendered.join(" "))
+            }
+            NixValue::Other(raw) => raw.clone(),
+        }
+    }
+}
+
+/// Quote a string as a Nix double-quoted string literal. Escapes the
+/// characters Nix supports (`\"`, `\\`, `\n`, `\t`, `\r`); everything
+/// else is emitted verbatim. Used for hostname/domain/group values,
+/// which never contain control characters.
+fn quote_nix_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// A value found at an attrpath: its interpretation plus its byte span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocatedValue<'a> {
@@ -113,25 +152,22 @@ impl NixConfigFile {
 
     /// The names bound directly under the attrset at `path`
     /// (e.g. usernames under `users.users`). Used by the schema layer to
-    /// enumerate users without hardcoding them.
+    /// enumerate users without hardcoding them. Handles both nested
+    /// (`users.users = { nicole = {...}; }`) and dotted
+    /// (`users.users.nicole = {...}`) key forms: a dotted key whose
+    /// prefix matches `path` contributes the segment at `path.len()`.
+    /// Returns `None` when nothing at `path` exists.
     pub fn attrset_keys(&self, path: &[&str]) -> Option<Vec<String>> {
         let root = parse_root(&self.source)?;
-        let node = find_value_node(&root, path)?;
-        let attrset = ast::AttrSet::cast(node)?;
+        let attrset = root.expr().and_then(root_expr_to_attrset)?;
         let mut keys = Vec::new();
-        for entry in attrset.entries() {
-            if let ast::Entry::AttrpathValue(kv) = entry {
-                if let Some(attrpath) = kv.attrpath() {
-                    if let Some(first) = attrpath.attrs().next() {
-                        if let Some(name) = attr_name(&first) {
-                            keys.push(name);
-                        }
-                    }
-                }
-            }
+        if collect_child_keys(&attrset, path, &mut keys) {
+            keys.sort();
+            keys.dedup();
+            Some(keys)
+        } else {
+            None
         }
-        keys.sort();
-        Some(keys)
     }
 
     /// Replace the value at `path` with `replacement` (raw Nix text).
@@ -223,6 +259,47 @@ fn find_in_attrset(attrset: &ast::AttrSet, path: &[&str]) -> Option<SyntaxNode> 
         }
     }
     None
+}
+
+/// Collect the names bound directly under `attrset` at `path`. Each
+/// matching entry contributes the segment at `path.len()` (for a dotted
+/// key that extends past the target) or recurses (for a nested or
+/// shorter prefix). Returns `false` when nothing at `path` exists.
+fn collect_child_keys(
+    attrset: &ast::AttrSet,
+    path: &[&str],
+    keys: &mut Vec<String>,
+) -> bool {
+    let mut found = false;
+    for entry in attrset.entries() {
+        let ast::Entry::AttrpathValue(kv) = entry else {
+            continue;
+        };
+        let Some(attrpath) = kv.attrpath() else {
+            continue;
+        };
+        let names: Vec<String> = attrpath.attrs().filter_map(|a| attr_name(&a)).collect();
+        if names.is_empty() {
+            continue;
+        }
+        if !names.iter().zip(path.iter()).all(|(name, segment)| name == segment) {
+            continue;
+        }
+        let Some(value) = kv.value() else {
+            continue;
+        };
+        if names.len() > path.len() {
+            if let Some(child) = names.get(path.len()) {
+                keys.push(child.clone());
+            }
+            found = true;
+        } else if let ast::Expr::AttrSet(inner) = value {
+            if collect_child_keys(&inner, &path[names.len()..], keys) {
+                found = true;
+            }
+        }
+    }
+    found
 }
 
 fn attr_name(attr: &ast::Attr) -> Option<String> {
@@ -353,6 +430,10 @@ pub struct CocoUser {
     pub username: String,
     pub hashed_password: Option<String>,
     pub groups: BTreeSet<String>,
+    /// Whether a `groups` binding exists in the file. When false, the
+    /// dashboard renders the user read-only: the parser cannot insert a
+    /// binding, so "editing" groups would silently do nothing.
+    pub groups_declared: bool,
 }
 
 impl CocoUser {
@@ -414,12 +495,14 @@ impl CococoirConfig {
                 }
 
                 let mut groups = BTreeSet::new();
+                let mut groups_declared = false;
                 let mut groups_path = schema.users_root.clone();
                 groups_path.push(&name);
                 groups_path.push("groups");
                 if let Some(located) = file.find_attrpath(&groups_path) {
                     if let NixValue::StrList(list) = located.value {
                         groups = list.into_iter().collect();
+                        groups_declared = true;
                     }
                 }
 
@@ -429,6 +512,7 @@ impl CococoirConfig {
                         username: name,
                         hashed_password,
                         groups,
+                        groups_declared,
                     },
                 );
             }
@@ -641,6 +725,7 @@ in {
         let nicole = config.users.get("nicole").expect("nicole present");
         assert_eq!(nicole.hashed_password.as_deref(), Some("$2b$10$abcdefghijklmnopqrstuv"));
         assert!(nicole.is_admin());
+        assert!(nicole.groups_declared, "nicole declares groups in the fixture");
         assert!(config.users.get("carl").is_none());
     }
 
@@ -655,14 +740,110 @@ in {
     }
 
     #[test]
+    fn attrset_keys_handles_dotted_prefixes() {
+        let dotted = NixConfigFile::parse(
+            "{ users.users.nicole = { groups = [ \"wheel\" ]; }; users.users.carl = { }; }",
+        )
+        .expect("dotted keys parse");
+        let keys = dotted
+            .attrset_keys(&["users", "users"])
+            .expect("users present under dotted prefix");
+        assert_eq!(keys, vec!["carl".to_string(), "nicole".to_string()]);
+
+        let nested = NixConfigFile::parse(
+            "{ users.users = { nicole = { }; carl = { }; }; }",
+        )
+        .expect("nested keys parse");
+        let keys = nested
+            .attrset_keys(&["users", "users"])
+            .expect("users present under nested prefix");
+        assert_eq!(keys, vec!["carl".to_string(), "nicole".to_string()]);
+
+        let absent = NixConfigFile::parse("{}").expect("empty parse");
+        assert!(absent.attrset_keys(&["users", "users"]).is_none());
+    }
+
+    #[test]
+    fn extract_reads_groups_from_dotted_user_keys() {
+        let file = NixConfigFile::parse(
+            "{ users.users.nicole = { groups = [ \"wheel\" \"storage\" ]; }; }",
+        )
+        .expect("dotted users parse");
+        let config = CococoirConfig::extract(&file, &ConfigSchema::default());
+        let nicole = config.users.get("nicole").expect("nicole present");
+        assert!(nicole.groups_declared);
+        assert!(nicole.groups.contains("wheel"));
+    }
+
+    #[test]
     fn user_admin_flag_matches_wheel_group() {
         let mut user = CocoUser {
             username: "bob".to_string(),
             hashed_password: None,
             groups: BTreeSet::new(),
+            groups_declared: true,
         };
         assert!(!user.is_admin());
         user.groups.insert("wheel".to_string());
         assert!(user.is_admin());
+    }
+
+    #[test]
+    fn to_source_renders_bool_str_strlist() {
+        assert_eq!(NixValue::Bool(true).to_source(), "true");
+        assert_eq!(NixValue::Bool(false).to_source(), "false");
+        assert_eq!(NixValue::Str("vmtest".to_string()).to_source(), "\"vmtest\"");
+        assert_eq!(
+            NixValue::StrList(vec!["wheel".to_string(), "storage".to_string()]).to_source(),
+            "[ \"wheel\" \"storage\" ]"
+        );
+    }
+
+    #[test]
+    fn to_source_escapes_nix_string_characters() {
+        assert_eq!(NixValue::Str("say \"hi\"".to_string()).to_source(), "\"say \\\"hi\\\"\"");
+        assert_eq!(NixValue::Str("a\\b".to_string()).to_source(), "\"a\\\\b\"");
+        assert_eq!(NixValue::Str("line\nbreak".to_string()).to_source(), "\"line\\nbreak\"");
+    }
+
+    #[test]
+    fn to_source_other_is_lossless_raw() {
+        assert_eq!(NixValue::Other("true".to_string()).to_source(), "true");
+        assert_eq!(NixValue::Other("\"raw\"".to_string()).to_source(), "\"raw\"");
+    }
+
+    #[test]
+    fn serialize_splice_reparse_round_trips() {
+        for (value, expect) in [
+            (NixValue::Bool(true), true),
+            (NixValue::Bool(false), false),
+            (NixValue::Str("other".to_string()), true),
+        ] {
+            let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
+            file.set_attrpath(&["networking", "hostName"], &value.to_source()).unwrap();
+            let reparse = NixConfigFile::parse(file.to_source().to_string()).unwrap();
+            let reextract = reparse
+                .find_attrpath(&["networking", "hostName"])
+                .expect("field survives");
+            match value {
+                NixValue::Bool(b) => assert_eq!(reextract.value, NixValue::Bool(b)),
+                NixValue::Str(s) => assert_eq!(reextract.value, NixValue::Str(s)),
+                _ => unreachable!("string case only"),
+            }
+            let _ = expect;
+        }
+    }
+
+    #[test]
+    fn serialize_strlist_round_trips_through_groups() {
+        let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
+        let groups = NixValue::StrList(vec!["wheel".to_string(), "docker".to_string()]);
+        file.set_attrpath(&["users", "users", "nicole", "groups"], &groups.to_source())
+            .unwrap();
+        let reparse = NixConfigFile::parse(file.to_source().to_string()).unwrap();
+        let located = reparse
+            .find_attrpath(&["users", "users", "nicole", "groups"])
+            .expect("groups survive");
+        assert_eq!(located.value, groups);
     }
 }
