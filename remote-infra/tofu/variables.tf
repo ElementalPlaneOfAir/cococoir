@@ -32,9 +32,15 @@ variable "bootstrap_image" {
 }
 
 variable "edge_interface" {
-  description = "Primary NIC name on the edge box (ens3 on Hetzner amd64, enp1s0 on arm64). Verify with `ip addr` after first boot."
+  description = "Primary NIC name on the edge box. Hetzner cloud exposes eth0 (altname enp1s0) on x86_64. Verify with `ls /sys/class/net` from the rescue system if this ever changes."
   type        = string
-  default     = "ens3"
+  default     = "eth0"
+}
+
+variable "edge_disk_device" {
+  description = "Root disk device on the edge box. Hetzner cloud servers expose it as /dev/sda (verify with `lsblk` after the kexec boot). Used by the disko partition layout."
+  type        = string
+  default     = "/dev/sda"
 }
 
 variable "ipv4_gateway" {

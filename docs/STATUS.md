@@ -164,8 +164,13 @@ are rendered into `remote-infra/nix/` from tofu templates (one source
 of truth); token from env var, WG *private* keys in gitignored
 `.secrets/`. IPv6 tripwire: `bind_ipv6_loopback_works` +
 `run_tcp_forward_ipv6_listen` (cargo test 98/98). Proof: `tofu init` +
-`validate` green, both flake configs eval. **Blocked on provisioning**:
-`remote-infra/scripts/provision-edge.sh` was never run to completion.
+`validate` green, both flake configs eval. Edge disk is partitioned
+by **disko** (flake input + `disko.devices.disk.main` in the edge
+config, device via tofu `edge_disk_device` var default `/dev/sda`) —
+nixos-anywhere requires `system.build.diskoScript`, which disko
+provides. **Blocked on provisioning**: `remote-infra/scripts/
+provision-edge.sh` (a live `tofu apply` + nixos-anywhere install on
+the cx23).
 
 **Control-plane direction** (2026-08-15, see PLAN.md ADR-025):
 the Rust crate is the *client-side* (household users on one server,

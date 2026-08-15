@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Customer box NixOS config — PLACEHOLDER values.
+# Rendered by tofu from remote-infra/tofu/main.tf — do not hand-edit.
+# The customer box is the home machine (behind CG-NAT, no public
+# IPv6): the full v2 product plus a WireGuard DIAL-OUT to the edge
+# and cococoir-client forwarding the tunnel's :80/:443 to local
+# Caddy. Caddy terminates TLS with real ACME certs obtained through
+# the tunnel (blind forwarding).
 #
-# This file is overwritten by `tofu apply` (remote-infra/tofu/render.tf
-# renders templates/example123.nix.tftpl into this path). The
-# placeholders below let the flake evaluate before provisioning. Do
-# not hand-edit the rendered values; edit the template instead.
+# FILL IN (operator, after render):
+#   cococoir.storage.btrfs.pool.devices — this box's real disks
 {
   config,
   lib,
@@ -33,8 +36,9 @@
       dex.public = true;
     };
 
-    # Filled by the operator: this box's real disks.
-    storage.btrfs.pool.devices = [];
+    storage.btrfs.pool.devices = [
+      # FILL IN: this box's real disks (e.g. /dev/disk/by-id/...)
+    ];
   };
 
   services.caddy.enable = true;
@@ -61,8 +65,8 @@
     ips = ["10.10.0.2/24"];
     peers = [
       {
-        publicKey = "CHANGE_ME_EDGE_WG_PUBKEY";
-        endpoint = "1.2.3.4:51820"; # edge box IPv4 (filled by tofu)
+        publicKey = "GHJgVwwXSM4At4D4EERb8Q4G+1mzg1YCBWDGNEArwxg=";
+        endpoint = "62.238.111.21:51820";
         allowedIPs = ["10.10.0.1/32"];
         persistentKeepalive = 25; # keep the tunnel alive through NAT
       }

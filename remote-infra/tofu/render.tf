@@ -21,6 +21,7 @@ resource "local_file" "edge_nix" {
     edge_ipv6_customer    = local.customer_ipv6
     edge_ipv6_prefix_len  = local.edge_ipv6_prefix_len
     edge_interface        = var.edge_interface
+    edge_disk_device      = var.edge_disk_device
     ipv4_gateway          = var.ipv4_gateway
     edge_wg_ip            = local.edge_wg_ip
     customer_wg_ip        = local.customer_wg_ip

@@ -18,6 +18,13 @@
       url = "github:venkyr77/jellarr";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Disk partitioning for nixos-anywhere-managed boxes (edge).
+    # nixos-anywhere requires the target config to expose
+    # `system.build.diskoScript`, which this module provides.
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs: let
@@ -37,6 +44,7 @@
       system = "x86_64-linux";
       modules = [
         ./remote-infra/nix/edge.nix
+        inputs.disko.nixosModules.disko
       ];
     };
 

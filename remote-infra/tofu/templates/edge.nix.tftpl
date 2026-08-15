@@ -17,6 +17,47 @@
   system.stateVersion = "25.11";
   networking.hostName = "edge";
 
+  # ── Disk layout (disko, driven by nixos-anywhere) ───────────────
+  # Single disk: UEFI boot partition + btrfs root. The edge box keeps
+  # no customer data, so a flat root is enough — no subvolumes, no
+  # /data pool. Disko only runs at install time (nixos-anywhere);
+  # nothing in this module repartitions a live box.
+  disko.devices.disk.main = {
+    type = "disk";
+    device = "${edge_disk_device}";
+    content = {
+      type = "gpt";
+      partitions = {
+        boot = {
+          size = "512M";
+          type = "EF00";
+          content = {
+            type = "filesystem";
+            format = "vfat";
+            mountpoint = "/boot";
+            mountOptions = ["fmask=0077" "dmask=0077"];
+          };
+        };
+        root = {
+          size = "100%";
+          content = {
+            type = "btrfs";
+            extraArgs = ["-f"];
+            subvolumes = {
+              "/root" = {mountpoint = "/";};
+              "/nix" = {mountpoint = "/nix";};
+            };
+          };
+        };
+      };
+    };
+  };
+
+  boot.loader = {
+    systemd-boot.enable = true;
+    efi.canTouchEfiVariables = true;
+  };
+
   # Edge-only: no storage, no services, no OIDC.
   cococoir.storage.enable = false;
   cococoir.services.dex.enable = false;
@@ -41,7 +82,7 @@
       {
         address = "${ipv4_gateway}";
         prefixLength = 32;
-        options.onlink = true;
+        options.onlink = "true";
       }
     ];
     ipv6.addresses = [

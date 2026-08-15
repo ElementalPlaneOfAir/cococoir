@@ -55,6 +55,21 @@ echo "==> [3/4] nixos-anywhere install"
 nixos-anywhere --flake ".#edge" "root@${EDGE_IPV4}"
 
 echo "==> [4/4] install edge WG private key"
+# The box just rebooted into NixOS; SSH can take a while to come up.
+# Wait (bounded) for it instead of racing the boot.
+echo "    waiting for SSH on $EDGE_IPV4..."
+for i in $(seq 1 30); do
+  if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+      -o BatchMode=yes "root@${EDGE_IPV4}" true 2>/dev/null; then
+    echo "    SSH up after ${i} attempts"
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "    ERROR: SSH did not come up within 300s" >&2
+    exit 1
+  fi
+  sleep 10
+done
 scp -o StrictHostKeyChecking=accept-new "$SECRETS/edge.private" "root@${EDGE_IPV4}:/etc/wireguard/edge-private.key"
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "chmod 0600 /etc/wireguard/edge-private.key && systemctl restart wg-quick-wg0 cococoir-edge"
