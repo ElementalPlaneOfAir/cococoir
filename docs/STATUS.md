@@ -103,6 +103,23 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
   Proof: `cargo test` 96/96, `nix flake check` all green (incl.
   vmtest-wiring extraction assertions), manual curl smoke test.
   Proposal: `.specify/specs/config-editor/proposal.md`.
+- **Control plane demo slice (2026-08-15)** — `controlplane/` module +
+  `cococoir-controlplane` binary (ADR-025). `POST /signup` allocates
+  the next `/128` from the box's routed subnet (atomic Redis `INCR`,
+  host 1 = edge primary, customers from host 2), generates a
+  WireGuard keypair (x25519-dalek), stores the customer in Redis,
+  returns the private key once. `GET /customers` +
+  `DELETE /customers/:id` (404 on missing). Storage: Redis (AOF +
+  appendfsync always in the NixOS module; state is recoverable from
+  DNS + WG peers, so durability is deliberate, not assumed). The
+  subnet prefix is NOT hardcoded to `/64` — an operator who manages
+  one shared `/64` can hand the box a `/72` or `/96` slice
+  (`--subnet` accepts any byte-aligned `/64..=/112`; tofu
+  `edge_ipv6_subnet` var, default = Hetzner's per-server `/64`).
+  Proof: `cargo test` 105/105, plus a live round-trip against a real
+  Redis — two signups → `::2`/`::3` from a `/72`, list, delete (204),
+  re-delete (404). Cargo.lock refreshed with redis + x25519-dalek +
+  base64 + rand_core.
 
 ## Broken / landmines
 
@@ -114,6 +131,17 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
   failure: jellarr inactive + pipeline timeout; everything else passes.
 - `media/*` subvolumes are chowned to `jellyfin`; qBittorrent/Jellyseerr
   (v2.13) must join the same group to share the volume.
+- **Control plane is not wired into NixOS yet.** `cococoir-controlplane`
+  binary exists + is tested, but no NixOS module runs it, no Redis
+  module is configured (AOF/appendfsync not enforced), and nothing
+  calls `wg set` / the forwarder to actually route a signed-up
+  customer. The demo slice proves the *store* (allocations + keys);
+  the *routing* half (make the edge actually forward for a new
+  customer without restart) is unimplemented.
+- **Forwarder has no runtime mutation** — adding a customer still
+  means rewriting `cococoir-edge.json` + restarting (drops all
+  tunnels). This is the ADR-025 "runtime provisioning without
+  disruption" gap.
 
 ## Todo
 
@@ -125,6 +153,28 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
   once the editor proves out — currently runs via `nix run .#dashboard-dev`.
 
 ## Current focus
+
+**IPv6 edge demo arc** (`.specify/specs/ipv6-edge-demo/proposal.md`,
+2026-08-15): a live IPv6 per-customer edge on Hetzner, showing the
+vision in `writing/human/architecture_of_ipv6.md`. **All provisioning
+is OpenTofu** in `remote-infra/` — single `hcloud` provider (server +
+firewall + ssh key + DNS via the GA DNS API), NixOS installed via
+nixos-anywhere (Hetzner ships no NixOS image). IPs + WG *public* keys
+are rendered into `remote-infra/nix/` from tofu templates (one source
+of truth); token from env var, WG *private* keys in gitignored
+`.secrets/`. IPv6 tripwire: `bind_ipv6_loopback_works` +
+`run_tcp_forward_ipv6_listen` (cargo test 98/98). Proof: `tofu init` +
+`validate` green, both flake configs eval. **Blocked on provisioning**:
+`remote-infra/scripts/provision-edge.sh` was never run to completion.
+
+**Control-plane direction** (2026-08-15, see PLAN.md ADR-025):
+the Rust crate is the *client-side* (household users on one server,
+sqlite). The remote-access control plane (customer signup, WG keys at
+signup, /128 + AAAA provisioning) is a separate minimal multi-tenant
+service; storage is **Redis** (state is recoverable from DNS + WG, so
+durability is configured deliberately, not assumed; payment lives in
+the portal). IPv6 `/64` removes the per-customer IPv4 cost that gated
+v3.
 
 The config editor landed (2026-08-13, `.specify/specs/config-editor/`):
 `dashboard.nix` is the bare-attrset customer surface, the dashboard's index

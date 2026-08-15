@@ -162,11 +162,14 @@ An OpenTofu project in `remote-infra/` + two rendered NixOS configs:
   IPv6 works today (verified in retry.rs:73-89 and forwarder.rs:282).
   If the live demo reveals an IPv6-specific bug, that is a P0 fix in
   this arc, not a refactor.
-- **Hetzner `/64` is the address pool.** Hetzner routes a `/64` to
-  every server. We bind a small set of `/128`s from it (one per
-  customer for the demo; a handful total). Auto-provisioning of
-  addresses/DNS is explicitly deferred (the vision doc says so) —
-  static Nix for this demo.
+- **Hetzner `/64` is the address pool (default).** Hetzner routes a
+  `/64` to every server. We bind a small set of `/128`s from it (one
+  per customer for the demo; a handful total). The box subnet is a
+  variable, not hardcoded: an operator managing one shared `/64` can
+  hand the box a `/72` or `/96` slice (Rust `--subnet` + tofu
+  `edge_ipv6_subnet` accept any byte-aligned `/64..=/112`; ADR-025).
+  Auto-provisioning of addresses/DNS is explicitly deferred (the
+  vision doc says so) — static Nix for this demo.
 - **One forward per customer, per port.** The forwarder model is
   `listen_addr` per forward. Customer `example123` gets two forwards
   (`[ipv6]:80` tcp → `10.10.0.2:80`, `[ipv6]:443` tcp →
@@ -262,6 +265,20 @@ IPv6-native and an IPv4 client; all assertions pass.
 **Verification:** `vmtest-e2e.sh` PASS on the edge box or customer box.
 **Files:** none (runner + verification; jellarr P0 fix is STATUS.md's
 existing suspected-fix, verified here).
+
+### T8: control-plane demo slice (out of the original scope; ADR-025)
+**Depends on:** none (separate service; not on the demo critical path)
+**Verification:** `POST /signup` allocates `::2`/`::3` + WG keypair
+against a real Redis; `GET /customers` lists; `DELETE` removes (404 on
+missing). The *routing* half (make the edge actually forward for a new
+customer without restart) is explicitly NOT in this task.
+**Files:** `nix/packages/cococoir/src/controlplane/`,
+`src/bin/controlplane.rs`
+- [x] DONE 2026-08-15: Redis store (customers, atomic INCR alloc,
+      list, delete), x25519-dalek WG keygen, poem routes. Proof:
+      `cargo test` 101/101 + live Redis round-trip. This task
+      happened because the user decided to pull a slice of v3
+      forward; it is recorded in PLAN.md v3 backlog + STATUS.md.
 
 ## Strongest objection
 

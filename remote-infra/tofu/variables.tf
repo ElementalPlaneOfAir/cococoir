@@ -49,7 +49,7 @@ variable "domain" {
 }
 
 variable "customer" {
-  description = "Customer username. *.${var.customer}.${var.domain} AAAA records point at their /128 on the edge box."
+  description = "Customer username. *.&lt;customer&gt;.&lt;domain&gt; AAAA records point at their /128 on the edge box."
   type        = string
   default     = "example123"
 }
@@ -69,4 +69,10 @@ variable "wg_listen_port" {
   description = "WireGuard listen port on the edge box."
   type        = number
   default     = 51820
+}
+
+variable "edge_ipv6_subnet" {
+  description = "The edge box's routed IPv6 subnet (CIDR). Default: Hetzner's per-server /64. Set this when the operator manages one shared /64 and hands this box a /72 or /96 slice of it (e.g. 2a01:4f8:c17:1:ab00::/72). Must be byte-aligned /64..=/112."
+  type        = string
+  default     = ""
 }

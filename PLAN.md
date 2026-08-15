@@ -29,7 +29,7 @@ customer-facing scope, not internal implementation order.
 | **v0** | L4 forwarder (`cococoir-edge` + `cococoir-client` Rust binaries, NixOS modules, health endpoint) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
 | **v1** | Legacy home server (clan-core, Garage, FUSE mounts, services, rathole tunnel) at `v1/` | Frozen — soft deprecated. Features port to v2; no new development. | (n/a) |
 | **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, btrfs storage, 7 services with Dex OIDC) | Target | `scripts/vmtest-e2e.sh` PASS (Jellyfin + dex + cryptpad + btrfs + sops) |
-| **v3** | Control plane (Postgres + auto-provisioning + web UI, multi-tenant) | Deferred. Trigger: 10-20 customers. | (n/a yet) |
+| **v3** | Control plane (Redis + auto-provisioning + web UI, multi-tenant) | Deferred. Trigger: IPv6 makes it viable before 10-20 customers (ADR-025); demo slice shipped 2026-08-15. | (n/a yet) |
 | **v4** | Cluster expansion (multiple VPSes, each holding a slice of customers) | Deferred. Trigger: 50-100 customers or geographic need. | (n/a yet) |
 
 **Why v0 ships before v2 is "done":** the v0 L4 forwarder is the
@@ -494,6 +494,51 @@ revisited.
   targets Postgres. The port is verified by the L2 `edge-forward`
   nixosTest (`edge-forward: PASS`), which now runs against the Rust
   binaries.
+- **ADR-025: IPv6 is the per-customer routing primitive; the control
+  plane is a separate minimal service (extends ADR-016).** The
+  per-customer-IPv4 model in ADR-016 costs ~$1.50/mo per address and
+  made the control plane uneconomical before ~10-20 customers. A
+  free Hetzner `/64` (2^64 addresses) removes that gate: each customer
+  gets a `/128` carved from the box's `/64`, DNS maps
+  `*.<username>.interdim.net` AAAA → that `/128`, and the edge blindly
+  forwards it over WireGuard (exactly the v0 forwarder's proven per-IP
+  path, address family swapped). Cell carriers are IPv6-native, so
+  "remote access from any phone" needs no IPv4 at all. The box's
+  subnet is a variable, not always `/64`: an operator who manages one
+  shared `/64` can hand the box a `/72` or `/96` slice of it (Rust
+  `--subnet` and tofu `edge_ipv6_subnet` accept any byte-aligned
+  `/64..=/112`). Decisions:
+  - The **Rust crate is the client side** (household users on one
+    server; sqlite is right for that). The **remote-access control
+    plane** (customer signup, WG key generation at signup, `/128`
+    allocation, AAAA provisioning, payment) is a *separate minimal
+    multi-tenant service* exposing a thin API + payment portal; as
+    much complexity as possible stays in the customer dashboard.
+  - **Control-plane storage: Redis.** The control-plane state
+    (customers, `/128` allocations, WG peers, DNS records) is
+    low-throughput and *recoverable* — a lost allocation is rebuilt
+    from the AAAA records + edge WG peers, and payment state lives in
+    the portal (Stripe), not the control plane. So Redis's
+    operational simplicity (one process, no migrations, no schema
+    management) wins over a SQL store. Durability is deliberate, not
+    default: AOF + `appendfsync always` (trivial at control-plane
+    scale). Atomic "allocate next `/128` + create customer" uses a
+    Lua script (`INCR` counter + `SET`), not a SQL transaction.
+    Postgres was rejected: nothing needs relational queries or joins
+    now, and migrating later is a thin layer, not a rewrite. Redis in
+    cluster mode is replication/sharding — it does NOT buy durability
+    by itself. The **client dashboard keeps sqlite**: it is a
+    separate binary on a single customer box, already built + tested,
+    and Redis there would be pure churn.
+  - **Runtime provisioning without disruption** requires: a forwarder
+    that can add/remove forwards in memory (no restart — restart drops
+    every tunnel, including existing customers'), `wg set wg0 peer ...`
+    for WG peers (no wg0 restart), and a DNS/AAA A record API. All
+    three are real new code; none is a database feature.
+  - **Signup is a v3 control-plane feature, not demo work.** The 24h
+    demo proves the `/128` + AAAA + WG + Caddy data path with a static
+    single customer; the control plane automates what the demo
+    provisions by hand.
 
 ## Implementation backlog
 
@@ -573,15 +618,31 @@ verifies it. "Done" = shipped, tested, committed.
 - **v2.sanitize**: PII sanitization for OTEL export.
 - **v2.otel-backend**: Decide between embedded dashboard, Grafana, or both.
 
-### v3 — Control plane (deferred)
+### v3 — Control plane (deferred; demo slice shipped 2026-08-15)
 
-- `internal/admin/` HTTP server with `POST /customers`,
-  `DELETE /customers/{name}`, `GET /customers`,
-  `GET /customers/{name}/status`. Auth via sops-nix bearer
-  token, listener bound to the WireGuard interface.
-- Hetzner Cloud API client (IP allocate/release).
-- Hetzner DNS API client (record add/remove).
-- Postgres + Nix-config-generator (reads DB, emits attrsets).
+ADR-025 reshaped this: IPv6 `/64` per-customer `/128` replacing
+per-customer IPv4, Redis storage (not Postgres), and a separate
+minimal service in the Rust crate (`controlplane/`, binary
+`cococoir-controlplane`). **Shipped (demo slice, 2026-08-15):**
+- `POST /signup` — atomic Redis `INCR` allocates the next `/128`
+  (host 1 = edge primary, customers from 2), generates a WG keypair
+  (x25519-dalek), stores the customer, returns the private key once.
+- `GET /customers`, `DELETE /customers/:id`. Storage: Redis
+  (`cococoir:customer:*`, `cococoir:alloc:next`,
+  `cococoir:customers` list). Proof: `cargo test` 101/101 + live
+  Redis round-trip (::2/::3, list, delete 204, re-delete 404).
+
+**Remaining v3 work (ordered):**
+- **Routing half**: call `wg set wg0 peer ... allowed-ips ...` on
+  signup/delete so a new customer is actually reachable, and a
+  forwarder that can add/remove forwards in memory (no restart —
+  restart drops every tunnel). This is the ADR-025 "disruption-free"
+  gap; nothing else ships until it works.
+- Hetzner DNS API client (AAAA record add/remove at signup/delete).
+- Auth on the control-plane API (sops-nix bearer token), listener
+  bound to the WireGuard interface.
+- Hetzner Cloud API client (server inventory; per-customer IPv4 no
+  longer needed — ADR-025).
 - Web UI for customers + operators.
 
 ### v4 — Cluster expansion (deferred)

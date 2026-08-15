@@ -47,7 +47,7 @@
     ipv6.addresses = [
       {
         address = "${edge_ipv6_primary}";
-        prefixLength = 64;
+        prefixLength = ${edge_ipv6_prefix_len};
       }
       {
         address = "${edge_ipv6_customer}";

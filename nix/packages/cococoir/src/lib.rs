@@ -11,6 +11,7 @@
 //! `.specify/specs/rust-forwarder-port/proposal.md`.
 
 pub mod app;
+pub mod controlplane;
 pub mod dashboard;
 pub mod forwarder;
 pub mod health;

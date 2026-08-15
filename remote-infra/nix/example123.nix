@@ -13,7 +13,7 @@
   ...
 }: {
   imports = [
-    (import ../nix/nixos-modules)
+    (import ../../nix/nixos-modules)
   ];
 
   system.stateVersion = "25.11";

@@ -13,7 +13,7 @@
   ...
 }: {
   imports = [
-    (import ../nix/nixos-modules)
+    (import ../../nix/nixos-modules)
   ];
 
   system.stateVersion = "25.11";
@@ -41,7 +41,9 @@
     ];
   };
 
-  # Filled by tofu: real IPv4, /64, and customer /128.
+  # Filled by tofu: real IPv4, box subnet, and customer /128. The
+  # prefix length below is the box subnet's (default /64; a /72 or
+  # /96 slice of a shared /64 when edge_ipv6_subnet is set).
   networking.useDHCP = false;
   networking.interfaces.ens3 = {
     ipv4.addresses = [
