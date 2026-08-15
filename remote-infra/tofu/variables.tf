@@ -16,7 +16,7 @@ variable "server_name" {
 variable "server_type" {
   description = "Hetzner server type for the edge box."
   type        = string
-  default     = "cx22"
+  default     = "cx23"
 }
 
 variable "location" {

@@ -7,6 +7,6 @@ customer = "example123"
 ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@vermissian"
 
 # Optional overrides:
-# server_type = "cx22"
+# server_type = "cx23"
 # location    = "nbg1"
 # edge_interface = "ens3"
