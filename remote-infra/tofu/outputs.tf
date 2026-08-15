@@ -16,7 +16,7 @@ output "customer_ipv6" {
 
 output "nameservers" {
   description = "Hetzner nameservers for the zone — point interdim.net's NS records here at your registrar for the zone to go live."
-  value       = hcloud_zone.interdim.authoritative_nameservers[0].assigned
+  value       = hcloud_zone.interdim.authoritative_nameservers.assigned
 }
 
 output "wg_public_keys" {

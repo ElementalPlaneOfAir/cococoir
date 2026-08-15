@@ -22,7 +22,7 @@ variable "server_type" {
 variable "location" {
   description = "Hetzner location (nbg1, fsn1, hel1, ash, sin)."
   type        = string
-  default     = "nbg1"
+  default     = "hel1"
 }
 
 variable "bootstrap_image" {
