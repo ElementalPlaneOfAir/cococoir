@@ -328,6 +328,48 @@ impl ControlPlane {
         Ok(customers)
     }
 
+    /// Boot-time reconciliation (obligatory, not optional): rebuild
+    /// the routing table + live forwards from the durable store. Runs
+    /// before the edge accepts traffic, so a crash never leaves a
+    /// customer registered in Redis but not forwarded.
+    pub async fn rehydrate(
+        &self,
+        table: &RoutingTable,
+        forwarder: &Forwarder,
+    ) -> Result<usize, ControlPlaneError> {
+        let customers = self.list().await?;
+        let mut count = 0usize;
+        for customer in &customers {
+            let ipv6: Ipv6Addr = match customer.ipv6.parse() {
+                Ok(ip) => ip,
+                Err(_) => {
+                    tracing::error!(id = %customer.id, ipv6 = %customer.ipv6, "skipping corrupt customer");
+                    continue;
+                }
+            };
+            table.upsert(
+                ipv6,
+                WgPeer {
+                    wg_ip: customer.wg_ip.clone(),
+                    wg_public_key: customer.wg_public_key.clone(),
+                },
+            );
+            for port in [80u16, 443] {
+                let fwd = Forward {
+                    listen_addr: format!("[{}]:{port}", customer.ipv6),
+                    proto: Proto::Tcp,
+                    dest_addr: format!("{}:{port}", customer.wg_ip),
+                };
+                if let Err(err) = forwarder.add_forward(&fwd).await {
+                    tracing::error!(id = %customer.id, addr = %fwd.listen_addr, err = %err, "rehydrate bind failed");
+                }
+            }
+            count += 1;
+        }
+        tracing::info!(customers = count, forwards = %forwarder.stats().forwards.len(), "routing table rehydrated");
+        Ok(count)
+    }
+
     /// Delete a customer: remove the record, the routing table entry,
     /// and the live forwards. The WG peer itself is dropped via
     /// `wg set` separately (not yet wired).
