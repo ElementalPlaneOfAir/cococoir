@@ -133,20 +133,24 @@ pub struct ForwardStat {
 /// Inner mutable state shared between `run()`'s tasks and
 /// `stats()`. Atomics for the counters (lock-free), one `RwLock`
 /// for the per-forward map, one `RwLock` for the live listener
-/// handles (added/removed by `add_forward`/`remove_forward`).
+/// handles (added/removed by `add_forward`/`remove_forward`), and
+/// the shutdown sender live forwards share.
 #[derive(Debug)]
 pub(crate) struct State {
     forwards: RwLock<HashMap<String, ForwardStat>>,
     handles: RwLock<HashMap<String, tokio::task::AbortHandle>>,
+    shutdown_tx: watch::Sender<bool>,
     tcp_connections: AtomicI64,
     udp_flows: AtomicI64,
 }
 
 impl Default for State {
     fn default() -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
         Self {
             forwards: RwLock::new(HashMap::new()),
             handles: RwLock::new(HashMap::new()),
+            shutdown_tx,
             tcp_connections: AtomicI64::new(0),
             udp_flows: AtomicI64::new(0),
         }
@@ -172,6 +176,13 @@ impl State {
         if self.udp_flows.load(Ordering::SeqCst) > 0 {
             self.udp_flows.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    /// A live receiver for the forwarder's shutdown signal. Spawned
+    /// serve tasks hold one of these so they keep running until
+    /// shutdown (or are aborted by `remove_forward`).
+    fn shutdown_rx(&self) -> watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
     }
 
     fn record_bound(&self, fwd: &Forward, at: DateTime<Utc>) {
@@ -281,6 +292,14 @@ impl Forwarder {
         if cfg.forwards.is_empty() {
             return Err(ConfigError::EmptyForwards);
         }
+        Self::new_live(cfg)
+    }
+
+    /// A forwarder that starts with zero forwards, accepting new ones
+    /// only via `add_forward`. This is the edge's shape: customers are
+    /// added at runtime by the control plane, so an empty initial set
+    /// is valid. For the client (static config), use [`Forwarder::new`].
+    pub fn new_live(cfg: Config) -> Result<Self, ConfigError> {
         for (index, fwd) in cfg.forwards.iter().enumerate() {
             if fwd.listen_addr.is_empty() {
                 return Err(ConfigError::InvalidForward {
@@ -363,6 +382,9 @@ impl Forwarder {
         }
         tracing::info!(count = self.cfg.forwards.len(), "forwarder running");
         let _ = shutdown.wait_for(|v| *v).await;
+        // Propagate to live forwards (added via add_forward) so they
+        // stop too; their serve tasks hold a receiver on this channel.
+        let _ = self.state.shutdown_tx.send(true);
         tracing::info!(drain_timeout = ?self.cfg.shutdown_timeout, "forwarder shutting down");
         tracker.close();
         match tokio::time::timeout(self.cfg.shutdown_timeout, tracker.wait()).await {
@@ -471,15 +493,12 @@ impl Forwarder {
         aborted
     }
 
-    /// A fresh shutdown receiver for spawned tasks. All live forwards
-    /// stop when the forwarder's shutdown fires.
+    /// A fresh shutdown receiver for spawned tasks. Live forwards
+    /// (added via `add_forward`) keep serving until `run()`'s
+    /// shutdown fires — at which point it also signals the internal
+    /// channel so live forwards stop with the rest.
     fn shutdown_rx(&self) -> watch::Receiver<bool> {
-        // Forwarder owns no watch sender today (the caller does); each
-        // spawned serve task gets a receiver on a never-fired channel
-        // so only add/remove controls it. This is replaced when the
-        // edge merges control plane + forwarder and owns the signal.
-        let (_tx, rx) = watch::channel(false);
-        rx
+        self.state.shutdown_rx()
     }
 }
 
@@ -1167,32 +1186,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn freebind_binds_non_local_ipv6_loopback_prefix() {
+    async fn freebind_binds_non_local_ipv6_address() {
         // A /128 that is NOT assigned to any local interface cannot
         // be bound by a plain bind (EADDRNOTAVAIL), but IPV6_FREEBIND
-        // accepts it. We use a TEST-NET-ish /128 inside ::1/128 space
-        // that no interface owns; if freebind is broken the bind
-        // fails and this test catches it.
+        // accepts it. 2001:db8::1 is the documentation range — never
+        // assigned to a local interface. This is the exact class of
+        // address the edge binds: a customer /128 inside the routed
+        // /64 that is never added to an interface.
         let f = Arc::new(Forwarder::new(Config {
             forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
             bind_timeout: std::time::Duration::from_secs(5),
             ..Config::default()
         })
         .unwrap());
-        // Pick a free port first, then construct a non-local /128.
-        let probe = TcpListener::bind(("::1", 0)).await.unwrap();
-        let port = probe.local_addr().unwrap().port();
-        drop(probe);
+        // Sanity: a plain bind must FAIL for this address (proving it
+        // is genuinely non-local, so the test is meaningful).
+        let plain = tokio::net::TcpListener::bind("2001:db8::1:0").await;
+        assert!(plain.is_err(), "2001:db8::1 should not be locally bindable");
 
-        let non_local = format!("[::1]:{port}");
         let fwd = Forward {
-            listen_addr: non_local.clone(),
+            listen_addr: "[2001:db8::1]:8443".to_string(),
             proto: Proto::Tcp,
             dest_addr: "127.0.0.1:1".to_string(),
         };
-        // ::1 is loopback and IS local, so this is not a true
-        // freebind test — see note below.
-        f.add_forward(&fwd).await.expect("binds loopback");
+        f.add_forward(&fwd).await.expect("freebind binds non-local /128");
+        let stats = f.stats();
+        assert!(stats.forwards.iter().any(|s| s.bound && s.listen_addr == "[2001:db8::1]:8443"));
         f.remove_forward(&fwd);
     }
 }

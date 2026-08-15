@@ -124,6 +124,7 @@ fn bind_tcp_freebind(addr: &str) -> io::Result<TcpListener> {
         set_ipv6_freebind(&sock)?;
     }
     sock.set_reuse_address(true)?;
+    sock.set_nonblocking(true)?;
     sock.bind(&sock_addr.into())?;
     sock.listen(1024)?;
     TcpListener::from_std(sock.into())
