@@ -88,7 +88,7 @@ pub async fn retry_bind_tcp_freebind(
     shutdown: watch::Receiver<bool>,
 ) -> Result<TcpListener, BindError> {
     retry_with_backoff(
-        || bind_tcp_freebind(addr),
+        || async { bind_tcp_freebind(addr) },
         "tcp",
         addr,
         timeout,
@@ -121,12 +121,40 @@ fn bind_tcp_freebind(addr: &str) -> io::Result<TcpListener> {
     if sock_addr.is_ipv6() {
         // Freebind allows binding an address not on any local
         // interface — the customer /128 inside the routed /64.
-        sock.set_freebind(true)?;
+        set_ipv6_freebind(&sock)?;
     }
     sock.set_reuse_address(true)?;
     sock.bind(&sock_addr.into())?;
     sock.listen(1024)?;
     TcpListener::from_std(sock.into())
+}
+
+/// Set `IPV6_FREEBIND` on the socket (Linux: option 19). socket2
+/// 0.5 has no wrapper, so we call setsockopt directly on the fd.
+#[cfg(target_os = "linux")]
+fn set_ipv6_freebind(sock: &socket2::Socket) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let on: libc::c_int = 1;
+    let rc = unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::IPPROTO_IPV6,
+            libc::IPV6_FREEBIND,
+            &on as *const libc::c_int as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Non-Linux fallback: no freebind, plain bind semantics.
+#[cfg(not(target_os = "linux"))]
+fn set_ipv6_freebind(_sock: &socket2::Socket) -> io::Result<()> {
+    Ok(())
 }
 
 /// Shared retry loop for both protocols. The `bind` closure runs the

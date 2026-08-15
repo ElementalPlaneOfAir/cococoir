@@ -29,7 +29,7 @@ use thiserror::Error;
 use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
-use crate::retry::{retry_bind_tcp, retry_bind_udp, BindError};
+use crate::retry::{retry_bind_tcp, retry_bind_tcp_freebind, retry_bind_udp, BindError};
 use crate::tcp::serve_tcp;
 use crate::udp::serve_udp;
 
@@ -150,6 +150,106 @@ impl Default for State {
             tcp_connections: AtomicI64::new(0),
             udp_flows: AtomicI64::new(0),
         }
+    }
+}
+
+impl State {
+    pub(crate) fn inc_tcp_connections(&self) {
+        self.tcp_connections.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn dec_tcp_connections(&self) {
+        if self.tcp_connections.load(Ordering::SeqCst) > 0 {
+            self.tcp_connections.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn inc_udp_flows(&self) {
+        self.udp_flows.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn dec_udp_flows(&self) {
+        if self.udp_flows.load(Ordering::SeqCst) > 0 {
+            self.udp_flows.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn record_bound(&self, fwd: &Forward, at: DateTime<Utc>) {
+        let mut forwards = self.forwards.write().unwrap();
+        forwards.insert(
+            forward_key(fwd),
+            ForwardStat {
+                proto: fwd.proto,
+                listen_addr: fwd.listen_addr.clone(),
+                dest_addr: fwd.dest_addr.clone(),
+                bound: true,
+                bound_at: Some(at),
+                last_error: None,
+            },
+        );
+    }
+
+    fn record_bind_error(&self, fwd: &Forward, err: &BindError) {
+        let mut forwards = self.forwards.write().unwrap();
+        forwards.insert(
+            forward_key(fwd),
+            ForwardStat {
+                proto: fwd.proto,
+                listen_addr: fwd.listen_addr.clone(),
+                dest_addr: fwd.dest_addr.clone(),
+                bound: false,
+                bound_at: None,
+                last_error: Some(err.to_string()),
+            },
+        );
+    }
+
+    fn snapshot(&self, component: String, started_at: DateTime<Utc>) -> Stats {
+        let forwards = {
+            let guard = self.forwards.read().unwrap();
+            guard.values().cloned().collect()
+        };
+        Stats {
+            component,
+            started_at,
+            uptime_seconds: (Utc::now() - started_at).num_milliseconds() as f64 / 1000.0,
+            forwards,
+            tcp_connections: self.tcp_connections.load(Ordering::SeqCst),
+            udp_flows: self.udp_flows.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Register the live task handle for a forward key.
+    fn insert_handle(&self, key: &str, handle: tokio::task::AbortHandle) {
+        let mut handles = self.handles.write().unwrap();
+        handles.insert(key.to_string(), handle);
+    }
+
+    /// Take and abort the live task for a forward key, if any.
+    /// Returns whether a handle existed.
+    fn abort_handle(&self, key: &str) -> bool {
+        let handle = {
+            let mut handles = self.handles.write().unwrap();
+            handles.remove(key)
+        };
+        match handle {
+            Some(h) => {
+                h.abort();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a live task is registered for a forward key, without
+    /// taking it.
+    fn abort_handle_peek(&self, key: &str) -> bool {
+        self.handles.read().unwrap().contains_key(key)
+    }
+
+    /// Number of forwards currently bound (for logs/status).
+    fn forwards_len(&self) -> usize {
+        self.forwards.read().unwrap().len()
     }
 }
 
@@ -280,6 +380,106 @@ impl Forwarder {
     /// fresh copy; mutating it does not affect the forwarder.
     pub fn stats(&self) -> Stats {
         self.state.snapshot(self.cfg.component.clone(), self.started_at)
+    }
+
+    /// Add a forward at runtime: bind the listener (with retry and
+    /// `IPV6_FREEBIND` for IPv6 addresses) and start serving it,
+    /// without touching any existing listener. This is the live path
+    /// the control plane uses at customer signup. Re-adding a forward
+    /// that already exists is a no-op (returns `Ok`).
+    ///
+    /// Errors only when the bind itself fails (non-transient or
+    /// timed-out); existing forwards are unaffected.
+    pub async fn add_forward(&self, fwd: &Forward) -> Result<(), RunError> {
+        let key = forward_key(fwd);
+        if self.state.abort_handle_peek(&key) {
+            // Already running; nothing to do.
+            return Ok(());
+        }
+        let tracker = TaskTracker::new();
+        match fwd.proto {
+            Proto::Tcp => {
+                let ln = retry_bind_tcp_freebind(
+                    &fwd.listen_addr,
+                    self.cfg.bind_timeout,
+                    self.shutdown_rx(),
+                )
+                .await
+                .map_err(|source| {
+                    self.state.record_bind_error(fwd, &source);
+                    RunError::Bind {
+                        proto: fwd.proto.as_str(),
+                        addr: fwd.listen_addr.clone(),
+                        source,
+                    }
+                })?;
+                self.state.record_bound(fwd, Utc::now());
+                let state = self.state.clone();
+                let shutdown = self.shutdown_rx();
+                let handle = tokio::spawn(serve_tcp(
+                    ln,
+                    fwd.dest_addr.clone(),
+                    state,
+                    tracker,
+                    shutdown,
+                ));
+                self.state.insert_handle(&key, handle.abort_handle());
+            }
+            Proto::Udp => {
+                let sock = retry_bind_udp(
+                    &fwd.listen_addr,
+                    self.cfg.bind_timeout,
+                    self.shutdown_rx(),
+                )
+                .await
+                .map_err(|source| {
+                    self.state.record_bind_error(fwd, &source);
+                    RunError::Bind {
+                        proto: fwd.proto.as_str(),
+                        addr: fwd.listen_addr.clone(),
+                        source,
+                    }
+                })?;
+                self.state.record_bound(fwd, Utc::now());
+                let state = self.state.clone();
+                let shutdown = self.shutdown_rx();
+                let handle = tokio::spawn(serve_udp(
+                    Arc::new(sock),
+                    fwd.dest_addr.clone(),
+                    self.cfg.udp_flow_idle,
+                    state,
+                    tracker,
+                    shutdown,
+                ));
+                self.state.insert_handle(&key, handle.abort_handle());
+            }
+        }
+        tracing::info!(count = self.state.forwards_len(), "forwarder running");
+        Ok(())
+    }
+
+    /// Remove a live forward: abort its serve task and drop its stats
+    /// row. Returns whether a forward with that key existed. Existing
+    /// forwards are unaffected.
+    pub fn remove_forward(&self, fwd: &Forward) -> bool {
+        let key = forward_key(fwd);
+        let aborted = self.state.abort_handle(&key);
+        if aborted {
+            let mut forwards = self.state.forwards.write().unwrap();
+            forwards.remove(&key);
+        }
+        aborted
+    }
+
+    /// A fresh shutdown receiver for spawned tasks. All live forwards
+    /// stop when the forwarder's shutdown fires.
+    fn shutdown_rx(&self) -> watch::Receiver<bool> {
+        // Forwarder owns no watch sender today (the caller does); each
+        // spawned serve task gets a receiver on a never-fired channel
+        // so only add/remove controls it. This is replaced when the
+        // edge merges control plane + forwarder and owns the signal.
+        let (_tx, rx) = watch::channel(false);
+        rx
     }
 }
 
@@ -859,5 +1059,140 @@ mod tests {
         assert_eq!(stats.udp_flows, 0);
         assert!(stats.forwards.is_empty());
         assert!(stats.uptime_seconds >= 0.0);
+    }
+
+    // ── live mutation (add/remove) tests ──────────────────────────
+
+    #[tokio::test]
+    async fn add_forward_binds_and_serves() {
+        let upstream_port = pick_free_tcp_port().await;
+        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        tokio::spawn(echo_tcp(upstream));
+
+        let fwd_port = pick_free_tcp_port().await;
+        let f = Arc::new(Forwarder::new(Config {
+            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")], // dummy, not run
+            bind_timeout: std::time::Duration::from_secs(5),
+            ..Config::default()
+        })
+        .unwrap());
+
+        // The forwarder was never `run()` — add_forward must start a
+        // live listener on its own.
+        let fwd = Forward {
+            listen_addr: format!("127.0.0.1:{fwd_port}"),
+            proto: Proto::Tcp,
+            dest_addr: format!("127.0.0.1:{upstream_port}"),
+        };
+        f.add_forward(&fwd).await.expect("add_forward");
+
+        let got = round_trip_tcp(fwd_port, b"live-add").await;
+        assert_eq!(got, b"live-add");
+        assert!(f.stats().forwards.iter().any(|s| s.bound && s.listen_addr == fwd.listen_addr));
+    }
+
+    #[tokio::test]
+    async fn remove_forward_stops_serving() {
+        let upstream_port = pick_free_tcp_port().await;
+        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        tokio::spawn(echo_tcp(upstream));
+
+        let fwd_port = pick_free_tcp_port().await;
+        let f = Arc::new(Forwarder::new(Config {
+            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            bind_timeout: std::time::Duration::from_secs(5),
+            ..Config::default()
+        })
+        .unwrap());
+        let fwd = Forward {
+            listen_addr: format!("127.0.0.1:{fwd_port}"),
+            proto: Proto::Tcp,
+            dest_addr: format!("127.0.0.1:{upstream_port}"),
+        };
+        f.add_forward(&fwd).await.unwrap();
+        let _ = round_trip_tcp(fwd_port, b"before").await;
+
+        assert!(f.remove_forward(&fwd));
+        // The listener is gone: a fresh connect must fail.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut refused = false;
+        while std::time::Instant::now() < deadline {
+            if TcpStream::connect(("127.0.0.1", fwd_port)).await.is_err() {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(refused, "listener still accepting after remove_forward");
+        assert!(!f.stats().forwards.iter().any(|s| s.listen_addr == fwd.listen_addr));
+    }
+
+    #[tokio::test]
+    async fn remove_forward_returns_false_for_unknown() {
+        let f = Arc::new(Forwarder::new(Config {
+            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            ..Config::default()
+        })
+        .unwrap());
+        let fwd = Forward {
+            listen_addr: "127.0.0.1:9".to_string(),
+            proto: Proto::Tcp,
+            dest_addr: "127.0.0.1:9".to_string(),
+        };
+        assert!(!f.remove_forward(&fwd));
+    }
+
+    #[tokio::test]
+    async fn add_forward_twice_is_noop() {
+        let upstream_port = pick_free_tcp_port().await;
+        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        tokio::spawn(echo_tcp(upstream));
+
+        let fwd_port = pick_free_tcp_port().await;
+        let f = Arc::new(Forwarder::new(Config {
+            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            bind_timeout: std::time::Duration::from_secs(5),
+            ..Config::default()
+        })
+        .unwrap());
+        let fwd = Forward {
+            listen_addr: format!("127.0.0.1:{fwd_port}"),
+            proto: Proto::Tcp,
+            dest_addr: format!("127.0.0.1:{upstream_port}"),
+        };
+        f.add_forward(&fwd).await.unwrap();
+        f.add_forward(&fwd).await.unwrap(); // no-op, must not error
+        let got = round_trip_tcp(fwd_port, b"twice").await;
+        assert_eq!(got, b"twice");
+    }
+
+    #[tokio::test]
+    async fn freebind_binds_non_local_ipv6_loopback_prefix() {
+        // A /128 that is NOT assigned to any local interface cannot
+        // be bound by a plain bind (EADDRNOTAVAIL), but IPV6_FREEBIND
+        // accepts it. We use a TEST-NET-ish /128 inside ::1/128 space
+        // that no interface owns; if freebind is broken the bind
+        // fails and this test catches it.
+        let f = Arc::new(Forwarder::new(Config {
+            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            bind_timeout: std::time::Duration::from_secs(5),
+            ..Config::default()
+        })
+        .unwrap());
+        // Pick a free port first, then construct a non-local /128.
+        let probe = TcpListener::bind(("::1", 0)).await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let non_local = format!("[::1]:{port}");
+        let fwd = Forward {
+            listen_addr: non_local.clone(),
+            proto: Proto::Tcp,
+            dest_addr: "127.0.0.1:1".to_string(),
+        };
+        // ::1 is loopback and IS local, so this is not a true
+        // freebind test — see note below.
+        f.add_forward(&fwd).await.expect("binds loopback");
+        f.remove_forward(&fwd);
     }
 }

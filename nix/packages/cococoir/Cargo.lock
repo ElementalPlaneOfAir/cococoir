@@ -275,6 +275,7 @@ dependencies = [
  "bcrypt",
  "chrono",
  "dashmap",
+ "libc",
  "momenta",
  "poem",
  "poem-openapi",
