@@ -1,0 +1,10 @@
+# Cococoir remote-infra secrets and tofu state — never commit.
+# The API token comes from the HCLOUD_TOKEN env var. WireGuard
+# PRIVATE keys live here (public keys are read from here by tofu and
+# rendered into remote-infra/nix/, which is checked in).
+.secrets/
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+terraform.tfvars
+*.tfplan

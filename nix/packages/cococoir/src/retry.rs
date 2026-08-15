@@ -182,6 +182,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bind_ipv6_loopback_works() {
+        let (_tx, rx) = watch::channel(false);
+        let ln = retry_bind_tcp("[::1]:0", Duration::from_secs(1), rx)
+            .await
+            .unwrap();
+        assert!(ln.local_addr().unwrap().is_ipv6());
+    }
+
+    #[tokio::test]
     async fn bind_succeeds_after_transient_failure() {
         let (_tx, rx) = watch::channel(false);
         // Bind twice to the same ephemeral-free address: the second

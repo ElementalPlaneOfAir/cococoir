@@ -572,6 +572,23 @@ mod tests {
         }
     }
 
+    async fn round_trip_tcp_v6(port: u16, msg: &[u8]) -> Vec<u8> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Ok(mut conn) = TcpStream::connect(("::1", port)).await {
+                conn.write_all(msg).await.unwrap();
+                let mut buf = vec![0u8; msg.len()];
+                conn.read_exact(&mut buf).await.unwrap();
+                return buf;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "could not connect to ipv6 forwarder on port {port}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     async fn round_trip_udp(port: u16, msg: &[u8]) -> Vec<u8> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -636,6 +653,36 @@ mod tests {
         });
 
         let got = round_trip_tcp(fwd_port, b"ping").await;
+        assert_eq!(got, b"ping");
+
+        tx.send(true).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_tcp_forward_ipv6_listen() {
+        // The IPv6 edge vision binds per-customer [::/64 /128]:443 and
+        // forwards to the customer's WG IP. This exercises that exact
+        // path: an IPv6 loopback listen_addr through the forwarder to
+        // an IPv4 upstream. The demo deployment (edge.nix) puts a
+        // real /128 from the routed /64 in listen_addr; this test
+        // proves the bracket-notation IPv6 bind + forward cannot
+        // silently regress.
+        let upstream_port = pick_free_tcp_port().await;
+        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        tokio::spawn(echo_tcp(upstream));
+
+        let fwd_port = pick_free_tcp_port().await;
+        let (tx, handle) = spawn_forwarder(Config {
+            forwards: vec![Forward {
+                listen_addr: format!("[::1]:{fwd_port}"),
+                proto: Proto::Tcp,
+                dest_addr: format!("127.0.0.1:{upstream_port}"),
+            }],
+            ..Config::default()
+        });
+
+        let got = round_trip_tcp_v6(fwd_port, b"ping").await;
         assert_eq!(got, b"ping");
 
         tx.send(true).unwrap();

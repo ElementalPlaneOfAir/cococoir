@@ -31,6 +31,26 @@
       ];
     };
 
+    # IPv6 edge box (Hetzner VPS). Rendered by remote-infra/tofu from
+    # templates/edge.nix.tftpl — do not hand-edit.
+    edge = inputs.nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./remote-infra/nix/edge.nix
+      ];
+    };
+
+    # Customer box (home machine, full v2 stack). Rendered by
+    # remote-infra/tofu from templates/example123.nix.tftpl — do not
+    # hand-edit. Needs jellarr for jellyfin declarative config + OIDC.
+    example123 = inputs.nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./remote-infra/nix/example123.nix
+        inputs.jellarr.nixosModules.default
+      ];
+    };
+
     nixosModulesWithJellarr = {
       imports = [
         inputs.jellarr.nixosModules.default
@@ -55,6 +75,8 @@
       #   # or headless: nix run .#vmtest -- -nographic
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
+      flake.nixosConfigurations.edge = edge;
+      flake.nixosConfigurations.example123 = example123;
 
       perSystem = {pkgs, self', system, ...}: let
         # Real nixpkgs for dev tooling. flake-parts' perSystem `pkgs`

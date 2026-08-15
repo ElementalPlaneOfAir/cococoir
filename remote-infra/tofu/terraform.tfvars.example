@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copy to terraform.tfvars and fill in. The Hetzner API token goes in
+# the HCLOUD_TOKEN env var, NOT here (see remote-infra/README.md).
+domain = "interdim.net"
+customer = "example123"
+
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@vermissian"
+
+# Optional overrides:
+# server_type = "cx22"
+# location    = "nbg1"
+# edge_interface = "ens3"
