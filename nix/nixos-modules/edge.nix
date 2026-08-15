@@ -1,28 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — Go edge service module.
+# Cococoir — edge service module.
 #
-# v0.5 PR 1: the cococoir-edge binary is now one of two entry points
-# built from the consolidated nix/packages/cococoir module. The
-# shared forwarder lives in nix/packages/cococoir/internal/forwarder.
-# Per-IP binding, retry-with-backoff on initial bind, and graceful
-# shutdown all live in the shared package; this module just installs
-# the binary and runs it under systemd.
+# The edge box runs one process (the merged forwarder + control plane):
+# `cococoir-edge --subnet ... --redis-url ...`. It forwards customer
+# /128s to their WG peers (live, via IPV6_FREEBIND), and the control
+# plane API signs customers up. See the control-plane-source-of-truth
+# proposal.
 #
-# v0 scope of this module:
-#   - No SIGHUP hot-reload. NixOS rebuild -> systemd restart.
-#   - No WireGuard interface config. Operator wires
-#     `networking.wireguard.interfaces.wg0` in their machine config
-#     directly. (When the credential story is solved, cococoir will
-#     own the WG config too.)
-#   - Per-IP listening binds are supported in the forwarder (the JSON
-#     forwards list specifies listen_addr as host:port), but adding
-#     the IPs to local interfaces remains an operator responsibility.
-#
-# Config schema (JSON, matches the Go binary in nix/packages/cococoir):
-#   { "forwards": [
-#       { "listen_addr": "1.2.3.4:80",  "proto": "tcp", "dest_addr": "10.10.0.2:80" },
-#       ...
-#   ] }
+# The module also enables the local Redis the control plane persists
+# to (AOF + appendfsync always, per ADR-025: durability is deliberate,
+# not assumed).
 {
   config,
   lib,
@@ -33,73 +20,71 @@
   edgePkg = pkgs.callPackage ../packages/cococoir {};
 in {
   options.services.cococoir-edge = {
-    enable = lib.mkEnableOption "cococoir v2 Go edge service (L4 TCP/UDP forwarder)";
+    enable = lib.mkEnableOption "cococoir edge service (forwarder + control plane)";
 
-    configFile = lib.mkOption {
-      type = lib.types.path;
-      default = "/etc/cococoir-edge.json";
-      defaultText = lib.literalExpression "/etc/cococoir-edge.json";
-      description = ''
-        Path to edge.json. Most users should generate this with
-        `environment.etc."cococoir-edge.json".text = builtins.toJSON { ... };`
-        (or `sops.templates."cococoir-edge.json".content = builtins.toJSON { ... };`
-        if the config needs secrets). The default points at the standard
-        `/etc/cococoir-edge.json` path produced by `environment.etc`.
-      '';
+    subnet = lib.mkOption {
+      type = lib.types.str;
+      description = "The edge box's routed IPv6 subnet (e.g. 2a01:4f8:c17:1::/64). Customers get /128s carved from it.";
     };
 
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = edgePkg;
-      defaultText = lib.literalExpression "pkgs.callPackage ../packages/cococoir {}";
-      description = "cococoir package. Override to point at a fork or pinned version. The systemd unit uses the `cococoir-edge` binary out of this package's bin/.";
+    wgSubnet = lib.mkOption {
+      type = lib.types.str;
+      default = "10.10.0.0/24";
+      defaultText = lib.literalExpression "10.10.0.0/24";
+      description = "WireGuard tunnel network (edge .1, customers .2+).";
     };
 
-    logFormat = lib.mkOption {
-      type = lib.types.enum ["text" "json"];
-      default = "text";
-      defaultText = lib.literalExpression "text";
-      description = ''
-        Structured-logging output format. "text" is the human-readable
-        default; "json" emits one JSON object per record on stderr and
-        is what a future telemetry pipeline (v0.5 PR 4) will ingest.
-        A misconfigured value here fails the systemd unit at startup,
-        not at log time.
-      '';
+    redisUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "redis://127.0.0.1:6379";
+      defaultText = lib.literalExpression "redis://127.0.0.1:6379";
+      description = "Redis the control plane persists customers to. Defaults to the local Redis this module enables.";
+    };
+
+    apiAddr = lib.mkOption {
+      type = lib.types.str;
+      default = "0.0.0.0:8081";
+      defaultText = lib.literalExpression "0.0.0.0:8081";
+      description = "Address for the control plane HTTP API (signup/delete/customers).";
     };
 
     healthAddr = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1:9090";
       defaultText = lib.literalExpression "127.0.0.1:9090";
-      description = ''
-        Address for the /healthz, /readyz, /status HTTP endpoints.
-        Default binds to localhost only — the health server is for
-        local observability (operator curls, future on-box collector,
-        nixosTest). Set to "0.0.0.0:9090" to expose externally, or
-        "" to disable the health server entirely. A future v0.5 PR 4
-        change will add a bearer-token auth mode for cross-node
-        collection.
-      '';
+      description = "Address for the /healthz, /readyz, /status HTTP endpoints. Localhost-only by default.";
+    };
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = edgePkg;
+      defaultText = lib.literalExpression "pkgs.callPackage ../packages/cococoir {}";
+      description = "cococoir package. Override to point at a fork or pinned version.";
     };
   };
 
   config = lib.mkIf cfg.enable {
+    services.redis.servers.cococoir = {
+      enable = true;
+      port = 6379;
+      appendOnly = true;
+      appendFsync = "always"; # ADR-025: durability deliberate, not default
+    };
+
     systemd.services.cococoir-edge = {
-      description = "Cococoir v2 edge service — L4 TCP/UDP forwarder";
-      after = ["network-online.target" "wireguard-wg0.service"];
-      wants = ["network-online.target"];
+      description = "Cococoir edge — forwarder + control plane";
+      after = ["network-online.target" "wireguard-wg0.service" "redis-cococoir.service"];
+      wants = ["network-online.target" "redis-cococoir.service"];
       wantedBy = ["multi-user.target"];
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/cococoir-edge -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
+        ExecStart = "${cfg.package}/bin/cococoir-edge --subnet ${cfg.subnet} --wg-subnet ${cfg.wgSubnet} --redis-url ${cfg.redisUrl} --api-addr ${cfg.apiAddr} --health-addr ${cfg.healthAddr}";
         Restart = "on-failure";
         RestartSec = 5;
 
-        # Hardening. Edge runs as root because it listens on privileged
-        # ports (80, 443) — dropPrivileges would require CAP_NET_BIND_SERVICE
-        # or socket-activation, deferred to v0.5.
+        # Hardening. Runs as root because it binds privileged ports
+        # (80, 443) with IPV6_FREEBIND on customer /128s.
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";

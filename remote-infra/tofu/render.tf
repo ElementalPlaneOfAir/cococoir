@@ -16,30 +16,12 @@ locals {
 resource "local_file" "edge_nix" {
   filename = "${path.module}/../nix/edge.nix"
   content = templatefile("${path.module}/templates/edge.nix.tftpl", {
-    edge_ipv4             = hcloud_server.edge.ipv4_address
-    edge_ipv6_primary     = local.edge_primary_v6
-    edge_ipv6_customer    = local.customer_ipv6
-    edge_ipv6_prefix_len  = local.edge_ipv6_prefix_len
-    edge_interface        = var.edge_interface
-    edge_disk_device      = var.edge_disk_device
-    ipv4_gateway          = var.ipv4_gateway
-    edge_wg_ip            = local.edge_wg_ip
-    customer_wg_ip        = local.customer_wg_ip
-    customer_wg_pub       = local.customer_wg_pub
-    wg_listen_port        = tostring(var.wg_listen_port)
-    ssh_pubkey            = var.ssh_public_key
-    edge_forwards_json    = jsonencode([
-      {
-        listen_addr = "[${local.customer_ipv6}]:80"
-        proto       = "tcp"
-        dest_addr   = "${local.customer_wg_ip}:80"
-      },
-      {
-        listen_addr = "[${local.customer_ipv6}]:443"
-        proto       = "tcp"
-        dest_addr   = "${local.customer_wg_ip}:443"
-      },
-    ])
+    edge_ipv6_subnet  = local.edge_ipv6_subnet
+    edge_wg_ip        = local.edge_wg_ip
+    wg_subnet         = var.wg_subnet
+    wg_listen_port    = tostring(var.wg_listen_port)
+    edge_disk_device  = var.edge_disk_device
+    ssh_pubkey        = var.ssh_public_key
   })
 }
 

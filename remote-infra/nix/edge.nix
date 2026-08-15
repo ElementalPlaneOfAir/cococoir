@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Rendered by tofu from remote-infra/tofu/main.tf — do not hand-edit.
-# Values below (IPs, WG subnet, WG pubkey) come from the server
-# resource and .secrets/wg/*.pub. The WG PRIVATE key stays on the
-# box at /etc/wireguard/edge-private.key (scp'd at provision time).
+# The box gets its address via DHCP; customer /128s are bound at
+# runtime by the edge's IPV6_FREEBIND listeners. PLACEHOLDER subnet —
+# the real one is filled by tofu.
 {
   config,
   lib,
@@ -62,66 +62,34 @@
   cococoir.storage.enable = false;
   cococoir.services.dex.enable = false;
 
-  services.cococoir-edge.enable = true;
+  # ── Self-networking ─────────────────────────────────────────────
+  # The box gets its own address via DHCP — no baked NIC name, no
+  # static IP, no gateway math. Customer /128s are bound at runtime
+  # by the edge's IPV6_FREEBIND listeners; nothing per-customer lives
+  # in this config.
+  networking.useDHCP = true;
 
-  # One forward per customer /128, per port (TCP :80 + :443). ACME
-  # traffic rides the same forwards, so the customer's Caddy gets
-  # real Let's Encrypt certs through the tunnel.
-  environment.etc."cococoir-edge.json".text = ''[{"dest_addr":"10.10.0.2:80","listen_addr":"[2a01:4f9:c014:2c44::2]:80","proto":"tcp"},{"dest_addr":"10.10.0.2:443","listen_addr":"[2a01:4f9:c014:2c44::2]:443","proto":"tcp"}]'';
-
-  # ── Static networking (per the NixOS-on-Hetzner wiki) ────────────
-  networking.useDHCP = false;
-  networking.interfaces.eth0 = {
-    ipv4.addresses = [
-      {
-        address = "62.238.111.21";
-        prefixLength = 32;
-      }
-    ];
-    ipv4.routes = [
-      {
-        address = "172.31.1.1";
-        prefixLength = 32;
-        options.onlink = "true";
-      }
-    ];
-    ipv6.addresses = [
-      {
-        address = "2a01:4f9:c014:2c44::1";
-        prefixLength = 64;
-      }
-      {
-        address = "2a01:4f9:c014:2c44::2";
-        prefixLength = 128;
-      }
-    ];
-  };
-  networking.defaultGateway = {
-    address = "172.31.1.1";
-    interface = "eth0";
-  };
-  networking.defaultGateway6 = {
-    address = "fe80::1";
-    interface = "eth0";
+  # ── The merged edge: forwarder + control plane ──────────────────
+  services.cococoir-edge = {
+    enable = true;
+    subnet = "2a01:4f9:c014:2c44::/64";
+    wgSubnet = "10.10.0.0/24";
   };
 
   # ── WireGuard server ─────────────────────────────────────────────
+  # The interface is static; PEERS are added at runtime by the control
+  # plane (`wg set`), so signups need no config change. Private key is
+  # scp'd in at provision time.
   networking.wireguard.interfaces.wg0 = {
     privateKeyFile = "/etc/wireguard/edge-private.key";
     listenPort = 51820;
     ips = ["10.10.0.1/24"];
-    peers = [
-      {
-        publicKey = "bT0pcaYyB3/+cV1OKWey0x+ua0fwj/4851bCgS4SokA=";
-        allowedIPs = ["10.10.0.2/32"];
-      }
-    ];
   };
 
   # ── Firewall ─────────────────────────────────────────────────────
   networking.firewall = {
     enable = true;
-    allowedTCPPorts = [80 443];
+    allowedTCPPorts = [80 443 8081];
     allowedUDPPorts = [51820];
   };
 
