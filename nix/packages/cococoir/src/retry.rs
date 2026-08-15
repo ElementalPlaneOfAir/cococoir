@@ -78,6 +78,25 @@ pub async fn retry_bind_tcp(
     retry_with_backoff(|| TcpListener::bind(addr), "tcp", addr, timeout, shutdown).await
 }
 
+/// TCP bind with `IPV6_FREEBIND`, so a customer `/128` that is not
+/// assigned to any local interface can still be bound. Required for
+/// the edge's live routing table: signups bind `/128`s that live
+/// inside the box's routed `/64` but are never added to an interface.
+pub async fn retry_bind_tcp_freebind(
+    addr: &str,
+    timeout: Duration,
+    shutdown: watch::Receiver<bool>,
+) -> Result<TcpListener, BindError> {
+    retry_with_backoff(
+        || bind_tcp_freebind(addr),
+        "tcp",
+        addr,
+        timeout,
+        shutdown,
+    )
+    .await
+}
+
 /// UDP bind with retry-with-backoff. Same contract as
 /// [`retry_bind_tcp`] for the packet path.
 pub async fn retry_bind_udp(
@@ -86,6 +105,28 @@ pub async fn retry_bind_udp(
     shutdown: watch::Receiver<bool>,
 ) -> Result<UdpSocket, BindError> {
     retry_with_backoff(|| UdpSocket::bind(addr), "udp", addr, timeout, shutdown).await
+}
+
+/// Bind a `TcpListener` with `IPV6_FREEBIND` set before bind. Returns
+/// a socket2-instantiated listener so the option applies. On non-Unix
+/// platforms (no `IPV6_FREEBIND`) falls back to the plain bind.
+fn bind_tcp_freebind(addr: &str) -> io::Result<TcpListener> {
+    let sock_addr: std::net::SocketAddr = addr.parse().map_err(io::Error::other)?;
+    let domain = if sock_addr.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let sock = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    if sock_addr.is_ipv6() {
+        // Freebind allows binding an address not on any local
+        // interface — the customer /128 inside the routed /64.
+        sock.set_freebind(true)?;
+    }
+    sock.set_reuse_address(true)?;
+    sock.bind(&sock_addr.into())?;
+    sock.listen(1024)?;
+    TcpListener::from_std(sock.into())
 }
 
 /// Shared retry loop for both protocols. The `bind` closure runs the

@@ -132,10 +132,12 @@ pub struct ForwardStat {
 
 /// Inner mutable state shared between `run()`'s tasks and
 /// `stats()`. Atomics for the counters (lock-free), one `RwLock`
-/// for the per-forward map.
+/// for the per-forward map, one `RwLock` for the live listener
+/// handles (added/removed by `add_forward`/`remove_forward`).
 #[derive(Debug)]
 pub(crate) struct State {
     forwards: RwLock<HashMap<String, ForwardStat>>,
+    handles: RwLock<HashMap<String, tokio::task::AbortHandle>>,
     tcp_connections: AtomicI64,
     udp_flows: AtomicI64,
 }
@@ -144,75 +146,9 @@ impl Default for State {
     fn default() -> Self {
         Self {
             forwards: RwLock::new(HashMap::new()),
+            handles: RwLock::new(HashMap::new()),
             tcp_connections: AtomicI64::new(0),
             udp_flows: AtomicI64::new(0),
-        }
-    }
-}
-
-impl State {
-    pub(crate) fn inc_tcp_connections(&self) {
-        self.tcp_connections.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub(crate) fn dec_tcp_connections(&self) {
-        if self.tcp_connections.load(Ordering::SeqCst) > 0 {
-            self.tcp_connections.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    pub(crate) fn inc_udp_flows(&self) {
-        self.udp_flows.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub(crate) fn dec_udp_flows(&self) {
-        if self.udp_flows.load(Ordering::SeqCst) > 0 {
-            self.udp_flows.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    fn record_bound(&self, fwd: &Forward, at: DateTime<Utc>) {
-        let mut forwards = self.forwards.write().unwrap();
-        forwards.insert(
-            forward_key(fwd),
-            ForwardStat {
-                proto: fwd.proto,
-                listen_addr: fwd.listen_addr.clone(),
-                dest_addr: fwd.dest_addr.clone(),
-                bound: true,
-                bound_at: Some(at),
-                last_error: None,
-            },
-        );
-    }
-
-    fn record_bind_error(&self, fwd: &Forward, err: &BindError) {
-        let mut forwards = self.forwards.write().unwrap();
-        forwards.insert(
-            forward_key(fwd),
-            ForwardStat {
-                proto: fwd.proto,
-                listen_addr: fwd.listen_addr.clone(),
-                dest_addr: fwd.dest_addr.clone(),
-                bound: false,
-                bound_at: None,
-                last_error: Some(err.to_string()),
-            },
-        );
-    }
-
-    fn snapshot(&self, component: String, started_at: DateTime<Utc>) -> Stats {
-        let forwards = {
-            let guard = self.forwards.read().unwrap();
-            guard.values().cloned().collect()
-        };
-        Stats {
-            component,
-            started_at,
-            uptime_seconds: (Utc::now() - started_at).num_milliseconds() as f64 / 1000.0,
-            forwards,
-            tcp_connections: self.tcp_connections.load(Ordering::SeqCst),
-            udp_flows: self.udp_flows.load(Ordering::SeqCst),
         }
     }
 }

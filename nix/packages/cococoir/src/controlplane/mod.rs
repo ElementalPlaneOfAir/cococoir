@@ -26,6 +26,9 @@
 //! Lua-free single key — INCR is atomic in Redis). Host 1 is the
 //! edge's own primary `/128`; customers start at host 2.
 
+pub mod routing_config;
+pub use routing_config::{RoutingTable, WgPeer};
+
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 
@@ -250,10 +253,7 @@ pub fn generate_wg_keypair() -> (String, String) {
     use rand_core::OsRng;
     let secret = StaticSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);
-    (
-        B64.encode(public.as_bytes()),
-        B64.encode(secret.to_bytes()),
-    )
+    (B64.encode(public.as_bytes()), B64.encode(secret.to_bytes()))
 }
 
 // ── HTTP handlers ────────────────────────────────────────────────
