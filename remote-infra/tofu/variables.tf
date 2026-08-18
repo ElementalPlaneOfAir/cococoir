@@ -26,21 +26,9 @@ variable "location" {
 }
 
 variable "bootstrap_image" {
-  description = "Disposable image nixos-anywhere overwrites with NixOS. Hetzner has no first-party NixOS image (confirmed via changelog 2026-08)."
+  description = "Stock OS image for the edge box. system-manager applies the cococoir config on top; no first-party NixOS image exists on Hetzner (confirmed via changelog 2026-08)."
   type        = string
-  default     = "ubuntu-24.04"
-}
-
-variable "edge_interface" {
-  description = "Primary NIC name on the edge box. Hetzner cloud exposes eth0 (altname enp1s0) on x86_64. Verify with `ls /sys/class/net` from the rescue system if this ever changes."
-  type        = string
-  default     = "eth0"
-}
-
-variable "edge_disk_device" {
-  description = "Root disk device on the edge box. Hetzner cloud servers expose it as /dev/sda (verify with `lsblk` after the kexec boot). Used by the disko partition layout."
-  type        = string
-  default     = "/dev/sda"
+  default     = "debian-12"
 }
 
 variable "ipv4_gateway" {
@@ -61,7 +49,7 @@ variable "customer" {
 }
 
 variable "ssh_public_key" {
-  description = "Operator SSH public key injected into the edge box and used by nixos-anywhere."
+  description = "Operator SSH public key injected into the edge box and the customer box."
   type        = string
 }
 

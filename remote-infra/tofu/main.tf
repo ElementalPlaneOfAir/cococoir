@@ -7,13 +7,15 @@
 # pool from the vision doc); set edge_ipv6_subnet to a /72 or /96
 # slice when the operator shares one /64 across boxes. The customer's
 # /128 is derived from the box subnet via cidrhost so DNS and the
-# NixOS config cannot drift.
+# system-manager config cannot drift.
 #
-# The NixOS configs (edge.nix / example123.nix) are RENDERED from
-# templates below: IPs, subnet, WG subnet, and the WG public keys all
-# flow from tofu so there is exactly one source of truth for the
-# deployed addressing. WG private keys live in remote-infra/.secrets/
-# (gitignored), never in the repo or the rendered configs.
+# The box runs a stock Debian image managed by system-manager (see
+# remote-infra/system-manager/edge.nix); the customer box (example123)
+# is still NixOS, rendered from templates below. IPs, subnet, WG subnet,
+# and the WG public keys all flow from tofu so there is exactly one
+# source of truth for the deployed addressing. WG private keys live in
+# remote-infra/.secrets/ (gitignored), never in the repo or the
+# rendered configs.
 
 locals {
   # The box's routed subnet. Hetzner hands out a /64 per server, but
@@ -42,7 +44,7 @@ resource "hcloud_ssh_key" "operator" {
 resource "hcloud_firewall" "edge" {
   name = "${var.server_name}-firewall"
 
-  # SSH — operator access + nixos-anywhere bootstrap.
+  # SSH — operator access + system-manager bootstrap.
   rule {
     direction  = "in"
     protocol   = "tcp"

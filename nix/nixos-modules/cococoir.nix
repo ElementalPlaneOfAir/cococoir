@@ -14,15 +14,14 @@
 #   - cococoir.storage.* — btrfs pool + subvolumes (ADR-023)
 #   - cococoir.services.<name> — 4-option (or 3-option for
 #     infra) contract; built via services/_contract.nix
-#   - services.cococoir-{edge,client} — v0 L4 forwarder systemd
-#     units (no-op on a v2 single-machine with no WireGuard peer)
+#   - services.cococoir-client — v0 L4 tunnel client systemd
+#     unit (no-op on a v2 single-machine with no WireGuard peer)
 {
   imports = [
     ./tls.nix
     ./base-domain.nix
     ./secrets.nix
     ./storage/btrfs.nix
-    ./edge.nix
     ./client.nix
     ./services/jellyfin.nix
     ./services/dex.nix

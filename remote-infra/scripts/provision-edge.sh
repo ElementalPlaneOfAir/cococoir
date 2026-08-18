@@ -3,15 +3,16 @@
 #
 # provision-edge.sh — bring up the edge box end to end:
 #   1. generate WireGuard keypairs (if absent)
-#   2. tofu init + apply (server + firewall + DNS + renders NixOS configs)
-#   3. nixos-anywhere installs NixOS on the box from the flake config
-#   4. scp the edge WG private key onto the box
+#   2. tofu init + apply (server + firewall + DNS + renders customer config)
+#   3. install Nix on the stock Debian image
+#   4. system-manager switch (applies remote-infra/system-manager/edge.nix)
+#   5. install the edge WG private key + wire the tunnel
 #
 # Prereqs:
 #   HCLOUD_TOKEN exported, OR the token file at
 #   ${HETZNER_TOKEN_FILE:-/home/nicole/.secrets/HETZNER_SECRET_API_KEY}
 #   (read here, never stored in the repo)
-#   opentofu, nixos-anywhere, wg in PATH (or use the repo devshell)
+#   opentofu, nix, wg in PATH (or use the repo devshell)
 #
 # Usage:
 #   bash remote-infra/scripts/provision-edge.sh
@@ -25,7 +26,7 @@ TOKEN_FILE="${HETZNER_TOKEN_FILE:-/home/nicole/.secrets/HETZNER_SECRET_API_KEY}"
 command -v tofu >/dev/null || command -v opentofu >/dev/null \
   || { echo "missing opentofu (the 'tofu' binary)"; exit 1; }
 TOFU=$(command -v tofu || command -v opentofu)
-command -v nixos-anywhere >/dev/null || { echo "missing nixos-anywhere (nix run nixpkgs#nixos-anywhere)"; exit 1; }
+command -v nix >/dev/null || { echo "missing nix (nix run nixpkgs#system-manager)"; exit 1; }
 command -v wg >/dev/null || { echo "missing wireguard-tools (wg)"; exit 1; }
 
 # The hcloud provider reads HCLOUD_TOKEN. If it's not already exported,
@@ -38,10 +39,10 @@ if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
   fi
 fi
 
-echo "==> [1/4] WireGuard keys"
+echo "==> [1/5] WireGuard keys"
 bash scripts/gen-wg-keys.sh
 
-echo "==> [2/4] tofu apply"
+echo "==> [2/5] tofu apply"
 (
   cd "$TOFU_DIR"
   "$TOFU" init
@@ -51,28 +52,30 @@ echo "==> [2/4] tofu apply"
 EDGE_IPV4=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_ipv4)
 echo "edge box IPv4: $EDGE_IPV4"
 
-echo "==> [3/4] nixos-anywhere install"
-nixos-anywhere --flake ".#edge" "root@${EDGE_IPV4}"
+echo "==> [3/5] install Nix on the stock Debian image"
+# Official single-user... no: daemon installer (system-manager deploy
+# pushes closures, which needs the daemon's trusted-users).
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "root@${EDGE_IPV4}" \
+  "sh <(curl -L --proto '=https' --tlsv1.2 https://nixos.org/nix/install) --daemon && \
+   printf 'trusted-users = root\n' >> /etc/nix/nix.conf && systemctl restart nix-daemon"
 
-echo "==> [4/4] install edge WG private key"
-# The box just rebooted into NixOS; SSH can take a while to come up.
-# Wait (bounded) for it instead of racing the boot.
-echo "    waiting for SSH on $EDGE_IPV4..."
-for i in $(seq 1 30); do
-  if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
-      -o BatchMode=yes "root@${EDGE_IPV4}" true 2>/dev/null; then
-    echo "    SSH up after ${i} attempts"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "    ERROR: SSH did not come up within 300s" >&2
-    exit 1
-  fi
-  sleep 10
-done
+echo "==> [4/5] system-manager switch (applies the edge config)"
+nix run .#system-manager -- \
+  --target-host "root@${EDGE_IPV4}" \
+  switch --flake ".#edge" --sudo
+
+echo "==> [5/5] install edge WG private key + wire the tunnel"
+# The WG private key never touches the repo; scp it and assemble
+# wg0.conf from tofu's addressing on the box.
+WG_IP=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_wg_ip)         # 10.10.0.1
+WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || echo "51820")
 scp -o StrictHostKeyChecking=accept-new "$SECRETS/edge.private" "root@${EDGE_IPV4}:/etc/wireguard/edge-private.key"
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
-  "chmod 0600 /etc/wireguard/edge-private.key && systemctl restart wg-quick-wg0 cococoir-edge"
+  "chmod 0600 /etc/wireguard/edge-private.key && \
+   printf '[Interface]\nAddress = %s/24\nListenPort = %s\nPrivateKey = %s\n' \
+     '$WG_IP' '$WG_PORT' \"\$(cat /etc/wireguard/edge-private.key)\" > /etc/wireguard/wg0.conf && \
+   chmod 0600 /etc/wireguard/wg0.conf && \
+   systemctl restart wg-quick-wg0 cococoir-edge"
 
 echo ""
 echo "==> Edge box up. Next:"

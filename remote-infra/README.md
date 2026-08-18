@@ -13,34 +13,38 @@ remote-infra/
 ├── tofu/                    # OpenTofu: the source of truth
 │   ├── main.tf              # server, firewall, ssh key, address derivation
 │   ├── dns.tf               # interdim.net zone + records
-│   ├── render.tf            # renders the NixOS configs from templates
-│   ├── templates/           # edge.nix / example123.nix templates
+│   ├── render.tf            # renders the customer (NixOS) config from template
+│   ├── templates/           # example123.nix template
 │   ├── versions.tf          # hcloud + local providers
 │   └── terraform.tfvars.example
 ├── nix/                     # RENDERED NixOS configs (checked in, public values)
-│   ├── edge.nix             #   overwritten by tofu apply
-│   └── example123.nix       #   overwritten by tofu apply
+│   └── example123.nix       #   overwritten by tofu apply (customer box only)
+├── system-manager/          # edge box config (stock Debian, no NixOS)
+│   └── edge.nix             #   applied via system-manager switch
 ├── scripts/
 │   ├── gen-wg-keys.sh       # WG keypairs -> .secrets/wg/ (gitignored)
-│   └── provision-edge.sh    # gen keys -> tofu -> nixos-anywhere -> scp key
+│   └── provision-edge.sh    # gen keys -> tofu -> nix install -> system-manager -> scp key
 └── .secrets/                # gitignored: WG private keys, tofu state
 ```
 
 ## Why this shape
 
 - **No first-party NixOS image on Hetzner** (confirmed via changelog
-  2026-08). The box boots a disposable `ubuntu-24.04` and
-  **nixos-anywhere** installs NixOS from the repo flake over SSH. This
-  is the canonical Hetzner+NixOS path (NixOS wiki).
+  2026-08). The edge box boots a stock `debian-12` image and
+  **system-manager** applies the cococoir config on top (systemd
+  services, packages, `/etc` files) without taking over the OS. This
+  sidesteps the disko/fstab/NIC boot failures that plagued the old
+  NixOS edge. Customer boxes stay full NixOS — that's the product.
 - **One source of truth for addressing.** The edge IPv4, the routed
   `/64`, and the customer `/128` are derived once in `tofu/main.tf`
-  (`cidrhost`) and flow into the DNS records AND the rendered NixOS
-  configs. Change a variable → re-apply → both stay consistent.
+  (`cidrhost`) and flow into the DNS records, the customer NixOS
+  config, and the provision script's WireGuard config. Change a
+  variable → re-apply → everything stays consistent.
 - **Secrets never in git.** The Hetzner token comes from the
   `HCLOUD_TOKEN` env var. WireGuard private keys are generated into
   `.secrets/` (gitignored) and scp'd to the boxes at provision time.
   Only IPs + WG *public* keys land in the rendered (checked-in)
-  NixOS configs — those are not secrets.
+  configs — those are not secrets.
 
 ## The IPv6 model being provisioned
 
@@ -67,8 +71,7 @@ echo 'your-token' > ~/.secrets/HETZNER_API_KEY
 chmod 600 ~/.secrets/HETZNER_API_KEY
 
 # 2. Tooling.
-nix develop  # or: nix shell nixpkgs#opentofu nixpkgs#nixos-anywhere \
-             #         nixpkgs#wireguard-tools nixpkgs#jq
+nix develop  # or: nix shell nixpkgs#opentofu nixpkgs#wireguard-tools nixpkgs#jq
 
 # 3. Variables.
 cp tofu/terraform.tfvars.example tofu/terraform.tfvars
@@ -79,9 +82,10 @@ bash scripts/provision-edge.sh
 ```
 
 `provision-edge.sh` generates the WG keypairs, runs `tofu apply`
-(server + firewall + ssh key + DNS zone + records + renders the NixOS
-configs), installs NixOS with nixos-anywhere, and scp's the edge WG
-private key onto the box.
+(server + firewall + ssh key + DNS zone + records + renders the
+customer NixOS config), installs Nix on the stock Debian image,
+applies the edge config with `system-manager switch`, and installs
+the edge WG private key on the box.
 
 ## After provisioning
 
@@ -103,9 +107,11 @@ Everything is declarative. To change something:
 
 - **Server/location/image**: `tofu/variables.tf`, re-apply.
 - **Another customer**: add a `/128` derivation in `main.tf`, a record
-  in `dns.tf`, and a peer in the edge template; re-apply + rebuild.
-- **The NixOS configs**: edit `tofu/templates/*.tftpl`, re-apply, then
-  `nixos-anywhere` / `nixos-rebuild` again. The rendered files are
-  derived artifacts.
+  in `dns.tf`, and a peer on the edge; re-apply + rebuild.
+- **The edge box**: edit `system-manager/edge.nix`, then
+  `nix run .#system-manager -- --target-host root@<edge> switch --flake .#edge --sudo`.
+- **The customer NixOS config**: edit `tofu/templates/*.tftpl`,
+  re-apply, then `nixos-rebuild` on the box. The rendered file is a
+  derived artifact.
 
 See `.specify/specs/ipv6-edge-demo/proposal.md` for the full arc.

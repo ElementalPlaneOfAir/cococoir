@@ -8,22 +8,10 @@
 # this tofu. Edit the .tftpl, re-apply, and nixos-anywhere / the flake
 # picks up the new config. The rendered files are checked in (they
 # contain only public values: IPs + WG public keys).
-
-locals {
-  edge_ipv6_prefix_len = parseint(element(split("/", local.edge_ipv6_subnet), 1), 10)
-}
-
-resource "local_file" "edge_nix" {
-  filename = "${path.module}/../nix/edge.nix"
-  content = templatefile("${path.module}/templates/edge.nix.tftpl", {
-    edge_ipv6_subnet  = local.edge_ipv6_subnet
-    edge_wg_ip        = local.edge_wg_ip
-    wg_subnet         = var.wg_subnet
-    wg_listen_port    = tostring(var.wg_listen_port)
-    edge_disk_device  = var.edge_disk_device
-    ssh_pubkey        = var.ssh_public_key
-  })
-}
+#
+# NOTE: the edge box now runs stock Debian via system-manager, so only
+# the customer box (example123) is rendered here. Edge addressing is
+# handled in system-manager/edge.nix instead.
 
 resource "local_file" "example123_nix" {
   filename = "${path.module}/../nix/example123.nix"

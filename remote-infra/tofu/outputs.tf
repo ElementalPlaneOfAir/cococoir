@@ -4,6 +4,11 @@ output "edge_ipv4" {
   value       = hcloud_server.edge.ipv4_address
 }
 
+output "edge_wg_ip" {
+  description = "The edge box's WireGuard tunnel IP (WG subnet .1)."
+  value       = local.edge_wg_ip
+}
+
 output "edge_ipv6_network" {
   description = "Edge box routed IPv6 /64 (the address pool)."
   value       = local.edge_ipv6_subnet

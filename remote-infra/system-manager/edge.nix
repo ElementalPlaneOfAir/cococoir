@@ -44,8 +44,10 @@
 
   # ── WireGuard server ─────────────────────────────────────────────
   # Interface is static; PEERS are added at runtime by the control
-  # plane (`wg set`). Private key is scp'd to /etc/wireguard/edge-
-  # private.key at provision time.
+  # plane (`wg set`), so signups need no config change. wg0.conf
+  # (Address + ListenPort + the private key) is assembled by
+  # provision-edge.sh from tofu's addressing — the private key never
+  # lives in the repo.
   systemd.services.wg-quick-wg0 = {
     description = "WireGuard tunnel for cococoir edge";
     enable = true;
