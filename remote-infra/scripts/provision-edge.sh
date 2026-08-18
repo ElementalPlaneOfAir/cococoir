@@ -60,9 +60,15 @@ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "root@${EDGE_IPV4}"
    printf 'trusted-users = root\n' >> /etc/nix/nix.conf && systemctl restart nix-daemon"
 
 echo "==> [4/5] system-manager switch (applies the edge config)"
-nix run .#system-manager -- \
-  --target-host "root@${EDGE_IPV4}" \
-  switch --flake ".#edge" --sudo
+# system-manager's own flake (pinned via our flake.lock) is the CLI;
+# `--flake .#edge` resolves our repo flake because we run from the
+# repo root. It builds the config locally and nix-copy-closure's it.
+(
+  cd "$(git rev-parse --show-toplevel)"
+  nix run 'github:numtide/system-manager' -- \
+    --target-host "root@${EDGE_IPV4}" \
+    switch --flake ".#edge" --sudo
+)
 
 echo "==> [5/5] install edge WG private key + wire the tunnel"
 # The WG private key never touches the repo; scp it and assemble
