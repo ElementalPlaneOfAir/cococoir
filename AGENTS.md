@@ -119,11 +119,6 @@ function clamp(x: number, lo: number, hi: number): number {
 
 # Git Commit Directives
 
+- Do not commit your own work. You can add files to git. But always ask a human to review your work before committing it.
 - **NEVER add `Co-Authored-By` trailers.** No exceptions.
-- Commit messages should be short, lowercase, and use conventional commit format: `type(scope): description`
-  - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `polish`
-  - Scope is optional but preferred (e.g., `feat(cards): add hermit implementation`)
-- One logical change per commit. Don't bundle unrelated changes.
-- No body text unless genuinely necessary. The subject line should be self-explanatory.
-- When squash-merging a PR, the individual commits become the body — so keep each commit message clean and readable as a bullet point.
 
