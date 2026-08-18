@@ -43,8 +43,8 @@
           content = {
             type = "btrfs";
             extraArgs = ["-f"];
+            # / is the btrfs top level; /nix is a separate subvolume.
             subvolumes = {
-              "/root" = {mountpoint = "/";};
               "/nix" = {mountpoint = "/nix";};
             };
           };

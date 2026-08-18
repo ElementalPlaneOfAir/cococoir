@@ -18,11 +18,13 @@
       url = "github:venkyr77/jellarr";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Disk partitioning for nixos-anywhere-managed boxes (edge).
-    # nixos-anywhere requires the target config to expose
-    # `system.build.diskoScript`, which this module provides.
-    disko = {
-      url = "github:nix-community/disko";
+    # Manage the edge box on a stock Debian image: systemd services,
+    # packages, and root-level config applied atomically with Nix,
+    # without taking over the OS. The edge never needed full NixOS
+    # (it's a stateless forwarder), and a stock image removes the
+    # disko/fstab/NIC boot problems entirely. Customer boxes stay NixOS.
+    system-manager = {
+      url = "github:numtide/system-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -35,16 +37,6 @@
         ./nixosConfigurations/vmtest.nix
         "${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
         inputs.jellarr.nixosModules.default
-      ];
-    };
-
-    # IPv6 edge box (Hetzner VPS). Rendered by remote-infra/tofu from
-    # templates/edge.nix.tftpl — do not hand-edit.
-    edge = inputs.nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        ./remote-infra/nix/edge.nix
-        inputs.disko.nixosModules.disko
       ];
     };
 
@@ -74,6 +66,18 @@
 
       flake.nixosModules.default = nixosModulesWithJellarr;
 
+      # The edge box is managed by system-manager on a stock Debian
+      # image (not NixOS). systemConfigs.edge is the system-manager
+      # config; the merged cococoir-edge binary is injected via
+      # extraSpecialArgs. Deploy with:
+      #   nix run .#system-manager -- switch --flake .#edge
+      flake.systemConfigs.edge = inputs.system-manager.lib.makeSystemConfig {
+        modules = [./remote-infra/system-manager/edge.nix];
+        specialArgs = {
+          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/cococoir {};
+        };
+      };
+
       # Manual v2 dev VM: every cococoir service under test, each
       # behind its own Caddy vhost in the `vmtest.local`
       # cookie-jar. Today that includes Jellyfin and Dex;
@@ -83,7 +87,6 @@
       #   # or headless: nix run .#vmtest -- -nographic
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
-      flake.nixosConfigurations.edge = edge;
       flake.nixosConfigurations.example123 = example123;
 
       perSystem = {pkgs, self', system, ...}: let

@@ -43,8 +43,13 @@
           content = {
             type = "btrfs";
             extraArgs = ["-f"];
+            # / is the btrfs top level; /nix is a separate subvolume.
+            # Do NOT nest a subvolume at "/" — nixos-install writes /
+            # to whatever is mounted at /, and nesting root under the
+            # top-level made the booted / come up empty (no /etc, no
+            # network). This layout is the canonical disko single-root
+            # btrfs form.
             subvolumes = {
-              "/root" = {mountpoint = "/";};
               "/nix" = {mountpoint = "/nix";};
             };
           };
