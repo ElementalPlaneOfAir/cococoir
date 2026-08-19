@@ -70,21 +70,26 @@ echo "==> [4/5] system-manager switch (applies the edge config)"
     switch --flake ".#edge" --sudo
 )
 
-echo "==> [5/5] install edge WG private key + wire the tunnel"
-# The WG private key never touches the repo; scp it and assemble
-# wg0.conf from tofu's addressing on the box.
+echo "==> [5/5] wire the WG tunnel interface"
+# The edge box owns its WireGuard identity at runtime: cococoir-edge
+# generates + persists a keypair in Redis on first boot and installs it
+# into wg0 (see ControlPlane::edge_public_key). wg0.conf only needs *a*
+# key for `wg-quick up` to bring the interface up; the edge overrides it
+# on boot, so we generate a throwaway here. Address + listen port come
+# from tofu's single source of truth.
 WG_IP=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_wg_ip)         # 10.10.0.1
 WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || echo "51820")
-scp -o StrictHostKeyChecking=accept-new "$SECRETS/edge.private" "root@${EDGE_IPV4}:/etc/wireguard/edge-private.key"
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
-  "chmod 0600 /etc/wireguard/edge-private.key && \
+  "wg genkey > /etc/wireguard/wg0-throwaway.key && \
+   chmod 0600 /etc/wireguard/wg0-throwaway.key && \
    printf '[Interface]\nAddress = %s/24\nListenPort = %s\nPrivateKey = %s\n' \
-     '$WG_IP' '$WG_PORT' \"\$(cat /etc/wireguard/edge-private.key)\" > /etc/wireguard/wg0.conf && \
-   chmod 0600 /etc/wireguard/wg0.conf && \
+     '$WG_IP' '$WG_PORT' \"\$(cat /etc/wireguard/wg0-throwaway.key)\" > /etc/wireguard/wg0.conf && \
+   chmod 0600 /etc/wireguard/wg0.conf && rm -f /etc/wireguard/wg0-throwaway.key && \
    systemctl restart wg-quick-wg0 cococoir-edge"
 
 echo ""
-echo "==> Edge box up. Next:"
+echo "==> Edge box up. Its WG public key is served by the control plane"
+echo "    at https://<edge-ip>:8081/pubkey (or returned in each signup)."
 echo "  DNS: point interdim.net NS records at:"
 "$TOFU" -chdir="$TOFU_DIR" output -json nameservers | jq -r '.[] | "    \(.)"'
 echo "  Customer box: apply remote-infra/nix/example123.nix on the home machine,"

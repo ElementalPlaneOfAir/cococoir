@@ -46,11 +46,13 @@
   };
 
   # ── WireGuard server ─────────────────────────────────────────────
-  # Interface is static; PEERS are added at runtime by the control
-  # plane (`wg set`), so signups need no config change. wg0.conf
-  # (Address + ListenPort + the private key) is assembled by
-  # provision-edge.sh from tofu's addressing — the private key never
-  # lives in the repo.
+  # wg-quick brings wg0 up; the interface's real identity (its private
+  # key) is owned by cococoir-edge, which generates + persists it in
+  # Redis and installs it into wg0 on boot. wg0.conf carries only a
+  # throwaway key so the interface can come up; PEERS are added at
+  # runtime by the control plane (`wg set`), so signups need no config
+  # change. Address + listen port are assembled by provision-edge.sh
+  # from tofu's single source of truth.
   systemd.services.wg-quick-wg0 = {
     description = "WireGuard tunnel for cococoir edge";
     enable = true;
@@ -60,8 +62,8 @@
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = "${pkgs.wireguard-tools}/bin/wg-quick up wg0";
-      ExecStop = "${pkgs.wireguard-tools}/bin/wg-quick down wg0";
+      ExecStart = "$${pkgs.wireguard-tools}/bin/wg-quick up wg0";
+      ExecStop = "$${pkgs.wireguard-tools}/bin/wg-quick down wg0";
     };
   };
 
@@ -72,7 +74,7 @@
     wantedBy = ["multi-user.target"];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${pkgs.redis}/bin/redis-server /etc/cococoir/redis.conf";
+      ExecStart = "$${pkgs.redis}/bin/redis-server /etc/cococoir/redis.conf";
       Restart = "on-failure";
       RestartSec = 5;
     };
@@ -87,7 +89,7 @@
     wantedBy = ["multi-user.target"];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${cococoirEdgePkg}/bin/cococoir-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
+      ExecStart = "$${cococoirEdgePkg}/bin/cococoir-edge --subnet ${edge_ipv6_subnet} --wg-subnet ${wg_subnet} --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
       Restart = "on-failure";
       RestartSec = 5;
       # Runs as root to bind privileged ports (80, 443) with
