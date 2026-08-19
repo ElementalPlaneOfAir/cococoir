@@ -5,29 +5,35 @@
 //! dashboard. The dashboard manages household users on one server
 //! (sqlite); this service manages *customers* on the edge (Redis).
 //!
-//! What it does today (demo slice):
+//! What it does (demo slice):
 //!   - `POST /signup` — allocate the next `/128` from the box's
-//!     routed subnet, generate a WireGuard keypair, store the
-//!     customer in Redis, return the private key + IP once. The
-//!     customer's box dials out to the edge with that key; nothing on
-//!     the running edge changes (its forwards already bind the whole
-//!     customer prefix range).
+//!     routed subnet, generate the customer's WireGuard keypair, store
+//!     the customer in Redis, add the customer's WG peer + live
+//!     forwards, and return a complete tunnel config (the customer's
+//!     private key + IPs + the edge's public key). The customer's box
+//!     dials out to the edge with that key.
 //!   - `GET /customers` — list.
-//!   - `DELETE /customers/:id` — remove (disruption-free: the edge
-//!     drops the WG peer via `wg set`, no restart).
+//!   - `DELETE /customers/:id` — remove (disruption-free: the control
+//!     plane drops the WG peer via `wg set`, no restart).
+//!   - `GET /pubkey` — the edge's own WG public key (self-generated +
+//!     persisted in Redis on first boot, so it is stable across
+//!     restarts). Customer configs pull this instead of baking a
+//!     static key.
 //!
 //! Storage is Redis. The state (customers, allocations, keys) is
-//! recoverable — a lost allocation is rebuilt from DNS AAAA records +
-//! the edge's WG peers — so Redis's simplicity wins over a SQL store.
-//! Durability is AOF + `appendfsync always` (configured in the NixOS
-//! module), deliberately not assumed.
+//! recoverable — a lost allocation is rebuilt from the edge's WG
+//! peers — so Redis's simplicity wins over a SQL store. Durability is
+//! AOF + `appendfsync always` (configured in the NixOS module),
+//! deliberately not assumed.
 //!
 //! The `/128` allocation uses an atomic Redis counter (`INCR` on a
 //! Lua-free single key — INCR is atomic in Redis). Host 1 is the
 //! edge's own primary `/128`; customers start at host 2.
 
 pub mod routing_config;
+pub mod wg;
 pub use routing_config::{RoutingTable, WgPeer};
+pub use wg::{RealWgClient, WgClient, WgError};
 
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -54,6 +60,10 @@ const ALLOC_COUNTER: &str = "cococoir:alloc:next";
 const WG_ALLOC_COUNTER: &str = "cococoir:wg:next";
 /// Redis key holding the list of customer ids.
 const CUST_INDEX: &str = "cococoir:customers";
+/// Redis key holding the edge's own WG private key. Generated once on
+/// first boot and persisted (AOF + appendfsync always), so the edge's
+/// identity survives restarts and customer configs keep working.
+const EDGE_PRIV_KEY: &str = "cococoir:edge:private-key";
 
 /// The edge's routed IPv6 subnet, e.g. `2a01:4f8:c17:1::/64`.
 ///
@@ -196,12 +206,16 @@ pub struct Customer {
     pub wg_public_key: String,
 }
 
-/// The signup response. The private key is returned ONCE — after this
-/// it is gone from the service (only the public key is stored).
+/// The signup response. The customer's private key is returned ONCE —
+/// after this it is gone from the service (only the public key is
+/// stored). The edge's public key is included so the customer can
+/// configure its WG peer for the edge — the response is a complete,
+/// ready-to-install tunnel config.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SignupResponse {
     pub customer: Customer,
     pub wg_private_key: String,
+    pub edge_public_key: String,
 }
 
 /// Error surface for control-plane operations.
@@ -215,15 +229,18 @@ pub enum ControlPlaneError {
     AllocExhausted(String),
     #[error("forwarder: {0}")]
     Forward(String),
+    #[error("wg: {0}")]
+    Wg(#[from] WgError),
 }
 
-/// The control plane. Holds the Redis connection and the subnets
-/// (edge routed IPv6 + the WireGuard tunnel net).
+/// The control plane. Holds the Redis connection, the subnets (edge
+/// routed IPv6 + the WireGuard tunnel net), and the WG kernel client.
 #[derive(Clone)]
 pub struct ControlPlane {
     client: redis::Client,
     subnet: Arc<Subnet64>,
     wg_subnet: Arc<WgSubnet>,
+    wg: Arc<dyn WgClient>,
 }
 
 impl ControlPlane {
@@ -234,11 +251,67 @@ impl ControlPlane {
             client,
             subnet: Arc::new(subnet),
             wg_subnet: Arc::new(wg_subnet),
+            wg: Arc::new(RealWgClient::new()),
+        })
+    }
+
+    /// Like [`ControlPlane::new`] but with an injected WG client — for
+    /// tests that must not touch the real kernel interface.
+    pub fn with_wg(
+        redis_url: &str,
+        subnet: Subnet64,
+        wg_subnet: WgSubnet,
+        wg: Arc<dyn WgClient>,
+    ) -> Result<Self, ControlPlaneError> {
+        let client = redis::Client::open(redis_url)?;
+        Ok(Self {
+            client,
+            subnet: Arc::new(subnet),
+            wg_subnet: Arc::new(wg_subnet),
+            wg,
         })
     }
 
     async fn conn(&self) -> Result<redis::aio::Connection, ControlPlaneError> {
         Ok(self.client.get_async_connection().await?)
+    }
+
+    /// The edge's own WireGuard public key. Generated and persisted on
+    /// first call (in Redis, durable via AOF + appendfsync always), and
+    /// the private key is installed into the running `wg0` interface so
+    /// the edge answers customer handshakes. Subsequent calls return
+    /// the same key — the edge's identity is stable across restarts.
+    pub async fn edge_public_key(&self) -> Result<String, ControlPlaneError> {
+        let mut conn = self.conn().await?;
+        let existing: Option<String> = conn.get(EDGE_PRIV_KEY).await?;
+        let had_existing = existing.is_some();
+        let (private_key, generated_now) = match existing {
+            Some(key) => (key, false),
+            None => {
+                let (_public, private) = generate_wg_keypair();
+                // SETNX so concurrent first-boots cannot disagree; a
+                // lost race uses the winner's key.
+                let set: bool = conn.set_nx(EDGE_PRIV_KEY, &private).await?;
+                (private, set)
+            }
+        };
+        // Install the private key into wg0: when we generated it this
+        // boot, or when a restart between wg-quick up and this boot
+        // left the interface on the wrong key.
+        if generated_now || had_existing {
+            self.wg
+                .set_private_key(&private_key)
+                .map_err(ControlPlaneError::Wg)?;
+        }
+        let priv_bytes: [u8; 32] = B64
+            .decode(&private_key)
+            .expect("persisted edge key is base64")
+            .try_into()
+            .map_err(|_| ControlPlaneError::Wg(WgError::Io(std::io::Error::other(
+                "edge private key is not 32 bytes",
+            ))))?;
+        let secret = StaticSecret::from(priv_bytes);
+        Ok(B64.encode(PublicKey::from(&secret).as_bytes()))
     }
 
     /// Allocate the next `/128` + WG tunnel address, create a
@@ -281,7 +354,7 @@ impl ControlPlane {
         assert!(set, "fresh customer id must not collide");
         let _: i64 = conn.rpush(CUST_INDEX, &id).await?;
 
-        // Live wiring: routing table + forwarder listeners.
+        // Live wiring: routing table + forwarder listeners + WG peer.
         table.upsert(
             ipv6.parse().expect("allocated /128 parses"),
             WgPeer {
@@ -289,6 +362,9 @@ impl ControlPlane {
                 wg_public_key: customer.wg_public_key.clone(),
             },
         );
+        self.wg
+            .add_peer(&wg_ip, &customer.wg_public_key)
+            .map_err(|err| ControlPlaneError::Wg(err))?;
         for port in [80u16, 443] {
             let fwd = Forward {
                 listen_addr: format!("[{ipv6}]:{port}"),
@@ -301,9 +377,12 @@ impl ControlPlane {
             })?;
         }
 
+        let edge_public_key = self.edge_public_key().await?;
+
         Ok(SignupResponse {
             customer,
             wg_private_key: private_key,
+            edge_public_key,
         })
     }
 
@@ -354,6 +433,9 @@ impl ControlPlane {
                     wg_public_key: customer.wg_public_key.clone(),
                 },
             );
+            if let Err(err) = self.wg.add_peer(&customer.wg_ip, &customer.wg_public_key) {
+                tracing::error!(id = %customer.id, wg_ip = %customer.wg_ip, err = %err, "rehydrate wg add failed");
+            }
             for port in [80u16, 443] {
                 let fwd = Forward {
                     listen_addr: format!("[{}]:{port}", customer.ipv6),
@@ -391,6 +473,9 @@ impl ControlPlane {
             if let Ok(customer) = serde_json::from_str::<Customer>(&json) {
                 let ipv6: Ipv6Addr = customer.ipv6.parse().expect("stored /128 parses");
                 table.remove(&ipv6);
+                self.wg
+                    .remove_peer(&customer.wg_public_key)
+                    .map_err(|err| ControlPlaneError::Wg(err))?;
                 for port in [80u16, 443] {
                     let fwd = Forward {
                         listen_addr: format!("[{}]:{port}", customer.ipv6),
@@ -461,12 +546,24 @@ async fn delete_customer(Data(state): Data<&AppState>, Path(id): Path<String>) -
     }
 }
 
+#[handler]
+async fn edge_pubkey(Data(state): Data<&AppState>) -> Response {
+    match state.cp.edge_public_key().await {
+        Ok(pubkey) => Json(serde_json::json!({ "public_key": pubkey })).into_response(),
+        Err(err) => {
+            tracing::error!(error = %err, "edge pubkey failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// Build the control-plane HTTP app.
 pub fn app(state: AppState) -> impl Endpoint {
     Route::new()
         .at("/signup", post(signup))
         .at("/customers", poem::get(list_customers))
         .at("/customers/:id", poem::delete(delete_customer))
+        .at("/pubkey", poem::get(edge_pubkey))
         .data(state)
 }
 
@@ -581,7 +678,8 @@ mod tests {
         };
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
-        let cp = ControlPlane::new(&url, subnet, wg_subnet).unwrap();
+        let wg = Arc::new(crate::controlplane::wg::MockWgClient::new());
+        let cp = ControlPlane::with_wg(&url, subnet, wg_subnet, wg.clone()).unwrap();
         let table = RoutingTable::new();
         let forwarder = Forwarder::new_live(Config::default()).unwrap();
 
@@ -593,11 +691,24 @@ mod tests {
         assert_eq!(second.customer.ipv6, "2a01:4f8:c17:1::3");
         assert_eq!(second.customer.wg_ip, "10.10.0.3");
 
+        // The edge's public key is stable across signups (persisted,
+        // not regenerated) and matches GET /pubkey — the customer can
+        // configure its WG peer for the edge from the response.
+        assert!(!first.edge_public_key.is_empty());
+        assert_eq!(first.edge_public_key, second.edge_public_key);
+        let pubkey = cp.edge_public_key().await.expect("edge pubkey");
+        assert_eq!(pubkey, first.edge_public_key);
+        // The edge private key was installed into the interface once
+        // (on first generation), not per-signup.
+        assert_eq!(wg.private_keys.lock().unwrap().len(), 1);
+
         // The routing table got both entries; the forwarder bound 4
-        // live listeners (2 customers × 2 ports).
+        // live listeners (2 customers × 2 ports); the WG client added
+        // both peers to the kernel interface.
         assert_eq!(table.len(), 2);
         assert_eq!(forwarder.stats().forwards.len(), 4);
         assert!(forwarder.stats().forwards.iter().all(|s| s.bound));
+        assert_eq!(wg.added.lock().unwrap().len(), 2);
 
         let customers = cp.list().await.expect("list");
         assert_eq!(customers.len(), 2);
@@ -605,6 +716,7 @@ mod tests {
         cp.delete(&first.customer.id, &table, &forwarder).await.expect("delete first");
         assert_eq!(table.len(), 1);
         assert_eq!(forwarder.stats().forwards.len(), 2);
+        assert_eq!(wg.removed.lock().unwrap().len(), 1);
 
         let customers = cp.list().await.expect("list after delete");
         assert_eq!(customers.len(), 1);

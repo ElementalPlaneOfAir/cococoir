@@ -80,6 +80,16 @@ async fn main() -> Result<(), std::io::Error> {
         }
     }
 
+    // Install the edge's own WG identity into wg0 on boot (generate +
+    // persist once, then reuse) so the interface answers customer
+    // handshakes with the key the API serves at /pubkey.
+    match cp.edge_public_key().await {
+        Ok(pubkey) => tracing::info!(pubkey = %pubkey, "edge wg identity ready"),
+        Err(err) => {
+            tracing::error!(err = %err, "edge wg identity init failed — interface may not answer handshakes");
+        }
+    }
+
     // Control plane HTTP (signup/delete/customers) on --api-addr.
     let state = AppState {
         cp: Arc::new(cp),
