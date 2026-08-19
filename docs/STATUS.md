@@ -120,6 +120,24 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
   Redis — two signups → `::2`/`::3` from a `/72`, list, delete (204),
   re-delete (404). Cargo.lock refreshed with redis + x25519-dalek +
   base64 + rand_core.
+- **Edge runtime wiring (2026-08-19, on the system-manager edge)** —
+  the control plane now drives the live edge, not just the store:
+  - `WgClient` trait (`controlplane/wg.rs`) shells out to `wg set`
+    (real) / records calls (mock); `signup` adds the WG peer,
+    `delete` removes it, `rehydrate` re-adds all on boot — the ADR-025
+    "runtime provisioning without disruption" gap is closed.
+  - The edge self-generates + persists its own WG keypair in Redis
+    (`ControlPlane::edge_public_key`), installs the private key into
+    `wg0` on boot, serves it at `GET /pubkey`, and returns it in every
+    signup response — so a customer config is complete and key
+    rotation stops breaking customers (they pull the current edge key
+    at signup).
+  - The `/64` + WG subnet now flow from tofu into `edge.nix`
+    (rendered from `templates/edge.nix.tftpl`), removing the
+    hardcoded subnet duplication.
+  Proof: `cargo test` 121/121; `nix flake check` (edge systemConfig
+  evals; only pre-existing `example123` placeholder fails); `tofu
+  validate` green.
 
 ## Broken / landmines
 
@@ -131,17 +149,11 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
   failure: jellarr inactive + pipeline timeout; everything else passes.
 - `media/*` subvolumes are chowned to `jellyfin`; qBittorrent/Jellyseerr
   (v2.13) must join the same group to share the volume.
-- **Control plane is not wired into NixOS yet.** `cococoir-controlplane`
-  binary exists + is tested, but no NixOS module runs it, no Redis
-  module is configured (AOF/appendfsync not enforced), and nothing
-  calls `wg set` / the forwarder to actually route a signed-up
-  customer. The demo slice proves the *store* (allocations + keys);
-  the *routing* half (make the edge actually forward for a new
-  customer without restart) is unimplemented.
-- **Forwarder has no runtime mutation** — adding a customer still
-  means rewriting `cococoir-edge.json` + restarting (drops all
-  tunnels). This is the ADR-025 "runtime provisioning without
-  disruption" gap.
+- **Edge WG identity redundancy:** the edge self-generates its key at
+  runtime, but the old static `edge.private` / `gen-wg-keys.sh` edge
+  keypair and the `dns.tf` per-customer wildcard are still wired into
+  the static `example123` path — not yet retired (safe to delete only
+  after runtime DNS-on-signup exists).
 
 ## Todo
 
@@ -156,21 +168,16 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
 
 **IPv6 edge demo arc** (`.specify/specs/ipv6-edge-demo/proposal.md`,
 2026-08-15): a live IPv6 per-customer edge on Hetzner, showing the
-vision in `writing/human/architecture_of_ipv6.md`. **All provisioning
-is OpenTofu** in `remote-infra/` — single `hcloud` provider (server +
-firewall + ssh key + DNS via the GA DNS API), NixOS installed via
-nixos-anywhere (Hetzner ships no NixOS image). IPs + WG *public* keys
-are rendered into `remote-infra/nix/` from tofu templates (one source
-of truth); token from env var, WG *private* keys in gitignored
-`.secrets/`. IPv6 tripwire: `bind_ipv6_loopback_works` +
-`run_tcp_forward_ipv6_listen` (cargo test 98/98). Proof: `tofu init` +
-`validate` green, both flake configs eval. Edge disk is partitioned
-by **disko** (flake input + `disko.devices.disk.main` in the edge
-config, device via tofu `edge_disk_device` var default `/dev/sda`) —
-nixos-anywhere requires `system.build.diskoScript`, which disko
-provides. **Blocked on provisioning**: `remote-infra/scripts/
-provision-edge.sh` (a live `tofu apply` + nixos-anywhere install on
-the cx23).
+vision in `writing/human/architecture_of_ipv6.md`. The edge box runs
+**stock Debian** (image `debian-12`) managed by **system-manager**
+(`remote-infra/system-manager/edge.nix`, rendered from
+`tofu/templates/edge.nix.tftpl` so the `/64` flows from tofu) — no
+NixOS, no disko, no nixos-anywhere. `provision-edge.sh` = gen WG keys
+→ `tofu apply` → install Nix → `system-manager switch` → bring up
+wg0. Runtime addressing/IPs are tofu's single source; the control
+plane (in `cococoir-edge`) owns customer `/128`s + WG peers live.
+Proof: `tofu validate` green, edge systemConfig evals. The box is
+live on 62.238.111.21 (was re-provisioned to Debian 2026-08-19).
 
 **Control-plane direction** (2026-08-15, see PLAN.md ADR-025):
 the Rust crate is the *client-side* (household users on one server,
