@@ -21,8 +21,7 @@
 
 use std::sync::Arc;
 
-use cococoir::controlplane::{AppState, ControlPlane, RoutingTable, Subnet64, WgSubnet};
-use cococoir::forwarder::{Config, Forwarder};
+use cococoir::controlplane::{Subnet64, WgSubnet, forwarder, init_globals};
 use cococoir::health::{HealthServer, StatusFunc};
 
 #[tokio::main]
@@ -60,43 +59,19 @@ async fn main() -> Result<(), std::io::Error> {
 
     let subnet = Subnet64::from_str(&subnet).map_err(std::io::Error::other)?;
     let wg_subnet = WgSubnet::from_str(&wg_subnet).map_err(std::io::Error::other)?;
-    let cp = ControlPlane::new(&redis_url, subnet, wg_subnet)
+
+    // Obligatory reconcile-on-boot: initialize the process globals,
+    // hydrating the routing table + forwarder from Redis (and installing
+    // the edge's WG identity into wg0) before serving, so durable state
+    // and live state agree. Returns Err (not a crash) if Redis is down.
+    init_globals(&redis_url, subnet, wg_subnet)
+        .await
         .map_err(|err| std::io::Error::other(format!("control plane init: {err}")))?;
-    let forwarder = Arc::new(
-        Forwarder::new_live(Config::default())
-            .map_err(|err| std::io::Error::other(format!("forwarder init: {err}")))?,
-    );
-    let table = Arc::new(RoutingTable::new());
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Obligatory reconcile-on-boot: rebuild table + forwards from
-    // Redis before serving, so durable state and live state agree.
-    let rehydrate = cp.rehydrate(&table, &forwarder).await;
-    match rehydrate {
-        Ok(n) => tracing::info!(customers = n, "rehydrated from redis"),
-        Err(err) => {
-            tracing::error!(err = %err, "rehydrate failed — starting anyway (API still serves signups)");
-        }
-    }
-
-    // Install the edge's own WG identity into wg0 on boot (generate +
-    // persist once, then reuse) so the interface answers customer
-    // handshakes with the key the API serves at /pubkey.
-    match cp.edge_public_key().await {
-        Ok(pubkey) => tracing::info!(pubkey = %pubkey, "edge wg identity ready"),
-        Err(err) => {
-            tracing::error!(err = %err, "edge wg identity init failed — interface may not answer handshakes");
-        }
-    }
-
-    // Control plane HTTP (signup/delete/customers) on --api-addr.
-    let state = AppState {
-        cp: Arc::new(cp),
-        table,
-        forwarder: forwarder.clone(),
-    };
-    let api = cococoir::controlplane::app(state);
+    // Control plane HTTP (signup/delete/customers/pubkey) on --api-addr.
+    let api = cococoir::controlplane::app();
     let api_addr2 = api_addr.clone();
     let api_shutdown = shutdown_rx.clone();
     let api_task = tokio::spawn(async move {
@@ -119,10 +94,9 @@ async fn main() -> Result<(), std::io::Error> {
 
     // Health/status on --health-addr. The status closure reads the
     // forwarder's live state on every request.
-    let status_func: StatusFunc = {
-        let f = forwarder.clone();
-        Arc::new(move || serde_json::to_value(f.stats()).unwrap_or(serde_json::Value::Null))
-    };
+    let status_func: StatusFunc = Arc::new(move || {
+        serde_json::to_value(forwarder().stats()).unwrap_or(serde_json::Value::Null)
+    });
     let health_shutdown = shutdown_rx.clone();
     let health_task = tokio::spawn(async move {
         let server = HealthServer::new(health_addr.clone(), status_func);

@@ -138,6 +138,29 @@ Regenerated: 2026-08-14T22:47:21Z — git d14b957
   Proof: `cargo test` 121/121; `nix flake check` (edge systemConfig
   evals; only pre-existing `example123` placeholder fails); `tofu
   validate` green.
+- **Edge process globals (2026-08-20, `.specify/specs/edge-process-globals/`)**
+  — the three edge singletons (routing table, forwarder, control plane)
+  are now `'static` `OnceCell` process globals instead of injected
+  `Arc`s threaded through an `AppState`. `AppState` deleted; HTTP
+  handlers read the globals directly; `signup`/`delete` take no
+  table/forwarder params; `rehydrate` stays a param'd recovery
+  primitive (it runs during init, before the table global is
+  published). `init_globals()` hydrates all three from Redis via
+  `get_or_try_init` before any is visible — a boot that can't reach
+  Redis returns `Err`, not a crash. Test seam: `OnceCell::set()` pre-seeds
+  an instance, bypassing hydration. `app.rs` (client) untouched. Per
+  the lifetimes principle in `writing/human/lifetimes_in_rust.md`:
+  process-lifetime data belongs in `&'static`, not `Arc`. Proof:
+  `cargo test` 121/121 **with** the live Redis round trip (previously
+  skipped for lack of REDIS_URL); `cargo build --bins` both binaries.
+- **Edge identity install split (bug fix, same proposal)** — the edge
+  WG private key is now installed into `wg0` **once at boot**
+  (`install_edge_identity`), not on every `signup`; `edge_public_key()`
+  is a pure getter. Fixes a latent bug the live Redis round trip
+  surfaced: `signup()` called `edge_public_key()` per signup, which
+  reinstalled the key each time (`set_private_key` per signup). Proof:
+  `redis_store_round_trip` asserts `private_keys.len() == 1` after two
+  signups.
 
 ## Broken / landmines
 

@@ -43,8 +43,8 @@ use poem::{
     handler,
     http::StatusCode,
     post,
-    web::{Data, Json, Path},
-    Endpoint, EndpointExt, IntoResponse, Response, Route,
+    web::{Json, Path},
+    Endpoint, IntoResponse, Response, Route,
 };
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,19 @@ const CUST_INDEX: &str = "cococoir:customers";
 /// first boot and persisted (AOF + appendfsync always), so the edge's
 /// identity survives restarts and customer configs keep working.
 const EDGE_PRIV_KEY: &str = "cococoir:edge:private-key";
+
+/// The process's three singletons: the control plane (Redis-backed),
+/// the live forwarder, and the routing table. All are process-lifetime
+/// — built once at boot, never dropped — so they live as `'static`
+/// `OnceCell`s, not injected `Arc`s (see
+/// `writing/human/lifetimes_in_rust.md`). `get_or_try_init` publishes
+/// only a *hydrated* value: the routing table's init future rebuilds it
+/// from Redis (`rehydrate`) before it becomes visible, so no consumer
+/// ever sees an empty table. Tests `set()` their own instance to bypass
+/// hydration (mutually exclusive with `get_or_try_init` on one cell).
+static CONTROL_PLANE: tokio::sync::OnceCell<ControlPlane> = tokio::sync::OnceCell::const_new();
+static FORWARDER: tokio::sync::OnceCell<Forwarder> = tokio::sync::OnceCell::const_new();
+static ROUTING_TABLE: tokio::sync::OnceCell<RoutingTable> = tokio::sync::OnceCell::const_new();
 
 /// The edge's routed IPv6 subnet, e.g. `2a01:4f8:c17:1::/64`.
 ///
@@ -276,33 +289,34 @@ impl ControlPlane {
         Ok(self.client.get_async_connection().await?)
     }
 
-    /// The edge's own WireGuard public key. Generated and persisted on
-    /// first call (in Redis, durable via AOF + appendfsync always), and
-    /// the private key is installed into the running `wg0` interface so
-    /// the edge answers customer handshakes. Subsequent calls return
-    /// the same key — the edge's identity is stable across restarts.
-    pub async fn edge_public_key(&self) -> Result<String, ControlPlaneError> {
+    /// Ensure the edge's WG private key exists in Redis (generate +
+    /// persist on first call via SETNX, so concurrent first-boots agree
+    /// on one winner) and return the stored key. Pure storage access —
+    /// no kernel side-effect.
+    async fn ensure_edge_key(&self) -> Result<String, ControlPlaneError> {
         let mut conn = self.conn().await?;
-        let existing: Option<String> = conn.get(EDGE_PRIV_KEY).await?;
-        let had_existing = existing.is_some();
-        let (private_key, generated_now) = match existing {
-            Some(key) => (key, false),
-            None => {
-                let (_public, private) = generate_wg_keypair();
-                // SETNX so concurrent first-boots cannot disagree; a
-                // lost race uses the winner's key.
-                let set: bool = conn.set_nx(EDGE_PRIV_KEY, &private).await?;
-                (private, set)
-            }
-        };
-        // Install the private key into wg0: when we generated it this
-        // boot, or when a restart between wg-quick up and this boot
-        // left the interface on the wrong key.
-        if generated_now || had_existing {
-            self.wg
-                .set_private_key(&private_key)
-                .map_err(ControlPlaneError::Wg)?;
+        if let Some(key) = conn.get(EDGE_PRIV_KEY).await? {
+            return Ok(key);
         }
+        let (_public, private) = generate_wg_keypair();
+        let _: bool = conn.set_nx(EDGE_PRIV_KEY, &private).await?;
+        let stored: Option<String> = conn.get(EDGE_PRIV_KEY).await?;
+        stored.ok_or_else(|| {
+            ControlPlaneError::Redis(redis::RedisError::from((
+                redis::ErrorKind::ResponseError,
+                "edge key missing after ensure",
+                "SETNX reported success but read-back was empty".to_string(),
+            )))
+        })
+    }
+
+    /// The edge's own WireGuard public key, derived from the persisted
+    /// private key. Pure getter — does not touch the kernel — so it is
+    /// safe to call per-signup and from `GET /pubkey`. The edge's
+    /// identity is stable across restarts because the private key is
+    /// durable in Redis.
+    pub async fn edge_public_key(&self) -> Result<String, ControlPlaneError> {
+        let private_key = self.ensure_edge_key().await?;
         let priv_bytes: [u8; 32] = B64
             .decode(&private_key)
             .expect("persisted edge key is base64")
@@ -314,15 +328,27 @@ impl ControlPlane {
         Ok(B64.encode(PublicKey::from(&secret).as_bytes()))
     }
 
+    /// Boot-time: ensure the edge identity exists and install its
+    /// private key into the running `wg0` interface, so the edge answers
+    /// customer handshakes and any throwaway key `wg-quick up` left
+    /// there is replaced. Called once by [`init_globals`], not
+    /// per-signup.
+    pub async fn install_edge_identity(&self) -> Result<(), ControlPlaneError> {
+        let private_key = self.ensure_edge_key().await?;
+        self.wg
+            .set_private_key(&private_key)
+            .map_err(ControlPlaneError::Wg)?;
+        Ok(())
+    }
+
     /// Allocate the next `/128` + WG tunnel address, create a
     /// customer, write the routing table, and add the edge's forwards
     /// for the customer's `:80` and `:443` — all live, without
-    /// touching existing forwards. Returns the signup response.
-    pub async fn signup(
-        &self,
-        table: &RoutingTable,
-        forwarder: &Forwarder,
-    ) -> Result<SignupResponse, ControlPlaneError> {
+    /// touching existing forwards. Returns the signup response. Reads
+    /// the process routing table + forwarder globals.
+    pub async fn signup(&self) -> Result<SignupResponse, ControlPlaneError> {
+        let table = routing_table();
+        let forwarder = forwarder();
         let mut conn = self.conn().await?;
         // Host 1 is the edge's own primary /128; customers start at 2.
         // SETNX seeds the counter atomically so the first INCR returns 2.
@@ -453,14 +479,11 @@ impl ControlPlane {
     }
 
     /// Delete a customer: remove the record, the routing table entry,
-    /// and the live forwards. The WG peer itself is dropped via
-    /// `wg set` separately (not yet wired).
-    pub async fn delete(
-        &self,
-        id: &str,
-        table: &RoutingTable,
-        forwarder: &Forwarder,
-    ) -> Result<(), ControlPlaneError> {
+    /// the live forwards, and the WG peer (via `wg set`). Reads the
+    /// process routing table + forwarder globals.
+    pub async fn delete(&self, id: &str) -> Result<(), ControlPlaneError> {
+        let table = routing_table();
+        let forwarder = forwarder();
         let mut conn = self.conn().await?;
         let json: Option<String> = conn.get(format!("{CUST_KEY}{id}")).await?;
         let removed: i64 = conn.del(format!("{CUST_KEY}{id}")).await?;
@@ -500,21 +523,69 @@ pub fn generate_wg_keypair() -> (String, String) {
     (B64.encode(public.as_bytes()), B64.encode(secret.to_bytes()))
 }
 
-// ── HTTP handlers ────────────────────────────────────────────────
-
-/// Application state: the control plane + the live routing table +
-/// the forwarder it mutates. All three are process-lifetime, shared
-/// via poem's `Data` extractor.
-#[derive(Clone)]
-pub struct AppState {
-    pub cp: Arc<ControlPlane>,
-    pub table: Arc<RoutingTable>,
-    pub forwarder: Arc<Forwarder>,
+/// The process's routing table. Panics if the edge did not initialize
+/// it — a signed-up-against edge always has it set.
+pub fn routing_table() -> &'static RoutingTable {
+    ROUTING_TABLE.get().expect("routing table not initialized")
 }
 
+/// The process's forwarder. Panics if not initialized.
+pub fn forwarder() -> &'static Forwarder {
+    FORWARDER.get().expect("forwarder not initialized")
+}
+
+/// The process's control plane. Panics if not initialized.
+pub fn control_plane() -> &'static ControlPlane {
+    CONTROL_PLANE.get().expect("control plane not initialized")
+}
+
+/// Initialize the three process globals, hydrating from Redis before
+/// any of them is visible. Order matters: forwarder → control plane →
+/// routing table (the table's init calls `rehydrate`, which needs the
+/// control plane's Redis connection and the forwarder to bind into).
+/// Each `get_or_try_init` returns `Err` on unreachable Redis rather
+/// than panicking, so a boot or test that can't reach Redis fails
+/// cleanly. Tests bypass this entirely by `set()`-ing their own
+/// instances.
+pub async fn init_globals(
+    redis_url: &str,
+    subnet: Subnet64,
+    wg_subnet: WgSubnet,
+) -> Result<(), ControlPlaneError> {
+    FORWARDER
+        .get_or_try_init(|| async {
+            Forwarder::new_live(Config::default())
+                .map_err(|err| ControlPlaneError::Forward(format!("forwarder init: {err}")))
+        })
+        .await?;
+    CONTROL_PLANE
+        .get_or_try_init(|| async {
+            let cp = ControlPlane::new(redis_url, subnet, wg_subnet)?;
+            cp.install_edge_identity().await?;
+            Ok::<ControlPlane, ControlPlaneError>(cp)
+        })
+        .await?;
+    ROUTING_TABLE
+        .get_or_try_init(|| async {
+            let table = RoutingTable::new();
+            control_plane()
+                .rehydrate(&table, forwarder())
+                .await?;
+            Ok::<RoutingTable, ControlPlaneError>(table)
+        })
+        .await?;
+    Ok(())
+}
+
+// ── HTTP handlers ────────────────────────────────────────────────
+
+/// The HTTP handlers read the process singletons directly (no
+/// `AppState` to ferry them — they are `'static`; see the globals
+/// above).
+
 #[handler]
-async fn signup(Data(state): Data<&AppState>) -> Response {
-    match state.cp.signup(&state.table, &state.forwarder).await {
+async fn signup() -> Response {
+    match control_plane().signup().await {
         Ok(resp) => Json(resp).with_status(StatusCode::CREATED).into_response(),
         Err(err) => {
             tracing::error!(error = %err, "signup failed");
@@ -524,8 +595,8 @@ async fn signup(Data(state): Data<&AppState>) -> Response {
 }
 
 #[handler]
-async fn list_customers(Data(state): Data<&AppState>) -> Response {
-    match state.cp.list().await {
+async fn list_customers() -> Response {
+    match control_plane().list().await {
         Ok(customers) => Json(customers).into_response(),
         Err(err) => {
             tracing::error!(error = %err, "list customers failed");
@@ -535,8 +606,8 @@ async fn list_customers(Data(state): Data<&AppState>) -> Response {
 }
 
 #[handler]
-async fn delete_customer(Data(state): Data<&AppState>, Path(id): Path<String>) -> Response {
-    match state.cp.delete(&id, &state.table, &state.forwarder).await {
+async fn delete_customer(Path(id): Path<String>) -> Response {
+    match control_plane().delete(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(ControlPlaneError::NotFound(_)) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
@@ -547,8 +618,8 @@ async fn delete_customer(Data(state): Data<&AppState>, Path(id): Path<String>) -
 }
 
 #[handler]
-async fn edge_pubkey(Data(state): Data<&AppState>) -> Response {
-    match state.cp.edge_public_key().await {
+async fn edge_pubkey() -> Response {
+    match control_plane().edge_public_key().await {
         Ok(pubkey) => Json(serde_json::json!({ "public_key": pubkey })).into_response(),
         Err(err) => {
             tracing::error!(error = %err, "edge pubkey failed");
@@ -557,14 +628,14 @@ async fn edge_pubkey(Data(state): Data<&AppState>) -> Response {
     }
 }
 
-/// Build the control-plane HTTP app.
-pub fn app(state: AppState) -> impl Endpoint {
+/// Build the control-plane HTTP app. Stateless: handlers read the
+/// process globals, so no `.data(state)` is needed.
+pub fn app() -> impl Endpoint {
     Route::new()
         .at("/signup", post(signup))
         .at("/customers", poem::get(list_customers))
         .at("/customers/:id", poem::delete(delete_customer))
         .at("/pubkey", poem::get(edge_pubkey))
-        .data(state)
 }
 
 /// Entry point for the controlplane binary.
@@ -575,17 +646,11 @@ pub async fn controlplane_entry(
 ) -> Result<(), std::io::Error> {
     let subnet = Subnet64::from_str(&subnet).map_err(std::io::Error::other)?;
     let wg_subnet = WgSubnet::from_str(&wg_subnet).map_err(std::io::Error::other)?;
-    let cp = ControlPlane::new(&redis_url, subnet, wg_subnet)
+    init_globals(&redis_url, subnet, wg_subnet)
+        .await
         .map_err(|err| std::io::Error::other(format!("control plane init: {err}")))?;
-    let forwarder = Forwarder::new_live(Config::default())
-        .map_err(|err| std::io::Error::other(format!("forwarder init: {err}")))?;
-    let state = AppState {
-        cp: Arc::new(cp),
-        table: Arc::new(RoutingTable::new()),
-        forwarder: Arc::new(forwarder),
-    };
     poem::Server::new(poem::listener::TcpListener::bind("0.0.0.0:8081"))
-        .run(app(state))
+        .run(app())
         .await
 }
 
@@ -679,12 +744,29 @@ mod tests {
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
         let wg = Arc::new(crate::controlplane::wg::MockWgClient::new());
-        let cp = ControlPlane::with_wg(&url, subnet, wg_subnet, wg.clone()).unwrap();
-        let table = RoutingTable::new();
-        let forwarder = Forwarder::new_live(Config::default()).unwrap();
+        let cp_owned = ControlPlane::with_wg(&url, subnet, wg_subnet, wg.clone()).unwrap();
+        let table_owned = RoutingTable::new();
+        let forwarder_owned = Forwarder::new_live(Config::default()).unwrap();
 
-        let first = cp.signup(&table, &forwarder).await.expect("first signup");
-        let second = cp.signup(&table, &forwarder).await.expect("second signup");
+        // Pre-seed the process globals (the test seam: set() bypasses
+        // get_or_try_init, so no Redis hydration and a mock WG client).
+        // set() errors (with the prior value) if the cell is already
+        // full — a loud tripwire against two tests sharing a singleton.
+        assert!(CONTROL_PLANE.set(cp_owned).is_ok(), "control plane set once");
+        assert!(FORWARDER.set(forwarder_owned).is_ok(), "forwarder set once");
+        assert!(ROUTING_TABLE.set(table_owned).is_ok(), "routing table set once");
+
+        let cp = control_plane();
+        let table = routing_table();
+        let forwarder = forwarder();
+
+        // Boot step: install the edge's identity into wg0 once. The
+        // test's set() seam bypasses init_globals, so do the boot
+        // install explicitly to mirror production.
+        cp.install_edge_identity().await.expect("install edge identity");
+
+        let first = cp.signup().await.expect("first signup");
+        let second = cp.signup().await.expect("second signup");
         assert_ne!(first.customer.ipv6, second.customer.ipv6);
         assert_eq!(first.customer.ipv6, "2a01:4f8:c17:1::2");
         assert_eq!(first.customer.wg_ip, "10.10.0.2");
@@ -713,7 +795,7 @@ mod tests {
         let customers = cp.list().await.expect("list");
         assert_eq!(customers.len(), 2);
 
-        cp.delete(&first.customer.id, &table, &forwarder).await.expect("delete first");
+        cp.delete(&first.customer.id).await.expect("delete first");
         assert_eq!(table.len(), 1);
         assert_eq!(forwarder.stats().forwards.len(), 2);
         assert_eq!(wg.removed.lock().unwrap().len(), 1);
@@ -722,9 +804,9 @@ mod tests {
         assert_eq!(customers.len(), 1);
         assert_eq!(customers[0].id, second.customer.id);
 
-        cp.delete(&second.customer.id, &table, &forwarder).await.expect("delete second");
+        cp.delete(&second.customer.id).await.expect("delete second");
         assert!(matches!(
-            cp.delete(&second.customer.id, &table, &forwarder).await,
+            cp.delete(&second.customer.id).await,
             Err(ControlPlaneError::NotFound(_))
         ));
         assert_eq!(table.len(), 0);
