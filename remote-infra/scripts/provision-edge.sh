@@ -70,7 +70,26 @@ echo "==> [4/5] system-manager switch (applies the edge config)"
     switch --flake ".#edge" --sudo
 )
 
-echo "==> [5/5] wire the WG tunnel interface"
+echo "==> [5/6] write DNS provider config"
+# The runtime DNS provisioning client (cococoir-edge) needs the Hetzner
+# DNS zone + API token. The zone id comes from tofu's output; the token
+# is the SAME operator Hetzner token (the GA hcloud provider manages
+# Cloud + DNS). Written as a systemd EnvironmentFile, mode 0600, never
+# in the repo.
+DNS_ZONE_ID=$("$TOFU" -chdir="$TOFU_DIR" output -raw dns_zone_id)
+DOMAIN=$("$TOFU" -chdir="$TOFU_DIR" output -raw domain)
+if [[ -z "${HETZNER_TOKEN_FILE:-}" ]]; then
+  DNS_TOKEN=$(tr -d '\r\n' < "$TOKEN_FILE")
+else
+  DNS_TOKEN=$(tr -d '\r\n' < "$HETZNER_TOKEN_FILE")
+fi
+ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
+  "mkdir -p /etc/cococoir && \
+   printf 'COCOCOIR_DNS_ZONE_ID=%s\nCOCOCOIR_DNS_ZONE_NAME=%s\nCOCOCOIR_DNS_TOKEN=%s\nCOCOCOIR_ROOT_DOMAIN=%s\n' \
+     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' > /etc/cococoir/dns.env && \
+   chmod 0600 /etc/cococoir/dns.env"
+
+echo "==> [6/6] wire the WG tunnel interface"
 # The edge box owns its WireGuard identity at runtime: cococoir-edge
 # generates + persists a keypair in Redis on first boot and installs it
 # into wg0 (see ControlPlane::edge_public_key). wg0.conf only needs *a*

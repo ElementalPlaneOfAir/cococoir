@@ -30,13 +30,18 @@
 //! Lua-free single key — INCR is atomic in Redis). Host 1 is the
 //! edge's own primary `/128`; customers start at host 2.
 
+pub mod dns;
 pub mod routing_config;
 pub mod wg;
+pub use dns::{
+    DnsApiClient, DnsError, HetznerDns, MockDnsApiClient, customer_hostname, ensure_dns_config,
+    get_dns_api, reconcile_pass, remove_customer, resolve_aaaa, resolve_aaaa_boxed, root_domain,
+    upsert_customer,
+};
 pub use routing_config::{RoutingTable, WgPeer};
 pub use wg::{RealWgClient, WgClient, WgError};
 
 use std::net::Ipv6Addr;
-use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use poem::{
@@ -212,7 +217,12 @@ impl WgSubnet {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Customer {
-    pub id: String,
+    /// The customer's username — their identity. IS the id: the Redis
+    /// key is `CUST_KEY{username}`, so uniqueness is structural and
+    /// there is no separate opaque id to maintain.
+    pub username: String,
+    /// The customer's DNS hostname, e.g. `bob.interdim.net`.
+    pub hostname: String,
     pub ipv6: String,
     /// The customer's WG tunnel address (dest for the edge's forwards).
     pub wg_ip: String,
@@ -244,44 +254,62 @@ pub enum ControlPlaneError {
     Forward(String),
     #[error("wg: {0}")]
     Wg(#[from] WgError),
+    #[error("dns: {0}")]
+    Dns(#[from] DnsError),
+    #[error("invalid username: {0}")]
+    InvalidUsername(String),
+    #[error("username already taken: {0}")]
+    Duplicate(String),
 }
 
 /// The control plane. Holds the Redis connection, the subnets (edge
-/// routed IPv6 + the WireGuard tunnel net), and the WG kernel client.
-#[derive(Clone)]
+/// routed IPv6 + the WireGuard tunnel net), and `'static` references
+/// to the WG + DNS clients.
+///
+/// Not `Clone`, and the clients are `&'static` not `Arc`: the control
+/// plane is a process-lifetime singleton (`OnceCell` global), consumed
+/// only as `&'static ControlPlane` — `Copy`, not cloned. See
+/// `writing/human/lifetimes_in_rust.md`.
 pub struct ControlPlane {
     client: redis::Client,
-    subnet: Arc<Subnet64>,
-    wg_subnet: Arc<WgSubnet>,
-    wg: Arc<dyn WgClient>,
+    subnet: Subnet64,
+    wg_subnet: WgSubnet,
+    wg: &'static dyn WgClient,
+    dns: &'static dyn DnsApiClient,
 }
 
 impl ControlPlane {
-    /// Connect to Redis and derive the box subnet + WG tunnel net.
+    /// Connect to Redis and derive the box subnet + WG tunnel net. The
+    /// WG and DNS clients are the real ones.
     pub fn new(redis_url: &str, subnet: Subnet64, wg_subnet: WgSubnet) -> Result<Self, ControlPlaneError> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
             client,
-            subnet: Arc::new(subnet),
-            wg_subnet: Arc::new(wg_subnet),
-            wg: Arc::new(RealWgClient::new()),
+            subnet,
+            wg_subnet,
+            wg: &*wg::REAL_WG_CLIENT,
+            dns: get_dns_api(),
         })
     }
 
-    /// Like [`ControlPlane::new`] but with an injected WG client — for
-    /// tests that must not touch the real kernel interface.
-    pub fn with_wg(
+    /// Like [`ControlPlane::new`] but with injected WG + DNS clients —
+    /// for tests that must not touch the real kernel interface or the
+    /// real DNS provider. The mocks must outlive the process (leak
+    /// them in tests; `&'static` is the process-lifetime vehicle).
+    pub fn with_deps(
         redis_url: &str,
         subnet: Subnet64,
         wg_subnet: WgSubnet,
-        wg: Arc<dyn WgClient>,
+        wg: &'static dyn WgClient,
+        dns: &'static dyn DnsApiClient,
     ) -> Result<Self, ControlPlaneError> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
             client,
-            subnet: Arc::new(subnet),
-            wg_subnet: Arc::new(wg_subnet),
+            subnet,
+            wg_subnet,
             wg,
+            dns,
         })
     }
 
@@ -342,11 +370,17 @@ impl ControlPlane {
     }
 
     /// Allocate the next `/128` + WG tunnel address, create a
-    /// customer, write the routing table, and add the edge's forwards
-    /// for the customer's `:80` and `:443` — all live, without
-    /// touching existing forwards. Returns the signup response. Reads
-    /// the process routing table + forwarder globals.
-    pub async fn signup(&self) -> Result<SignupResponse, ControlPlaneError> {
+    /// customer, write the routing table, add the edge's forwards
+    /// for the customer's `:80` and `:443`, and provision the
+    /// customer's DNS AAAA records — all live, without touching
+    /// existing forwards. Returns the signup response. Reads the
+    /// process routing table + forwarder globals.
+    ///
+    /// DNS runs LAST and is non-fatal: the customer is reachable at
+    /// their `/128` regardless, and the background reconcile loop
+    /// self-heals a failed record.
+    pub async fn signup(&self, username: &str) -> Result<SignupResponse, ControlPlaneError> {
+        validate_username(username)?;
         let table = routing_table();
         let forwarder = forwarder();
         let mut conn = self.conn().await?;
@@ -363,22 +397,25 @@ impl ControlPlane {
         let ipv6 = self.subnet.host_string(index as u64);
         let wg_ip = self.wg_subnet.host_string(index as u64);
 
-        let id = uuid::Uuid::new_v4().to_string();
+        let hostname = customer_hostname(username);
         let (public_key, private_key) = generate_wg_keypair();
         let customer = Customer {
-            id: id.clone(),
+            username: username.to_string(),
+            hostname: hostname.clone(),
             ipv6: ipv6.clone(),
             wg_ip: wg_ip.clone(),
             wg_public_key: public_key,
         };
 
-        let key = format!("{CUST_KEY}{id}");
+        let key = format!("{CUST_KEY}{username}");
         let json = serde_json::to_string(&customer).expect("customer serializes");
-        // The set is conditional on the id being new; a fresh uuid
-        // cannot collide, but assert it anyway (defensive).
+        // Uniqueness is structural: the username IS the Redis key, so
+        // a second signup with the same username collides here.
         let set: bool = conn.set_nx(&key, json).await?;
-        assert!(set, "fresh customer id must not collide");
-        let _: i64 = conn.rpush(CUST_INDEX, &id).await?;
+        if !set {
+            return Err(ControlPlaneError::Duplicate(username.to_string()));
+        }
+        let _: i64 = conn.rpush(CUST_INDEX, username).await?;
 
         // Live wiring: routing table + forwarder listeners + WG peer.
         table.upsert(
@@ -401,6 +438,17 @@ impl ControlPlane {
                 let addr = &fwd.listen_addr;
                 ControlPlaneError::Forward(format!("add forward {addr}: {err}"))
             })?;
+        }
+
+        // DNS last, non-fatal: the reconcile loop self-heals failures.
+        if let Err(err) = upsert_customer(
+            self.dns,
+            username,
+            ipv6.parse().expect("allocated /128 parses"),
+        )
+        .await
+        {
+            tracing::error!(username = %username, err = %err, "signup: dns upsert failed (customer reachable at /128; reconcile will self-heal)");
         }
 
         let edge_public_key = self.edge_public_key().await?;
@@ -448,7 +496,7 @@ impl ControlPlane {
             let ipv6: Ipv6Addr = match customer.ipv6.parse() {
                 Ok(ip) => ip,
                 Err(_) => {
-                    tracing::error!(id = %customer.id, ipv6 = %customer.ipv6, "skipping corrupt customer");
+                    tracing::error!(username = %customer.username, ipv6 = %customer.ipv6, "skipping corrupt customer");
                     continue;
                 }
             };
@@ -460,7 +508,7 @@ impl ControlPlane {
                 },
             );
             if let Err(err) = self.wg.add_peer(&customer.wg_ip, &customer.wg_public_key) {
-                tracing::error!(id = %customer.id, wg_ip = %customer.wg_ip, err = %err, "rehydrate wg add failed");
+                tracing::error!(username = %customer.username, wg_ip = %customer.wg_ip, err = %err, "rehydrate wg add failed");
             }
             for port in [80u16, 443] {
                 let fwd = Forward {
@@ -469,7 +517,7 @@ impl ControlPlane {
                     dest_addr: format!("{}:{port}", customer.wg_ip),
                 };
                 if let Err(err) = forwarder.add_forward(&fwd).await {
-                    tracing::error!(id = %customer.id, addr = %fwd.listen_addr, err = %err, "rehydrate bind failed");
+                    tracing::error!(username = %customer.username, addr = %fwd.listen_addr, err = %err, "rehydrate bind failed");
                 }
             }
             count += 1;
@@ -479,18 +527,18 @@ impl ControlPlane {
     }
 
     /// Delete a customer: remove the record, the routing table entry,
-    /// the live forwards, and the WG peer (via `wg set`). Reads the
-    /// process routing table + forwarder globals.
-    pub async fn delete(&self, id: &str) -> Result<(), ControlPlaneError> {
+    /// the live forwards, the WG peer (via `wg set`), and the DNS AAAA
+    /// records. Reads the process routing table + forwarder globals.
+    pub async fn delete(&self, username: &str) -> Result<(), ControlPlaneError> {
         let table = routing_table();
         let forwarder = forwarder();
         let mut conn = self.conn().await?;
-        let json: Option<String> = conn.get(format!("{CUST_KEY}{id}")).await?;
-        let removed: i64 = conn.del(format!("{CUST_KEY}{id}")).await?;
+        let json: Option<String> = conn.get(format!("{CUST_KEY}{username}")).await?;
+        let removed: i64 = conn.del(format!("{CUST_KEY}{username}")).await?;
         if removed == 0 {
-            return Err(ControlPlaneError::NotFound(id.to_string()));
+            return Err(ControlPlaneError::NotFound(username.to_string()));
         }
-        let _: i64 = conn.lrem(CUST_INDEX, 1, id).await?;
+        let _: i64 = conn.lrem(CUST_INDEX, 1, username).await?;
 
         if let Some(json) = json {
             if let Ok(customer) = serde_json::from_str::<Customer>(&json) {
@@ -507,9 +555,35 @@ impl ControlPlane {
                     };
                     forwarder.remove_forward(&fwd);
                 }
+                // DNS removal is best-effort: the customer is already
+                // gone from the tunnel; a provider outage leaves a
+                // stale record that the reconcile loop cannot prune
+                // (it only re-applies for existing customers). Logged
+                // loudly, never silent.
+                if let Err(err) = remove_customer(self.dns, username).await {
+                    tracing::error!(username = %username, err = %err, "delete: dns remove failed; stale records may remain");
+                }
             }
         }
         Ok(())
+    }
+
+    /// One DNS reconcile pass: verify each customer's two AAAA records
+    /// against real resolution (1.1.1.1) and re-apply mismatches.
+    /// Returns the number of records re-applied. Called by the
+    /// background reconcile loop in `edge.rs`.
+    pub async fn reconcile_dns_once(&self) -> Result<usize, ControlPlaneError> {
+        let customers = self.list().await?;
+        let pairs: Vec<(String, Ipv6Addr)> = customers
+            .into_iter()
+            .filter_map(|c| {
+                c.ipv6
+                    .parse()
+                    .ok()
+                    .map(|ip: Ipv6Addr| (c.username, ip))
+            })
+            .collect();
+        Ok(reconcile_pass(self.dns, &pairs, resolve_aaaa_boxed).await)
     }
 }
 
@@ -521,6 +595,25 @@ pub fn generate_wg_keypair() -> (String, String) {
     let secret = StaticSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);
     (B64.encode(public.as_bytes()), B64.encode(secret.to_bytes()))
+}
+
+/// Validate a signup username as a DNS label, because the username
+/// becomes a hostname (`{username}.{DOMAIN}`). Lowercase alphanumeric +
+/// hyphen, not starting/ending with hyphen, no `--` (punycode reserve).
+pub fn validate_username(username: &str) -> Result<(), ControlPlaneError> {
+    let ok = !username.is_empty()
+        && username.len() <= 63
+        && !username.starts_with('-')
+        && !username.ends_with('-')
+        && !username.contains("--")
+        && username
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(ControlPlaneError::InvalidUsername(username.to_string()))
+    }
 }
 
 /// The process's routing table. Panics if the edge did not initialize
@@ -552,6 +645,9 @@ pub async fn init_globals(
     subnet: Subnet64,
     wg_subnet: WgSubnet,
 ) -> Result<(), ControlPlaneError> {
+    // DNS config is process config: a missing zone/token is a boot
+    // error, never a first-signup surprise. Forces the LazyLock now.
+    ensure_dns_config()?;
     FORWARDER
         .get_or_try_init(|| async {
             Forwarder::new_live(Config::default())
@@ -583,10 +679,25 @@ pub async fn init_globals(
 /// `AppState` to ferry them — they are `'static`; see the globals
 /// above).
 
+/// The signup request body: the username that becomes the customer's
+/// DNS hostname.
+#[derive(Debug, Deserialize)]
+pub struct SignupRequest {
+    pub username: String,
+}
+
 #[handler]
-async fn signup() -> Response {
-    match control_plane().signup().await {
+async fn signup(Json(req): Json<SignupRequest>) -> Response {
+    match control_plane().signup(&req.username).await {
         Ok(resp) => Json(resp).with_status(StatusCode::CREATED).into_response(),
+        Err(ControlPlaneError::Duplicate(username)) => {
+            tracing::warn!(username = %username, "signup: username taken");
+            (StatusCode::CONFLICT, "username already taken").into_response()
+        }
+        Err(ControlPlaneError::InvalidUsername(username)) => {
+            tracing::warn!(username = %username, "signup: invalid username");
+            (StatusCode::BAD_REQUEST, "invalid username").into_response()
+        }
         Err(err) => {
             tracing::error!(error = %err, "signup failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -606,12 +717,12 @@ async fn list_customers() -> Response {
 }
 
 #[handler]
-async fn delete_customer(Path(id): Path<String>) -> Response {
-    match control_plane().delete(&id).await {
+async fn delete_customer(Path(username): Path<String>) -> Response {
+    match control_plane().delete(&username).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(ControlPlaneError::NotFound(_)) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
-            tracing::error!(error = %err, id = %id, "delete customer failed");
+            tracing::error!(error = %err, username = %username, "delete customer failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -743,8 +854,14 @@ mod tests {
         };
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
-        let wg = Arc::new(crate::controlplane::wg::MockWgClient::new());
-        let cp_owned = ControlPlane::with_wg(&url, subnet, wg_subnet, wg.clone()).unwrap();
+        // Process-lifetime test doubles: leaked so the control plane's
+        // `&'static dyn` fields can borrow them; the test keeps the
+        // reference to inspect recorded calls.
+        let wg: &'static crate::controlplane::wg::MockWgClient =
+            Box::leak(Box::new(crate::controlplane::wg::MockWgClient::new()));
+        let dns: &'static crate::controlplane::dns::MockDnsApiClient =
+            Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
+        let cp_owned = ControlPlane::with_deps(&url, subnet, wg_subnet, wg, dns).unwrap();
         let table_owned = RoutingTable::new();
         let forwarder_owned = Forwarder::new_live(Config::default()).unwrap();
 
@@ -765,13 +882,17 @@ mod tests {
         // install explicitly to mirror production.
         cp.install_edge_identity().await.expect("install edge identity");
 
-        let first = cp.signup().await.expect("first signup");
-        let second = cp.signup().await.expect("second signup");
+        let first = cp.signup("alice").await.expect("first signup");
+        let second = cp.signup("bob").await.expect("second signup");
         assert_ne!(first.customer.ipv6, second.customer.ipv6);
         assert_eq!(first.customer.ipv6, "2a01:4f8:c17:1::2");
         assert_eq!(first.customer.wg_ip, "10.10.0.2");
         assert_eq!(second.customer.ipv6, "2a01:4f8:c17:1::3");
         assert_eq!(second.customer.wg_ip, "10.10.0.3");
+        // Username is the id: DNS records were provisioned for both.
+        assert_eq!(first.customer.username, "alice");
+        assert_eq!(first.customer.hostname, "alice.interdim.net");
+        assert_eq!(dns.upserts.lock().unwrap().len(), 4); // 2 customers × 2 records
 
         // The edge's public key is stable across signups (persisted,
         // not regenerated) and matches GET /pubkey — the customer can
@@ -795,18 +916,20 @@ mod tests {
         let customers = cp.list().await.expect("list");
         assert_eq!(customers.len(), 2);
 
-        cp.delete(&first.customer.id).await.expect("delete first");
+        cp.delete(&first.customer.username).await.expect("delete first");
         assert_eq!(table.len(), 1);
         assert_eq!(forwarder.stats().forwards.len(), 2);
         assert_eq!(wg.removed.lock().unwrap().len(), 1);
+        // Deleting removed the customer's DNS records (2 per customer).
+        assert_eq!(dns.removes.lock().unwrap().len(), 2);
 
         let customers = cp.list().await.expect("list after delete");
         assert_eq!(customers.len(), 1);
-        assert_eq!(customers[0].id, second.customer.id);
+        assert_eq!(customers[0].username, second.customer.username);
 
-        cp.delete(&second.customer.id).await.expect("delete second");
+        cp.delete(&second.customer.username).await.expect("delete second");
         assert!(matches!(
-            cp.delete(&second.customer.id).await,
+            cp.delete(&second.customer.username).await,
             Err(ControlPlaneError::NotFound(_))
         ));
         assert_eq!(table.len(), 0);

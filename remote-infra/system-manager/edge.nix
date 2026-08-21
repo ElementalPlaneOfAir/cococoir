@@ -46,11 +46,13 @@
   };
 
   # ── WireGuard server ─────────────────────────────────────────────
-  # Interface is static; PEERS are added at runtime by the control
-  # plane (`wg set`), so signups need no config change. wg0.conf
-  # (Address + ListenPort + the private key) is assembled by
-  # provision-edge.sh from tofu's addressing — the private key never
-  # lives in the repo.
+  # wg-quick brings wg0 up; the interface's real identity (its private
+  # key) is owned by cococoir-edge, which generates + persists it in
+  # Redis and installs it into wg0 on boot. wg0.conf carries only a
+  # throwaway key so the interface can come up; PEERS are added at
+  # runtime by the control plane (`wg set`), so signups need no config
+  # change. Address + listen port are assembled by provision-edge.sh
+  # from tofu's single source of truth.
   systemd.services.wg-quick-wg0 = {
     description = "WireGuard tunnel for cococoir edge";
     enable = true;
@@ -88,6 +90,11 @@
     serviceConfig = {
       Type = "simple";
       ExecStart = "${cococoirEdgePkg}/bin/cococoir-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
+      # DNS config for the runtime provisioning client (zone + token).
+      # Written by provision-edge.sh to /etc/cococoir/dns.env (mode
+      # 0600, never in the repo). The service fails at boot — not on
+      # first signup — if the file is missing (ensure_dns_config).
+      EnvironmentFile = "/etc/cococoir/dns.env";
       Restart = "on-failure";
       RestartSec = 5;
       # Runs as root to bind privileged ports (80, 443) with

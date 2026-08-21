@@ -24,6 +24,16 @@ output "nameservers" {
   value       = hcloud_zone.interdim.authoritative_nameservers.assigned
 }
 
+output "dns_zone_id" {
+  description = "Hetzner DNS zone ID for the apex domain — the runtime DNS client provisions customer AAAA records into it."
+  value       = hcloud_zone.interdim.id
+}
+
+output "domain" {
+  description = "The apex domain (== DNS zone name) — the runtime DNS client writes customer hostnames under it."
+  value       = var.domain
+}
+
 output "wg_public_keys" {
   description = "WireGuard public keys (from .secrets/) — the customer box config needs edge.pub, the edge config needs customer.pub."
   value = {

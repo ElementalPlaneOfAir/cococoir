@@ -13,6 +13,7 @@
     opentofu
     nixos-anywhere
     wireguard-tools
+    valkey
   ];
 
   # https://devenv.sh/languages/

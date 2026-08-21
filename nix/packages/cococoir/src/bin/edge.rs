@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use cococoir::controlplane::{Subnet64, WgSubnet, forwarder, init_globals};
+use cococoir::controlplane::{Subnet64, WgSubnet, control_plane, forwarder, init_globals};
 use cococoir::health::{HealthServer, StatusFunc};
 
 #[tokio::main]
@@ -105,6 +105,38 @@ async fn main() -> Result<(), std::io::Error> {
         }
     });
 
+    // DNS reconcile loop: verify every customer's AAAA records against
+    // real resolution and re-apply drift. First pass ~30s after boot
+    // (a fresh box converges quickly), then every 2h. DNS is cosmetic
+    // to the tunnel, so a failing pass logs and retries — never kills
+    // the edge.
+    let reconcile_shutdown = shutdown_rx.clone();
+    let reconcile_task = tokio::spawn(async move {
+        let mut reconcile_shutdown = reconcile_shutdown;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(7200));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let initial = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::pin!(initial);
+        loop {
+            tokio::select! {
+                _ = &mut initial => {}
+                _ = reconcile_shutdown.changed() => return,
+            }
+            match control_plane().reconcile_dns_once().await {
+                Ok(reapplied) => {
+                    if reapplied > 0 {
+                        tracing::warn!(reapplied, "dns reconcile: re-applied records");
+                    }
+                }
+                Err(err) => tracing::error!(err = %err, "dns reconcile pass failed"),
+            }
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = reconcile_shutdown.changed() => return,
+            }
+        }
+    });
+
     // Signal task: SIGINT/SIGTERM → shutdown channel.
     let signal_task = tokio::spawn(async move {
         wait_for_signal().await;
@@ -112,7 +144,7 @@ async fn main() -> Result<(), std::io::Error> {
         let _ = shutdown_tx.send(true);
     });
 
-    let _ = tokio::try_join!(api_task, health_task, signal_task);
+    let _ = tokio::try_join!(api_task, health_task, reconcile_task, signal_task);
     Ok(())
 }
 

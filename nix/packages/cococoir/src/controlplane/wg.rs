@@ -54,6 +54,14 @@ pub struct RealWgClient {
     // Extensible: could hold an interface name / path override.
 }
 
+/// The process's real WG client. Zero-size struct, so the `LazyLock`
+/// is effectively free — the control plane stores `&'static dyn
+/// WgClient` (process-lifetime data, not an `Arc`; see
+/// `writing/human/lifetimes_in_rust.md`). Tests inject a leaked mock
+/// instead.
+pub static REAL_WG_CLIENT: std::sync::LazyLock<RealWgClient> =
+    std::sync::LazyLock::new(RealWgClient::new);
+
 impl RealWgClient {
     pub fn new() -> Self {
         Self::default()
