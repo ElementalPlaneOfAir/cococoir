@@ -46,17 +46,21 @@ from Redis. It introduces the crate's first outbound HTTP dependency
 - `controlplane/dns.rs`: `DnsClient` trait (`upsert_aaaa(name, ipv6)`,
   `remove_aaaa(name)`) + `HetznerDns` (the one real provider) + a
   `MockDnsClient` for tests. `HetznerDns` holds `zone_id`, `token`,
-  `domain`, and an `http: reqwest::Client`; constructed by an inherent
-  `HetznerDns::from_env()` (static config — env-driven, never changed
-  without a restart).
-- `DOMAIN` + `DNS_ZONE_ID` + token as `'static` `LazyLock` globals read
-  from env; `get_dns_config() -> &'static dyn DnsClient` hands out the
-  singleton. `HetznerDns::from_env()` fails fast (missing env → boot
-  `Err` via `init_globals`).
+  and an `http: reqwest::Client` — the provider's own config, nothing
+  about naming. Constructed by an inherent `HetznerDns::from_env()`
+  (static config — env-driven, never changed without a restart).
+- `HETZNER_DNS_CONFIG: LazyLock<HetznerDns>` as the single `'static`
+  provider config global; `get_dns_config() -> &'static dyn DnsClient`
+  hands out the singleton. `HetznerDns::from_env()` fails fast (missing
+  env → boot `Err` via `init_globals`).
+- `DOMAIN` is a **separate** `'static` `LazyLock<String>` (env
+  `COCOCOIR_ROOT_DOMAIN`, default `interdim.net`) — the naming layer,
+  above the provider config, owned by the orchestrator, not the DNS
+  client.
 - Orchestrator `upsert_customer(dns, label, ipv6)` above the bare
-  client: builds `label.{DOMAIN}` + `*.{label}.{DOMAIN}`, upserts both
-  concurrently (`tokio::join!`), returns the first error. Mirrored
-  `remove_customer`.
+  client: builds `label.{*DOMAIN}` + `*.{label}.{*DOMAIN}` (reading the
+  `DOMAIN` global), upserts both concurrently (`tokio::join!`), returns
+  the first error. Mirrored `remove_customer`.
 - `ControlPlane` gains the `DnsClient` (a field, symmetric with the WG
   client) and a `with_dns` constructor. `signup`/`delete`/`rehydrate`
   call the orchestrator at the right points; signup's DNS write runs
@@ -92,6 +96,13 @@ in tofu.
   + naming policy into the provider and couples the client to the
   domain. The bare client takes the *full* name; the orchestrator owns
   naming. Rejected (matches the "provider-faithful, one record" goal).
+- **`HetznerDns` holds `domain`, or `DNS_ZONE_ID`/`DOMAIN` live as
+  separate statics** — case for: fewer globals / one struct. Case
+  against: `domain` is naming policy, not provider config — it changes
+  for different reasons and belongs in the layer above (the
+  orchestrator's `DOMAIN` global), exactly as `WgClient`'s config has
+  no naming baked in. Keeping `zone_id`/`token` on `HetznerDns` and
+  `DOMAIN` separate keeps the provider dumb about names. Rejected.
 
 ## Architecture decisions
 
@@ -112,11 +123,11 @@ record the `(name, ipv6)`; `HetznerDns::from_env()` builds from env
 **Files:** `src/controlplane/dns.rs`, `src/controlplane/mod.rs` (mod),
 `Cargo.toml` (add `reqwest`)
 
-### T2: Static config globals + `get_dns_config()`
+### T2: Static provider config global + `get_dns_config()` + `DOMAIN` global
 **Depends on:** T1
-**Verification:** `DOMAIN`/zone/token resolve from env as `'static`;
-`get_dns_config() -> &'static dyn DnsClient`; `init_globals` fails fast
-on missing DNS env
+**Verification:** `HETZNER_DNS_CONFIG`/`get_dns_config() -> &'static dyn
+DnsClient` resolve from env; `DOMAIN` is a separate `'static` global
+(default `interdim.net`); `init_globals` fails fast on missing DNS env
 **Files:** `src/controlplane/dns.rs`, `src/controlplane/mod.rs`
 
 ### T3: Orchestrator `upsert_customer` / `remove_customer`
