@@ -22,17 +22,31 @@ let
   };
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
+  # Built with crane (github:ipetkov/crane, injected into pkgs by the
+  # flake): `buildDepsOnly` compiles the workspace deps once and caches
+  # them, so a source change only rebuilds the crate itself.
   cococoirPkg = pkgs.callPackage ../packages/cococoir {};
 in {
-  # ── L0: forwarder Go unit tests ──────────────────────────────────
-  # `go test ./...` on the cococoir module. No /dev/kvm, no
-  # QEMU. Catches regressions in the forwarder (TCP/UDP
-  # forwarding, retry-with-backoff, graceful shutdown, proto
-  # validation). See
-  # nix/packages/cococoir/internal/forwarder/forwarder_test.go.
-  forwarder-unit-tests = cococoirPkg.overrideAttrs (_: {
-    doCheck = true;
-  });
+  # ── L0: forwarder Rust unit tests ────────────────────────────────
+  # `cargo test` on the cococoir crate. No /dev/kvm, no QEMU.
+  # Catches regressions in the forwarder (TCP/UDP forwarding,
+  # retry-with-backoff, graceful shutdown, proto validation) plus the
+  # control-plane (signup/DNS/auth) and dashboard suites.
+  #
+  # Uses crane's `cargoTest` reusing the same `cargoArtifacts` as the
+  # package build, so the deps are compiled once and shared across
+  # `nix build`, `nix flake check`, and the edge systemConfig.
+  forwarder-unit-tests = let
+    craneLib = pkgs.crane.mkLib pkgs;
+    commonArgs = {
+      src = cococoirPkg.src;
+      pname = "cococoir";
+      version = "0.1.0";
+      cargoLock = cococoirPkg.cargoLock;
+      cargoArtifacts = cococoirPkg.cargoArtifacts;
+    };
+  in
+    craneLib.cargoTest commonArgs;
 
   # ── L2: edge <-> client over WireGuard ───────────────────────────
   # 2-VM nixosTest. Exercises the full L4-forwarder-over-WG path:

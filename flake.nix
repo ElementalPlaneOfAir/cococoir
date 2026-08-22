@@ -27,11 +27,28 @@
       url = "github:numtide/system-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Rust build library: splits `buildDepsOnly` (workspace deps, built
+    # once + cached) from `buildPackage` (our crate, recompiled on
+    # change) so a source edit doesn't rebuild every dependency.
+    crane = {
+      url = "github:ipetkov/crane";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs: let
+    # nixpkgs with the crane flake injected as an attribute, so any
+    # `pkgs.callPackage ./nix/packages/cococoir {}` (in the NixOS
+    # modules, the tests, the edge systemConfig) resolves the `crane`
+    # arg it now needs, without threading the flake input through every
+    # call site.
+    withCrane = system: (import inputs.nixpkgs { inherit system; }).extend (final: prev: {
+      crane = inputs.crane;
+    });
+    vmtestPkgs = withCrane "x86_64-linux";
     vmtest = inputs.nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
+      pkgs = vmtestPkgs;
       specialArgs = { inherit inputs; };
       modules = [
         ./nixosConfigurations/vmtest.nix
@@ -45,6 +62,7 @@
     # hand-edit. Needs jellarr for jellyfin declarative config + OIDC.
     example123 = inputs.nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
+      pkgs = withCrane "x86_64-linux";
       modules = [
         ./remote-infra/nix/example123.nix
         inputs.jellarr.nixosModules.default
@@ -74,7 +92,9 @@
       flake.systemConfigs.edge = inputs.system-manager.lib.makeSystemConfig {
         modules = [./remote-infra/system-manager/edge.nix];
         specialArgs = {
-          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/cococoir {};
+          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/cococoir {
+            crane = inputs.crane;
+          };
         };
       };
 
@@ -101,14 +121,14 @@
           "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
       in {
         checks = import ./nix/tests {
-          inherit pkgs;
+          inherit (withCrane system) pkgs;
           sopsModule = inputs.sops-nix.nixosModules.sops;
         }
         # vmtest is pinned to x86_64-linux; only wire its eval
         # tripwire into checks on that system.
         // pkgs.lib.optionalAttrs (system == "x86_64-linux") (
           import ./nix/tests/vmtest-wiring {
-            inherit pkgs;
+            inherit (withCrane system) pkgs;
             vmtestConfig = vmtest.config;
           }
         );

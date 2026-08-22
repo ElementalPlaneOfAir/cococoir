@@ -101,7 +101,11 @@ pub struct HetznerDns {
     zone_id: String,
     zone_name: String,
     token: String,
-    http: reqwest::Client,
+    /// Built on first HTTP use, not at construction — so building a
+    /// `HetznerDns` (e.g. in a pure-logic test, or the nix build sandbox
+    /// where there are no CA certs) never touches reqwest. The client is
+    /// only needed for actual Hetzner API calls.
+    http: std::sync::OnceLock<reqwest::Client>,
 }
 
 impl HetznerDns {
@@ -125,8 +129,18 @@ impl HetznerDns {
             zone_id,
             zone_name,
             token,
-            http: reqwest::Client::new(),
+            http: std::sync::OnceLock::new(),
         }
+    }
+
+    fn http(&self) -> &reqwest::Client {
+        // The client is built only on first real API use. Building it
+        // panics in an environment with no CA certs (a build sandbox),
+        // which never makes API calls — so lazy construction keeps a
+        // pure-logic test (or the nix `cargo test`) from ever touching
+        // reqwest. On the live box the certs exist, so this resolves
+        // once and is reused for the process lifetime.
+        self.http.get_or_init(reqwest::Client::new)
     }
 
     /// The record name Hetzner's API expects: the full name with the
@@ -146,7 +160,7 @@ impl HetznerDns {
 
     async fn get_records(&self, name: &str) -> Result<Vec<HetznerRecord>, DnsError> {
         let resp = self
-            .http
+            .http()
             .get(format!("{HETZNER_BASE}/records"))
             .header("Auth-API-Token", &self.token)
             .query(&[
@@ -169,7 +183,7 @@ impl HetznerDns {
             zone_id: &self.zone_id,
             ttl: 3600,
         };
-        self.http
+        self.http()
             .post(format!("{HETZNER_BASE}/records"))
             .header("Auth-API-Token", &self.token)
             .json(&body)
@@ -187,7 +201,7 @@ impl HetznerDns {
             zone_id: &self.zone_id,
             ttl: 3600,
         };
-        self.http
+        self.http()
             .put(format!("{HETZNER_BASE}/records/{id}"))
             .header("Auth-API-Token", &self.token)
             .json(&body)
@@ -198,7 +212,7 @@ impl HetznerDns {
     }
 
     async fn delete_record(&self, id: &str) -> Result<(), DnsError> {
-        self.http
+        self.http()
             .delete(format!("{HETZNER_BASE}/records/{id}"))
             .header("Auth-API-Token", &self.token)
             .send()
