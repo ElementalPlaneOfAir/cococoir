@@ -22,9 +22,8 @@ remote-infra/
 ├── system-manager/          # edge box config (stock Debian, no NixOS)
 │   └── edge.nix             #   applied via system-manager switch
 ├── scripts/
-│   ├── gen-wg-keys.sh       # WG keypairs -> .secrets/wg/ (gitignored)
-│   └── provision-edge.sh    # gen keys -> tofu -> nix install -> system-manager -> scp key
-└── .secrets/                # gitignored: WG private keys, tofu state
+│   └── provision-edge.sh    # secretspec resolve -> tofu -> nix install -> system-manager -> wire WG
+└── .secrets/                # gitignored: secretspec provisioning store (token, admin key)
 ```
 
 ## Why this shape
@@ -40,11 +39,12 @@ remote-infra/
   (`cidrhost`) and flow into the DNS records, the customer NixOS
   config, and the provision script's WireGuard config. Change a
   variable → re-apply → everything stays consistent.
-- **Secrets never in git.** The Hetzner token comes from the
-  `HCLOUD_TOKEN` env var. WireGuard private keys are generated into
-  `.secrets/` (gitignored) and scp'd to the boxes at provision time.
-  Only IPs + WG *public* keys land in the rendered (checked-in)
-  configs — those are not secrets.
+- **Secrets never in git.** The Hetzner token + generated admin key
+  live in the secretspec provisioning store at `.secrets/`
+  (gitignored), resolved via `nix run .#secretspec -- export -P
+  provisioning -S <scope>`. WG identities are owned at runtime by the
+  edge binary — nothing here provisions key material. Only IPs land in
+  the rendered (checked-in) configs.
 
 ## The IPv6 model being provisioned
 
@@ -64,14 +64,14 @@ challenge traffic rides the same blind forwards as everything else.
 ## Setup
 
 ```bash
-# 1. Token (never committed). Create a write-enabled token at
+# 1. Set the Hetzner token in the secretspec provisioning store
+#    (never committed). Create a write-enabled token at
 #    console.hetzner.cloud -> Security -> API Tokens.
-mkdir -p ~/.secrets
-echo 'your-token' > ~/.secrets/HETZNER_API_KEY
-chmod 600 ~/.secrets/HETZNER_API_KEY
+nix run .#secretspec -- set HETZNER_TOKEN '<your-token>' \
+  -p provisioning_store -P provisioning -f ./secretspec.toml --reason "first-time setup"
 
 # 2. Tooling.
-nix develop  # or: nix shell nixpkgs#opentofu nixpkgs#wireguard-tools nixpkgs#jq
+nix develop  # or: nix shell nixpkgs#opentofu nixpkgs#jq
 
 # 3. Variables.
 cp tofu/terraform.tfvars.example tofu/terraform.tfvars
@@ -81,11 +81,13 @@ cp tofu/terraform.tfvars.example tofu/terraform.tfvars
 bash scripts/provision-edge.sh
 ```
 
-`provision-edge.sh` generates the WG keypairs, runs `tofu apply`
-(server + firewall + ssh key + DNS zone + records + renders the
-customer NixOS config), installs Nix on the stock Debian image,
-applies the edge config with `system-manager switch`, and installs
-the edge WG private key on the box.
+`provision-edge.sh` resolves the token + admin key through the
+secretspec CLI (profiles.provisioning, scopes `token`/`provision`),
+runs `tofu apply` (server + firewall + ssh key + DNS zone + records +
+renders the customer NixOS config), installs Nix on the stock Debian
+image, applies the edge config with `system-manager switch`, and wires
+the edge WG tunnel (throwaway key — the binary owns the real identity
+at runtime).
 
 ## After provisioning
 
@@ -94,10 +96,9 @@ the edge WG private key on the box.
    exists but is not authoritative.
 2. **Customer box** (home machine, NixOS): apply
    `remote-infra/nix/example123.nix` on it (it is the full v2 product
-   + the tunnel client), fill in its real btrfs disks, then
-   `scp remote-infra/.secrets/wg/customer.private` to
-   `/etc/wireguard/example123-private.key` and restart the WG + client
-   units.
+   + the tunnel client), fill in its real btrfs disks. Its WG tunnel
+   peer is wired from the edge's `/pubkey` at signup (deferred); today
+   the render brings the interface up with no peers.
 3. **Verify**: `bash remote-infra/scripts/demo-verify.sh` from an
    IPv6-native client and an IPv4 client.
 
@@ -107,7 +108,8 @@ Everything is declarative. To change something:
 
 - **Server/location/image**: `tofu/variables.tf`, re-apply.
 - **Another customer**: add a `/128` derivation in `main.tf`, a record
-  in `dns.tf`, and a peer on the edge; re-apply + rebuild.
+  in `dns.tf`; the WG peer is registered via the control plane's
+  `/signup` at runtime (deferred); re-apply + rebuild.
 - **The edge box**: edit `system-manager/edge.nix`, then
   `nix run .#system-manager -- --target-host root@<edge> switch --flake .#edge --sudo`.
 - **The customer NixOS config**: edit `tofu/templates/*.tftpl`,

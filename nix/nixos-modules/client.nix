@@ -2,8 +2,8 @@
 # Cococoir v2 — Go client service module.
 #
 # v0.5 PR 1: the cococoir-client binary is the second of two entry
-# points built from the consolidated nix/packages/cococoir module.
-# The shared forwarder lives in nix/packages/cococoir/internal/forwarder.
+# points built from the consolidated packages/cococoir module.
+# The shared forwarder lives in packages/cococoir/internal/forwarder.
 # See edge.nix for the per-IP binding, retry-with-backoff, and
 # graceful shutdown notes.
 #
@@ -26,7 +26,7 @@
 #   - No control-channel client. The client grows an HTTP client in
 #     v0.5 PR 4 to talk to the edge's admin API.
 #
-# Config schema (JSON, matches the Go binary in nix/packages/cococoir):
+# Config schema (JSON, matches the Go binary in packages/cococoir):
 #   { "forwards": [
 #       { "listen_addr": "10.10.0.2:443", "proto": "tcp", "dest_addr": "127.0.0.1:443" },
 #       { "listen_addr": "10.10.0.2:443", "proto": "udp", "dest_addr": "127.0.0.1:443" }

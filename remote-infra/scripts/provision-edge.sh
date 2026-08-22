@@ -2,17 +2,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # provision-edge.sh — bring up the edge box end to end:
-#   1. generate WireGuard keypairs (if absent)
+#   1. resolve secrets (secretspec, provisioning profile)
 #   2. tofu init + apply (server + firewall + DNS + renders customer config)
 #   3. install Nix on the stock Debian image
 #   4. system-manager switch (applies remote-infra/system-manager/edge.nix)
-#   5. install the edge WG private key + wire the tunnel
+#   5. write edge secrets (edge.env + secretspec.toml)
+#   6. install the edge WG private key + wire the tunnel
+#
+# Secrets resolve through the secretspec CLI, pinned to 0.19 via the
+# repo flake (`nix run .#secretspec`) — the devshell's `secretspec`
+# comes from devenv's own nixpkgs and lacks the file provider backend.
+# The provisioning profile is the single store at remote-infra/.secrets
+# (gitignored); scopes carve it per consumer: `token` for tofu
+# (HCLOUD_TOKEN), `provision` for edge.env (token + admin key).
 #
 # Prereqs:
-#   HCLOUD_TOKEN exported, OR the token file at
-#   ${HETZNER_TOKEN_FILE:-/home/nicole/.secrets/HETZNER_SECRET_API_KEY}
-#   (read here, never stored in the repo)
-#   opentofu, nix, wg in PATH (or use the repo devshell)
+#   nix + tofu in PATH (or use the repo devshell)
 #
 # Usage:
 #   bash remote-infra/scripts/provision-edge.sh
@@ -20,29 +25,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 TOFU_DIR="tofu"
-SECRETS=".secrets/wg"
-TOKEN_FILE="${HETZNER_TOKEN_FILE:-/home/nicole/.secrets/HETZNER_SECRET_API_KEY}"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+# The repo-root symlink into the crate, so the file: provider root
+# (`./remote-infra/.secrets`) resolves against the repo root.
+TOML="$REPO_ROOT/secretspec.toml"
 
 command -v tofu >/dev/null || command -v opentofu >/dev/null \
   || { echo "missing opentofu (the 'tofu' binary)"; exit 1; }
 TOFU=$(command -v tofu || command -v opentofu)
-command -v nix >/dev/null || { echo "missing nix (nix run nixpkgs#system-manager)"; exit 1; }
-command -v wg >/dev/null || { echo "missing wireguard-tools (wg)"; exit 1; }
+command -v nix >/dev/null || { echo "missing nix (nix run .#secretspec)"; exit 1; }
 
-# The hcloud provider reads HCLOUD_TOKEN. If it's not already exported,
-# pull it from the operator's token file (kept out of the repo).
-if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
-  if [[ -s "$TOKEN_FILE" ]]; then
-    export HCLOUD_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
-  else
-    echo "missing HCLOUD_TOKEN (export it or create $TOKEN_FILE)"; exit 1
-  fi
-fi
+# Every secretspec call needs --reason (require_reason policy).
+echo "==> [1/6] resolve Hetzner token (secretspec, token scope)"
+eval "$(nix run "$REPO_ROOT#secretspec" -- export -P provisioning -S token \
+  -f "$TOML" --format shell --reason "provision-edge: tofu apply")"
+export HCLOUD_TOKEN="$HETZNER_TOKEN"
 
-echo "==> [1/5] WireGuard keys"
-bash scripts/gen-wg-keys.sh
-
-echo "==> [2/5] tofu apply"
+echo "==> [2/6] tofu apply"
 (
   cd "$TOFU_DIR"
   "$TOFU" init
@@ -52,7 +51,7 @@ echo "==> [2/5] tofu apply"
 EDGE_IPV4=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_ipv4)
 echo "edge box IPv4: $EDGE_IPV4"
 
-echo "==> [3/5] ensure Nix is installed on the stock Debian image"
+echo "==> [3/6] ensure Nix is installed on the stock Debian image"
 # Idempotent: if `nix` is already on the box, skip the installer — the
 # official script refuses to run on an installed Nix ("Nix already
 # installed"), which is exactly the failure a re-provision hits. The
@@ -66,12 +65,12 @@ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "root@${EDGE_IPV4}"
    fi && \
    printf 'trusted-users = root\n' >> /etc/nix/nix.conf && systemctl restart nix-daemon"
 
-echo "==> [4/5] system-manager switch (applies the edge config)"
+echo "==> [4/6] system-manager switch (applies the edge config)"
 # system-manager's own flake (pinned via our flake.lock) is the CLI;
 # `--flake .#edge` resolves our repo flake because we run from the
 # repo root. It builds the config locally and nix-copy-closure's it.
 (
-  cd "$(git rev-parse --show-toplevel)"
+  cd "$REPO_ROOT"
   nix run 'github:numtide/system-manager' -- \
     --target-host "root@${EDGE_IPV4}" \
     switch --flake ".#edge" --sudo
@@ -83,40 +82,28 @@ echo "==> [5/6] write edge secrets (edge.env + secretspec.toml)"
 # the values (zone + token + root domain + admin key hash). The SDK
 # reads secretspec.toml via a CWD walk from /etc/cococoir
 # (WorkingDirectory on the unit) and the values from edge.env (0600,
-# never in the repo).
+# never in the repo). `-S provision` = token + generated admin key.
+eval "$(nix run "$REPO_ROOT#secretspec" -- export -P provisioning -S provision \
+  -f "$TOML" --format shell --reason "provision-edge: write edge.env")"
 DNS_ZONE_ID=$("$TOFU" -chdir="$TOFU_DIR" output -raw dns_zone_id)
 DOMAIN=$("$TOFU" -chdir="$TOFU_DIR" output -raw domain)
-if [[ -z "${HETZNER_TOKEN_FILE:-}" ]]; then
-  DNS_TOKEN=$(tr -d '\r\n' < "$TOKEN_FILE")
-else
-  DNS_TOKEN=$(tr -d '\r\n' < "$HETZNER_TOKEN_FILE")
-fi
+DNS_TOKEN="$HETZNER_TOKEN"
+# ADMIN_KEY is a 32-char hex string (no trailing newline). The box
+# verifies sha256 of the exact presented bytes, so the hash must be of
+# the exact value — a naive `sha256sum` of a newline-terminated file
+# would bake the newline into the hash and reject every real key.
+ADMIN_KEY_HASH=$(printf '%s' "$ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
-# The admin API key: a random 128-bit key, generated once and echoed to
-# the operator. The box stores only its SHA-256 (the declared secret);
-# the plaintext line is a convenience that deliberately does not migrate
-# to a future secret store.
-ADMIN_KEY_FILE="${SECRETS%/*}/admin.key"
-mkdir -p "$(dirname "$ADMIN_KEY_FILE")"
-chmod 0700 "$(dirname "$ADMIN_KEY_FILE")"
-if [[ ! -s "$ADMIN_KEY_FILE" ]]; then
-  openssl rand -hex 16 > "$ADMIN_KEY_FILE"
-  chmod 0600 "$ADMIN_KEY_FILE"
-  echo "==> Admin API key generated (also saved to $ADMIN_KEY_FILE):"
-  echo "    $(cat "$ADMIN_KEY_FILE")"
-  echo "    Keep it; it is echoed only once. The box stores only its SHA-256."
-fi
-ADMIN_KEY_HASH=$(sha256sum "$ADMIN_KEY_FILE" | cut -d' ' -f1)
-ADMIN_KEY=$(cat "$ADMIN_KEY_FILE")
-
-# Deploy the committed contract + the values file.
+# Deploy the committed contract + the values file. The plaintext admin
+# key never reaches the box — it lives in the operator's secretspec
+# store, retrievable with `nix run .#secretspec -- export`.
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "mkdir -p /etc/cococoir && \
    cat > /etc/cococoir/secretspec.toml && \
-   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nADMIN_KEY=%s\n' \
-     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' '$ADMIN_KEY' > /etc/cococoir/edge.env && \
+   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\n' \
+     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' > /etc/cococoir/edge.env && \
    chmod 0600 /etc/cococoir/edge.env && chmod 0644 /etc/cococoir/secretspec.toml" \
-  < "$(git rev-parse --show-toplevel)/nix/packages/cococoir/secretspec.toml"
+  < "$REPO_ROOT/packages/cococoir/secretspec.toml"
 
 echo "==> [6/6] wire the WG tunnel interface"
 # The edge box owns its WireGuard identity at runtime: cococoir-edge
@@ -140,5 +127,5 @@ echo "==> Edge box up. Its WG public key is served by the control plane"
 echo "    at https://<edge-ip>:8081/pubkey (or returned in each signup)."
 echo "  DNS: point interdim.net NS records at:"
 "$TOFU" -chdir="$TOFU_DIR" output -json nameservers | jq -r '.[] | "    \(.)"'
-echo "  Customer box: apply remote-infra/nix/example123.nix on the home machine,"
-echo "  then scp remote-infra/.secrets/wg/customer.private to /etc/wireguard/example123-private.key there."
+echo "  Admin key (for the control-plane API):"
+echo "    nix run .#secretspec -- export -P provisioning -S provision --format shell"

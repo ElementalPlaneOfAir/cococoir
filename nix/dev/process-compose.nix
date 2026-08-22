@@ -22,11 +22,11 @@
   processes = {
     dashboard = {
       command = ''
-        cd nix/packages/cococoir && exec ${pkgs.util-linux}/bin/script -qec "${pkgs.bacon}/bin/bacon dashboard" /dev/null
+        cd packages/cococoir && exec ${pkgs.util-linux}/bin/script -qec "${pkgs.bacon}/bin/bacon dashboard" /dev/null
       '';
       environment = [
         "COCOCOIR_ADMIN_PASSWORD_HASH=${adminPasswordHash}"
-        # The dashboard command cd's into nix/packages/cococoir,
+        # The dashboard command cd's into packages/cococoir,
         # so climb back to the repo root.
         "COCOCOIR_CONFIG_PATH=../../../nixosConfigurations/dashboard.nix"
       ];

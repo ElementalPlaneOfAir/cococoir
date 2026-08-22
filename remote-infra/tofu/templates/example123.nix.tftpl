@@ -63,14 +63,11 @@
   networking.wireguard.interfaces.wg0 = {
     privateKeyFile = "/etc/wireguard/example123-private.key";
     ips = ["${customer_wg_ip}/24"];
-    peers = [
-      {
-        publicKey = "${edge_wg_pub}";
-        endpoint = "${edge_ipv4}:${wg_listen_port}";
-        allowedIPs = ["${edge_wg_ip}/32"];
-        persistentKeepalive = 25; # keep the tunnel alive through NAT
-      }
-    ];
+    # The edge's WG public key is served at runtime by the control
+    # plane (GET /pubkey; also returned by each /signup), so it is not
+    # rendered here from tofu. Peers are wired from the signup flow
+    # (deferred) — the interface comes up with no peers until then.
+    peers = [];
   };
 
   # ── IPv4 LAN path: the "custom DNS server" from the vision. ─────

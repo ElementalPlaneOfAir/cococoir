@@ -48,7 +48,7 @@ need to keep working — we only read it as a source of patterns.
 
 ## v0 — L4 forwarder (shipped)
 
-One Rust crate at `nix/packages/cococoir/` producing two binaries:
+One Rust crate at `packages/cococoir/` producing two binaries:
 
 - **`cococoir-edge`** — VPS-side L4 forwarder. Per-IP binding, retry
   with backoff on transient bind errors, graceful shutdown.
@@ -58,7 +58,7 @@ One Rust crate at `nix/packages/cococoir/` producing two binaries:
   journald tailer, an OTEL SDK, and an embedded dashboard
   (those land in v2 work; v0 ships the forwarder + health endpoint).
 
-Shared modules in `nix/packages/cococoir/src/` (ADR-024, ported from
+Shared modules in `packages/cococoir/src/` (ADR-024, ported from
 Go):
 
 - **`forwarder`** — TCP + UDP forwarding, retry, drain, signal
@@ -482,7 +482,7 @@ revisited.
 - **ADR-024: The cococoir service is Rust, not Go (supersedes
   ADR-017's language).** The entire Go role — forwarder, edge/client
   mains, health server, logger — is ported to a single Rust crate
-  (`nix/packages/cococoir`). The CLI flags, config JSON schema,
+  (`packages/cococoir`). The CLI flags, config JSON schema,
   binary names, and `/status` JSON contract are unchanged, so the
   systemd modules and the `edge-forward` L2 test needed no edits.
   Rationale (see `writing/llm/rust-rewrite.md`): schema/type modeling

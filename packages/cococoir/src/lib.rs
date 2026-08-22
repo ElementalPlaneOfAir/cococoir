@@ -7,7 +7,7 @@
 //! `{forwards: [{listen_addr, proto, dest_addr}, ...]}` and hand
 //! the slice to a `Forwarder`.
 //!
-//! Replaces the v0 Go module (`nix/packages/cococoir`). See
+//! Replaces the v0 Go module (formerly `nix/packages/cococoir`). See
 //! `.specify/specs/rust-forwarder-port/proposal.md`.
 
 pub mod app;

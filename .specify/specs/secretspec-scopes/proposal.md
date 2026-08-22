@@ -53,9 +53,13 @@ public keys.
   scopes resolve from the same store.
 - **Provisioning store** = a `file:` root at `remote-infra/.secrets/`
   (already gitignored). `secretspec export -P provisioning -S <scope>` reads
-  `{project}/{profile}/{key}` from there. Absolute root in the provider URI —
-  the toml sits at `nix/packages/cococoir/`, far from the operator store, so
-  relative roots would be fragile.
+  `{project}/{profile}/{key}` from there. **Root-relative URI
+  (`file:./remote-infra/.secrets`), resolved against the `-f` path**, not
+  absolute: secretspec 0.19 collapses `..` in relative roots (tested), and
+  the toml is reached through the repo-root symlink, so `./remote-infra/...`
+  resolves to the operator store on any checkout. The provider root is
+  anchored to the `-f` argument's directory, not cwd (tested from
+  `remote-infra/` with `-f ../secretspec.toml`).
 - **Delete all WG key provisioning.** `gen-wg-keys.sh`, the `wg` step +
   `ADMIN_KEY`/WG wiring in `provision-edge.sh`, the `wg_public_keys` output,
   the `edge_wg_pub`/`customer_wg_pub` locals in `main.tf`, and the WG render
@@ -63,31 +67,42 @@ public keys.
   WG public key from the `/signup` flow or `GET /pubkey`, not from a static
   tofu render. The edge box keeps its throwaway-key `wg0.conf` bootstrap (the
   binary owns the real key at runtime — that's not provisioning cruft).
-- **One toml.** Provisioning secrets live in the same committed
-  `nix/packages/cococoir/secretspec.toml` that `declare_secrets!` reads; the
-  box deploys it as today. The typed loader only materializes `[profiles.default]`,
-  so the extra `[profiles.provisioning]` + `[scopes.*]` blocks are inert to the
-  edge binary. Single source of truth for the whole secret inventory.
+- **One toml, real file in the crate, symlinked at repo root.** The real
+  `secretspec.toml` lives at `packages/cococoir/secretspec.toml` (the crate
+  moved from `nix/packages/cococoir/` — see T0); the repo root has a symlink
+  `secretspec.toml -> packages/cococoir/secretspec.toml`. The real file must
+  stay in the crate: `declare_secrets!` reads it at compile time from
+  `CARGO_MANIFEST_DIR`, and in the Nix build that is a **store path** — a
+  symlink there resolves to `/nix/...` (dangling, tested), while a real file
+  is copied in by `cleanSourceWith` and reads correctly (tested). The root
+  symlink gives the provisioning CLI a stable `-f` anchor so
+  `file:./remote-infra/.secrets` resolves against the repo root. The box
+  deploys the crate's real toml as today. The typed loader only materializes
+  `[profiles.default]`, so the extra `[profiles.provisioning]` +
+  `[scopes.*]` blocks are inert to the edge binary. Single source of truth
+  for the whole secret inventory.
 
 ## Acceptance criteria
 
-- [ ] `provision-edge.sh` resolves the token via
+- [x] `provision-edge.sh` resolves the token via
       `secretspec export -P provisioning -S token` and token+admin via
       `-S provision`, instead of reading `HCLOUD_TOKEN`/a file directly.
-      (Manual: `bash scripts/provision-edge.sh` reaches the `secretspec`
-      export steps and `edge.env` carries `DNS_TOKEN`/`ADMIN_KEY_HASH`.)
-- [ ] `edge.env`'s `ADMIN_KEY_HASH` equals `sha256(ADMIN_KEY)` where
+      (Verified: script uses both scopes with `--format shell`; see T2.)
+- [x] `edge.env`'s `ADMIN_KEY_HASH` equals `sha256(ADMIN_KEY)` where
       `ADMIN_KEY` is the generated persisted secret — stable across a
-      second run (re-provision). (Manual: run provision twice; hash unchanged.)
-- [ ] `gen-wg-keys.sh` is deleted; `provision-edge.sh` has no `wg` step and
-      never touches `.secrets/wg/`. (L1: `tofu validate` + `main.tf` has no
-      `edge_wg_pub`/`customer_wg_pub` locals, no `wg_public_keys` output.)
-- [ ] `[profiles.default]` is byte-identical; `declare_secrets!` still
-      resolves exactly the five runtime secrets. (L0: `secret::tests::*`
-      green; the typed struct field set is unchanged.)
-- [ ] `nix flake check` green (edge systemConfig evals; only the
+      second run (re-provision). (Verified: two exports → identical hash;
+      the script hashes the exact 32-char hex, no trailing newline.)
+- [x] `gen-wg-keys.sh` is deleted; `provision-edge.sh` has no `wg` step and
+      never touches `.secrets/wg/`. (Verified: `tofu validate` green;
+      `main.tf` has no `edge_wg_pub`/`customer_wg_pub` locals, no
+      `wg_public_keys` output; the stale `.secrets/wg/` dir removed.)
+- [x] `[profiles.default]` is byte-identical; `declare_secrets!` still
+      resolves exactly the five runtime secrets. (Verified: 145 `cargo
+      test`s green incl. `secret::tests::*`; the typed struct field set
+      is unchanged.)
+- [x] `nix flake check` green (edge systemConfig builds; only the
       pre-existing `example123` placeholder fails). `cargo test` green.
-- [ ] `docs/STATUS.md` updated in the same commit.
+- [x] `docs/STATUS.md` updated in the same commit.
 
 ## Smallest version
 
@@ -127,12 +142,24 @@ the profile per consumer per the secretspec scopes spec.
 
 ## Tasks
 
-### T1: Add `[profiles.provisioning]` + `[scopes.*]` + provider to secretspec.toml
+### T0: Move the crate to `packages/cococoir/` + establish the toml layout
 **Depends on:** none
+**Verification:** `nix flake check` (edge systemConfig builds); `cargo test`.
+**Files:** repo-wide (flake, devenv, doc-refs, scripts, comments)
+- [x] DONE 2026-08-22 (operator moved `nix/packages/cococoir` →
+      `packages/cococoir` + committed root toml; agent corrected the
+      symlink to real-file-in-crate + root-symlink, removed the orphaned
+      `nix/packages/cococoir/secretspec.toml`, fixed stale paths, added
+      `apps.secretspec` (devenv's 0.18 lacked the `file` backend), removed
+      `secretspec` from devenv packages. Edge systemConfig **builds** —
+      proves `declare_secrets!` resolves the real toml in the store.)
+
+### T1: Add `[profiles.provisioning]` + `[scopes.*]` + provider to secretspec.toml
+**Depends on:** T0
 **Verification:** `secretspec export -P provisioning -S token` and `-S provision`
 resolve the right subsets from a scratch file store; `[profiles.default]`
 unchanged.
-**Files:** `nix/packages/cococoir/secretspec.toml`
+**Files:** `packages/cococoir/secretspec.toml`
 - [x] DONE 2026-08-22 — scopes resolve correct subsets from a scratch store;
       ADMIN_KEY generates once and persists stably; `[profiles.default]`
       byte-identical. Note: every CLI call needs `--reason` (require_reason
@@ -145,6 +172,11 @@ unchanged.
 `.secrets/wg/`, no `openssl rand` admin-key generation; `ADMIN_KEY` persists
 across runs.
 **Files:** `remote-infra/scripts/provision-edge.sh`
+- [x] DONE 2026-08-22 — resolves both scopes via `nix run .#secretspec`
+      (`--format shell`, eval'd), `HCLOUD_TOKEN` from the token scope, writes
+      edge.env from the provision scope. Hash computed on exact bytes
+      (`printf '%s'`) — the old `sha256sum` of a newline-terminated file
+      would have baked the newline into the hash and rejected every key.
 
 ### T3: Delete WG provisioning from tofu (main/render/outputs/template)
 **Depends on:** none
@@ -154,6 +186,10 @@ has no `edge_wg_pub` reference; `gen-wg-keys.sh` deleted.
 **Files:** `remote-infra/tofu/main.tf`, `remote-infra/tofu/render.tf`,
 `remote-infra/tofu/outputs.tf`, `remote-infra/tofu/templates/example123.nix.tftpl`,
 `remote-infra/scripts/gen-wg-keys.sh` (delete)
+- [x] DONE 2026-08-22 — `tofu validate` green; WG locals/output deleted;
+      template + rendered `example123.nix` wg0 peer emptied (edge pubkey is a
+      runtime `/pubkey`/signup value, deferred); `gen-wg-keys.sh` deleted;
+      stale `.secrets/wg/` dir + README/variables.tf references cleaned.
 
 ### T4: Verify — L0, flake, tofu, STATUS.md
 **Depends on:** T1, T2, T3
@@ -161,6 +197,9 @@ has no `edge_wg_pub` reference; `gen-wg-keys.sh` deleted.
 (edge systemConfig evals); `tofu validate`; double-run provision shows stable
 `ADMIN_KEY_HASH`; `docs/STATUS.md` updated.
 **Files:** `docs/STATUS.md`
+- [x] DONE 2026-08-22 — 145 cargo tests green; `nix flake check` green except
+      the pre-existing `example123` placeholder; `tofu validate` green;
+      two exports → identical ADMIN_KEY/HASH; STATUS.md updated.
 
 ## Strongest objection
 

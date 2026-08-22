@@ -38,7 +38,7 @@
 
   outputs = inputs: let
     # nixpkgs with the crane flake injected as an attribute, so any
-    # `pkgs.callPackage ./nix/packages/cococoir {}` (in the NixOS
+    # `pkgs.callPackage ./packages/cococoir {}` (in the NixOS
     # modules, the tests, the edge systemConfig) resolves the `crane`
     # arg it now needs, without threading the flake input through every
     # call site.
@@ -92,7 +92,7 @@
       flake.systemConfigs.edge = inputs.system-manager.lib.makeSystemConfig {
         modules = [./remote-infra/system-manager/edge.nix];
         specialArgs = {
-          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/cococoir {
+          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./packages/cococoir {
             crane = inputs.crane;
           };
         };
@@ -143,6 +143,16 @@
           program = toString (pkgs.writeShellScript "vmtest-run" ''
             exec nix run .#nixosConfigurations.vmtest.config.system.build.vm -- "$@"
           '');
+        };
+        # secretspec 0.19 CLI from the flake's locked nixpkgs. The
+        # devshell's `secretspec` comes from devenv's own nixpkgs and is
+        # an older version without the `file` provider backend, so the
+        # provisioning scripts and this app are the pinned, canonical
+        # entry point. Run from the repo root:
+        #   nix run .#secretspec -- export -P provisioning -S token ...
+        apps.secretspec = {
+          type = "app";
+          program = "${realPkgs.secretspec}/bin/secretspec";
         };
         # Dashboard live-edit loop, managed by process-compose: bacon's
         # dashboard job with the admin login enabled, torn down cleanly

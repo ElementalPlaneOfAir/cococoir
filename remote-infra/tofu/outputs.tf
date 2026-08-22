@@ -33,11 +33,3 @@ output "domain" {
   description = "The apex domain (== DNS zone name) — the runtime DNS client writes customer hostnames under it."
   value       = var.domain
 }
-
-output "wg_public_keys" {
-  description = "WireGuard public keys (from .secrets/) — the customer box config needs edge.pub, the edge config needs customer.pub."
-  value = {
-    edge     = local.edge_wg_pub
-    customer = local.customer_wg_pub
-  }
-}
