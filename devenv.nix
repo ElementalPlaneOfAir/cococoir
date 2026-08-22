@@ -12,6 +12,7 @@
   packages = with pkgs; [
     opentofu
     nixos-anywhere
+    secretspec
     wireguard-tools
     valkey
   ];
