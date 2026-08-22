@@ -47,6 +47,15 @@ let
     pname = "cococoir";
     version = "0.1.0";
     cargoLock = ./Cargo.lock;
+    # Cap cargo's parallelism so the first full dependency build fits
+    # in ~8GB of RAM (rustc is memory-hungry; the default uses every
+    # core). `buildDepsOnly` compiles the whole dependency tree once, so
+    # this only slows the cold build — later builds reuse the cached
+    # artifacts and recompile just our crate.
+    env = {
+      CARGO_BUILD_JOBS = "2";
+      CARGO_TEST_JOBS = "2";
+    };
   };
   cargoLock = ./Cargo.lock;
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;

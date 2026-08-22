@@ -52,11 +52,18 @@ echo "==> [2/5] tofu apply"
 EDGE_IPV4=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_ipv4)
 echo "edge box IPv4: $EDGE_IPV4"
 
-echo "==> [3/5] install Nix on the stock Debian image"
-# Official single-user... no: daemon installer (system-manager deploy
-# pushes closures, which needs the daemon's trusted-users).
+echo "==> [3/5] ensure Nix is installed on the stock Debian image"
+# Idempotent: if `nix` is already on the box, skip the installer — the
+# official script refuses to run on an installed Nix ("Nix already
+# installed"), which is exactly the failure a re-provision hits. The
+# daemon installer is required (system-manager deploy pushes closures,
+# which needs the daemon's trusted-users).
 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "root@${EDGE_IPV4}" \
-  "sh <(curl -L --proto '=https' --tlsv1.2 https://nixos.org/nix/install) --daemon && \
+  "if command -v nix >/dev/null 2>&1; then
+     echo 'nix already installed; skipping installer';
+   else
+     sh <(curl -L --proto '=https' --tlsv1.2 https://nixos.org/nix/install) --daemon
+   fi && \
    printf 'trusted-users = root\n' >> /etc/nix/nix.conf && systemctl restart nix-daemon"
 
 echo "==> [4/5] system-manager switch (applies the edge config)"
