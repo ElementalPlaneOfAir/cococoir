@@ -8,7 +8,7 @@
 //!    name, typed IPv6. Swappable provider behind a small trait, the
 //!    way `WgClient` swaps the kernel-interface backend. Config is
 //!    immutable process-lifetime data (`LazyLock` static), read from
-//!    env at boot — never changed without a restart.
+//!    the resolved secrets at boot — never changed without a restart.
 //!
 //! 2. **Resolution** — `resolve_aaaa` queries a public resolver
 //!    (1.1.1.1) and returns the AAAA set for a name. Used only to
@@ -18,9 +18,11 @@
 //!    different providers that can be swapped independently.
 //!
 //! The customer-naming policy (main + wildcard record under the root
-//! `DOMAIN`) lives ABOVE this module, in the orchestrator
+//! domain) lives ABOVE this module, in the orchestrator
 //! (`upsert_customer`/`remove_customer`). The provider client never
-//! constructs a name; the naming layer never talks to a provider.
+//! constructs a name; the naming layer never talks to a provider. The
+//! root domain is passed in by callers (from `secret::root_domain()`),
+//! keeping the naming functions pure and testable without a global.
 
 use std::net::Ipv6Addr;
 use std::sync::LazyLock;
@@ -30,12 +32,7 @@ use thiserror::Error;
 
 use async_trait::async_trait;
 
-/// The root domain customer hostnames live under (the naming layer's
-/// apex), e.g. `interdim.net`. Separate from the DNS provider's
-/// config: this is *what our hostnames look like*, owned by the
-/// orchestrator, not by the client that talks to Hetzner.
-static DOMAIN: LazyLock<String> =
-    LazyLock::new(|| std::env::var("COCOCOIR_ROOT_DOMAIN").unwrap_or_else(|_| "interdim.net".to_string()));
+use crate::controlplane::secret::SECRETS;
 
 /// Errors from DNS provisioning or resolution.
 #[derive(Debug, Error)]
@@ -107,27 +104,23 @@ pub struct HetznerDns {
     http: reqwest::Client,
 }
 
-/// Read an env var, failing config loudly at boot rather than on the
-/// first DNS call.
-fn env_var(name: &str) -> Result<String, DnsError> {
-    std::env::var(name).map_err(|_| DnsError::Config(format!("{name} is not set")))
-}
-
 impl HetznerDns {
-    /// Build from process environment. Infallible only if all three
-    /// env vars are present; missing config returns `Err` so boot can
-    /// fail fast (see `ensure_dns_config`).
-    pub fn from_env() -> Result<Self, DnsError> {
-        let zone_id = env_var("COCOCOIR_DNS_ZONE_ID")?;
-        let zone_name = env_var("COCOCOIR_DNS_ZONE_NAME")?;
-        let token = env_var("COCOCOIR_DNS_TOKEN")?;
-        Ok(Self::new(zone_id, zone_name, token))
+    /// Build from the resolved edge secrets. The three zone/token values
+    /// come from `SECRETS` (see `secret.rs`); missing config panics in
+    /// that `LazyLock` (fail-fast at boot), never on a first DNS call.
+    fn from_secrets() -> Self {
+        let s = &SECRETS.secrets;
+        Self::new(
+            s.dns_zone_id.clone(),
+            s.dns_zone_name.clone(),
+            s.dns_token.clone(),
+        )
     }
 
     /// Construct from explicit config — the test seam for
-    /// [`HetznerDns::from_env`], which reads the same three values from
-    /// the environment.
-    fn new(zone_id: String, zone_name: String, token: String) -> Self {
+    /// [`HetznerDns::from_secrets`], which reads the same three values
+    /// from the resolved secrets.
+    pub(crate) fn new(zone_id: String, zone_name: String, token: String) -> Self {
         Self {
             zone_id,
             zone_name,
@@ -311,37 +304,16 @@ pub async fn resolve_aaaa(name: &str) -> Result<Vec<Ipv6Addr>, DnsError> {
         .collect())
 }
 
-/// The root domain customer hostnames live under (see `DOMAIN`).
-pub fn root_domain() -> &'static str {
-    &DOMAIN
-}
-
-/// Fail fast at boot if the DNS provider config is missing/unreachable.
-/// Forcing the `LazyLock` initializes it now; a missing env var is a
-/// boot-time `Err`, never a first-signup surprise. Returns `Ok` even
-/// when the provider is later unreachable (that is the reconcile
-/// loop's job) — config must be *present*, not live.
-pub fn ensure_dns_config() -> Result<(), DnsError> {
-    match &*HETZNER_DNS_CONFIG {
-        Ok(_) => Ok(()),
-        Err(err) => Err(DnsError::Config(err.to_string())),
-    }
-}
-
 /// The single provider config global. Immutable process-lifetime data
-/// (see `writing/human/lifetimes_in_rust.md`): built once from env at
-/// first access, never changed without a restart.
-static HETZNER_DNS_CONFIG: LazyLock<Result<HetznerDns, DnsError>> =
-    LazyLock::new(HetznerDns::from_env);
+/// (see `writing/human/lifetimes_in_rust.md`): built once from the
+/// resolved secrets at first access, never changed without a restart.
+static DNS_CLIENT: LazyLock<HetznerDns> = LazyLock::new(HetznerDns::from_secrets);
 
-/// The process's provisioning client. Panics if config is invalid —
-/// unreachable in production because `init_globals` runs
-/// `ensure_dns_config` (fail-fast at boot) first.
+/// The process's provisioning client. Panics if the secrets failed to
+/// resolve — unreachable in production because `init_globals` forces
+/// `SECRETS` (fail-fast at boot) first.
 pub fn get_dns_api() -> &'static dyn DnsApiClient {
-    match &*HETZNER_DNS_CONFIG {
-        Ok(dns) => dns,
-        Err(err) => panic!("dns config is invalid: {err}"),
-    }
+    &*DNS_CLIENT
 }
 
 /// Create the AAAA records for a customer: the bare hostname and the
@@ -352,8 +324,9 @@ pub async fn upsert_customer(
     dns: &dyn DnsApiClient,
     username: &str,
     ipv6: Ipv6Addr,
+    domain: &str,
 ) -> Result<(), DnsError> {
-    let host = customer_hostname(username);
+    let host = customer_hostname(username, domain);
     let wildcard = format!("*.{host}");
     let (main, wild) = tokio::join!(
         dns.upsert_aaaa(&host, ipv6),
@@ -368,8 +341,9 @@ pub async fn upsert_customer(
 pub async fn remove_customer(
     dns: &dyn DnsApiClient,
     username: &str,
+    domain: &str,
 ) -> Result<(), DnsError> {
-    let host = customer_hostname(username);
+    let host = customer_hostname(username, domain);
     let wildcard = format!("*.{host}");
     let (main, wild) = tokio::join!(
         dns.remove_aaaa(&host),
@@ -381,8 +355,8 @@ pub async fn remove_customer(
 }
 
 /// The customer's bare hostname, e.g. `bob.interdim.net`.
-pub fn customer_hostname(username: &str) -> String {
-    format!("{username}.{}", *DOMAIN)
+pub fn customer_hostname(username: &str, domain: &str) -> String {
+    format!("{username}.{domain}")
 }
 
 /// Does the resolved AAAA set satisfy the record we want? A customer
@@ -419,10 +393,11 @@ pub async fn reconcile_pass(
     dns: &dyn DnsApiClient,
     customers: &[(String, Ipv6Addr)],
     resolve: AaaaResolver,
+    domain: &str,
 ) -> usize {
     let mut reapplied = 0usize;
     for (username, ipv6) in customers {
-        let host = customer_hostname(username);
+        let host = customer_hostname(username, domain);
         let wildcard = format!("*.{host}");
         for name in [host, wildcard] {
             let resolved = match resolve(&name).await {
@@ -475,19 +450,6 @@ mod tests {
         assert!(dns.relative_name("bob.example.org").is_err());
     }
 
-    #[test]
-    fn from_env_missing_config_is_err() {
-        // The three vars are never set in the test environment; a
-        // developer who exports them gets Ok and this guard stays
-        // honest rather than flaky.
-        let all_set = ["COCOCOIR_DNS_ZONE_ID", "COCOCOIR_DNS_ZONE_NAME", "COCOCOIR_DNS_TOKEN"]
-            .iter()
-            .all(|v| std::env::var_os(v).is_some());
-        if !all_set {
-            assert!(HetznerDns::from_env().is_err());
-        }
-    }
-
     #[tokio::test]
     async fn mock_records_upsert_and_remove() {
         let mock = MockDnsApiClient::new();
@@ -512,14 +474,15 @@ mod tests {
 
     #[test]
     fn customer_hostname_uses_domain() {
-        assert!(customer_hostname("bob").ends_with(".interdim.net"));
+        assert!(customer_hostname("bob", "interdim.net").ends_with(".interdim.net"));
+        assert!(customer_hostname("bob", "other.example").ends_with(".other.example"));
     }
 
     #[tokio::test]
     async fn upsert_customer_creates_both_records() {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        upsert_customer(&mock, "bob", ip).await.unwrap();
+        upsert_customer(&mock, "bob", ip, "interdim.net").await.unwrap();
         let upserts = mock.upserts.lock().unwrap();
         assert_eq!(upserts.len(), 2);
         let names: Vec<&str> = upserts.iter().map(|(n, _)| n.as_str()).collect();
@@ -531,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn remove_customer_removes_both_records() {
         let mock = MockDnsApiClient::new();
-        remove_customer(&mock, "bob").await.unwrap();
+        remove_customer(&mock, "bob", "interdim.net").await.unwrap();
         let mut removes = mock.removes.lock().unwrap();
         removes.sort();
         assert_eq!(
@@ -560,7 +523,7 @@ mod tests {
         static WRONG: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 9);
         let resolve: AaaaResolver = |_: &str| Box::pin(async move { Ok(vec![WRONG]) });
         let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve).await;
+        let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
         assert_eq!(reapplied, 2); // bare + wildcard both re-applied
         assert_eq!(mock.upserts.lock().unwrap().len(), 2);
     }
@@ -573,7 +536,7 @@ mod tests {
         static RIGHT: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 2);
         let resolve: AaaaResolver = |_: &str| Box::pin(async move { Ok(vec![RIGHT]) });
         let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve).await;
+        let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
         assert_eq!(reapplied, 0);
         assert_eq!(mock.upserts.lock().unwrap().len(), 0);
     }
@@ -586,7 +549,7 @@ mod tests {
             Box::pin(async move { Err::<Vec<Ipv6Addr>, DnsError>(DnsError::Resolve("boom".into())) })
         };
         let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve).await;
+        let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
         assert_eq!(reapplied, 2);
     }
 }

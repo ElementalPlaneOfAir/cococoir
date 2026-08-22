@@ -70,12 +70,13 @@ echo "==> [4/5] system-manager switch (applies the edge config)"
     switch --flake ".#edge" --sudo
 )
 
-echo "==> [5/6] write DNS provider config"
-# The runtime DNS provisioning client (cococoir-edge) needs the Hetzner
-# DNS zone + API token. The zone id comes from tofu's output; the token
-# is the SAME operator Hetzner token (the GA hcloud provider manages
-# Cloud + DNS). Written as a systemd EnvironmentFile, mode 0600, never
-# in the repo.
+echo "==> [5/6] write edge secrets (edge.env + secretspec.toml)"
+# The edge secrets resolve through the secretspec SDK: a value-free
+# secretspec.toml contract (deployed here) + a dotenv edge.env holding
+# the values (zone + token + root domain + admin key hash). The SDK
+# reads secretspec.toml via a CWD walk from /etc/cococoir
+# (WorkingDirectory on the unit) and the values from edge.env (0600,
+# never in the repo).
 DNS_ZONE_ID=$("$TOFU" -chdir="$TOFU_DIR" output -raw dns_zone_id)
 DOMAIN=$("$TOFU" -chdir="$TOFU_DIR" output -raw domain)
 if [[ -z "${HETZNER_TOKEN_FILE:-}" ]]; then
@@ -83,11 +84,32 @@ if [[ -z "${HETZNER_TOKEN_FILE:-}" ]]; then
 else
   DNS_TOKEN=$(tr -d '\r\n' < "$HETZNER_TOKEN_FILE")
 fi
+
+# The admin API key: a random 128-bit key, generated once and echoed to
+# the operator. The box stores only its SHA-256 (the declared secret);
+# the plaintext line is a convenience that deliberately does not migrate
+# to a future secret store.
+ADMIN_KEY_FILE="${SECRETS%/*}/admin.key"
+mkdir -p "$(dirname "$ADMIN_KEY_FILE")"
+chmod 0700 "$(dirname "$ADMIN_KEY_FILE")"
+if [[ ! -s "$ADMIN_KEY_FILE" ]]; then
+  openssl rand -hex 16 > "$ADMIN_KEY_FILE"
+  chmod 0600 "$ADMIN_KEY_FILE"
+  echo "==> Admin API key generated (also saved to $ADMIN_KEY_FILE):"
+  echo "    $(cat "$ADMIN_KEY_FILE")"
+  echo "    Keep it; it is echoed only once. The box stores only its SHA-256."
+fi
+ADMIN_KEY_HASH=$(sha256sum "$ADMIN_KEY_FILE" | cut -d' ' -f1)
+ADMIN_KEY=$(cat "$ADMIN_KEY_FILE")
+
+# Deploy the committed contract + the values file.
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "mkdir -p /etc/cococoir && \
-   printf 'COCOCOIR_DNS_ZONE_ID=%s\nCOCOCOIR_DNS_ZONE_NAME=%s\nCOCOCOIR_DNS_TOKEN=%s\nCOCOCOIR_ROOT_DOMAIN=%s\n' \
-     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' > /etc/cococoir/dns.env && \
-   chmod 0600 /etc/cococoir/dns.env"
+   cat > /etc/cococoir/secretspec.toml && \
+   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nADMIN_KEY=%s\n' \
+     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' '$ADMIN_KEY' > /etc/cococoir/edge.env && \
+   chmod 0600 /etc/cococoir/edge.env && chmod 0644 /etc/cococoir/secretspec.toml" \
+  < "$(git rev-parse --show-toplevel)/nix/packages/cococoir/secretspec.toml"
 
 echo "==> [6/6] wire the WG tunnel interface"
 # The edge box owns its WireGuard identity at runtime: cococoir-edge

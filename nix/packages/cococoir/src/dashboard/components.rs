@@ -139,7 +139,7 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
                 rsx!(<span class="badge badge-neutral badge-xs">"password set"</span>)
             } else {
                 Node::Empty
-            };
+ };
             let groups = user.groups.join(", ");
             let disabled = checked_attr(!user.groups_declared);
             let hint = if user.groups_declared {

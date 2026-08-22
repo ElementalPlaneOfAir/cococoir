@@ -30,27 +30,27 @@
 //! Lua-free single key — INCR is atomic in Redis). Host 1 is the
 //! edge's own primary `/128`; customers start at host 2.
 
+pub mod auth;
 pub mod dns;
 pub mod routing_config;
+pub mod secret;
 pub mod wg;
+pub use auth::{verify_token, AdminKey};
 pub use dns::{
-    DnsApiClient, DnsError, HetznerDns, MockDnsApiClient, customer_hostname, ensure_dns_config,
-    get_dns_api, reconcile_pass, remove_customer, resolve_aaaa, resolve_aaaa_boxed, root_domain,
-    upsert_customer,
+    customer_hostname, get_dns_api, reconcile_pass, remove_customer, resolve_aaaa,
+    resolve_aaaa_boxed, upsert_customer, DnsApiClient, DnsError, HetznerDns, MockDnsApiClient,
 };
 pub use routing_config::{RoutingTable, WgPeer};
+pub use secret::{admin_key_hash, root_domain};
 pub use wg::{RealWgClient, WgClient, WgError};
 
 use std::net::Ipv6Addr;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use poem::{
-    handler,
-    http::StatusCode,
-    post,
-    web::{Json, Path},
-    Endpoint, IntoResponse, Response, Route,
-};
+use poem::Route;
+use poem_openapi::param::Path;
+use poem_openapi::payload::Json;
+use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -206,7 +206,11 @@ impl WgSubnet {
         } else {
             (1u64 << (host_bytes * 8)) - 1
         };
-        assert!(index <= max_host, "wg host index {index} exceeds /{} capacity", self.prefix_len);
+        assert!(
+            index <= max_host,
+            "wg host index {index} exceeds /{} capacity",
+            self.prefix_len
+        );
         let mut octets = [0u8; 4];
         octets[..self.prefix.len()].copy_from_slice(&self.prefix);
         let idx_bytes = (index as u32).to_be_bytes();
@@ -215,11 +219,9 @@ impl WgSubnet {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Object)]
 pub struct Customer {
-    /// The customer's username — their identity. IS the id: the Redis
-    /// key is `CUST_KEY{username}`, so uniqueness is structural and
-    /// there is no separate opaque id to maintain.
+    /// The customer's username — their identity. Is the unique primary key on a per user basis.
     pub username: String,
     /// The customer's DNS hostname, e.g. `bob.interdim.net`.
     pub hostname: String,
@@ -231,10 +233,8 @@ pub struct Customer {
 
 /// The signup response. The customer's private key is returned ONCE —
 /// after this it is gone from the service (only the public key is
-/// stored). The edge's public key is included so the customer can
-/// configure its WG peer for the edge — the response is a complete,
-/// ready-to-install tunnel config.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// stored).
+#[derive(Debug, Serialize, Deserialize, Clone, Object)]
 pub struct SignupResponse {
     pub customer: Customer,
     pub wg_private_key: String,
@@ -274,6 +274,10 @@ pub struct ControlPlane {
     client: redis::Client,
     subnet: Subnet64,
     wg_subnet: WgSubnet,
+    /// The domain customer hostnames live under. Injected (not read
+    /// from the global [`secret::SECRETS`]) so tests can pass any
+    /// domain without touching the boot-only secrets LazyLock.
+    root_domain: &'static str,
     wg: &'static dyn WgClient,
     dns: &'static dyn DnsApiClient,
 }
@@ -281,12 +285,17 @@ pub struct ControlPlane {
 impl ControlPlane {
     /// Connect to Redis and derive the box subnet + WG tunnel net. The
     /// WG and DNS clients are the real ones.
-    pub fn new(redis_url: &str, subnet: Subnet64, wg_subnet: WgSubnet) -> Result<Self, ControlPlaneError> {
+    pub fn new(
+        redis_url: &str,
+        subnet: Subnet64,
+        wg_subnet: WgSubnet,
+    ) -> Result<Self, ControlPlaneError> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
             client,
             subnet,
             wg_subnet,
+            root_domain: secret::root_domain(),
             wg: &*wg::REAL_WG_CLIENT,
             dns: get_dns_api(),
         })
@@ -296,10 +305,13 @@ impl ControlPlane {
     /// for tests that must not touch the real kernel interface or the
     /// real DNS provider. The mocks must outlive the process (leak
     /// them in tests; `&'static` is the process-lifetime vehicle).
+    /// `root_domain` is injected too (it is `'static`), so a test
+    /// never forces the boot-only [`secret::SECRETS`] LazyLock.
     pub fn with_deps(
         redis_url: &str,
         subnet: Subnet64,
         wg_subnet: WgSubnet,
+        root_domain: &'static str,
         wg: &'static dyn WgClient,
         dns: &'static dyn DnsApiClient,
     ) -> Result<Self, ControlPlaneError> {
@@ -308,6 +320,7 @@ impl ControlPlane {
             client,
             subnet,
             wg_subnet,
+            root_domain,
             wg,
             dns,
         })
@@ -349,9 +362,11 @@ impl ControlPlane {
             .decode(&private_key)
             .expect("persisted edge key is base64")
             .try_into()
-            .map_err(|_| ControlPlaneError::Wg(WgError::Io(std::io::Error::other(
-                "edge private key is not 32 bytes",
-            ))))?;
+            .map_err(|_| {
+                ControlPlaneError::Wg(WgError::Io(std::io::Error::other(
+                    "edge private key is not 32 bytes",
+                )))
+            })?;
         let secret = StaticSecret::from(priv_bytes);
         Ok(B64.encode(PublicKey::from(&secret).as_bytes()))
     }
@@ -397,7 +412,7 @@ impl ControlPlane {
         let ipv6 = self.subnet.host_string(index as u64);
         let wg_ip = self.wg_subnet.host_string(index as u64);
 
-        let hostname = customer_hostname(username);
+        let hostname = customer_hostname(username, self.root_domain);
         let (public_key, private_key) = generate_wg_keypair();
         let customer = Customer {
             username: username.to_string(),
@@ -445,6 +460,7 @@ impl ControlPlane {
             self.dns,
             username,
             ipv6.parse().expect("allocated /128 parses"),
+            self.root_domain,
         )
         .await
         {
@@ -560,7 +576,7 @@ impl ControlPlane {
                 // stale record that the reconcile loop cannot prune
                 // (it only re-applies for existing customers). Logged
                 // loudly, never silent.
-                if let Err(err) = remove_customer(self.dns, username).await {
+                if let Err(err) = remove_customer(self.dns, username, self.root_domain).await {
                     tracing::error!(username = %username, err = %err, "delete: dns remove failed; stale records may remain");
                 }
             }
@@ -570,20 +586,13 @@ impl ControlPlane {
 
     /// One DNS reconcile pass: verify each customer's two AAAA records
     /// against real resolution (1.1.1.1) and re-apply mismatches.
-    /// Returns the number of records re-applied. Called by the
-    /// background reconcile loop in `edge.rs`.
     pub async fn reconcile_dns_once(&self) -> Result<usize, ControlPlaneError> {
         let customers = self.list().await?;
         let pairs: Vec<(String, Ipv6Addr)> = customers
             .into_iter()
-            .filter_map(|c| {
-                c.ipv6
-                    .parse()
-                    .ok()
-                    .map(|ip: Ipv6Addr| (c.username, ip))
-            })
+            .filter_map(|c| c.ipv6.parse().ok().map(|ip: Ipv6Addr| (c.username, ip)))
             .collect();
-        Ok(reconcile_pass(self.dns, &pairs, resolve_aaaa_boxed).await)
+        Ok(reconcile_pass(self.dns, &pairs, resolve_aaaa_boxed, self.root_domain).await)
     }
 }
 
@@ -646,8 +655,10 @@ pub async fn init_globals(
     wg_subnet: WgSubnet,
 ) -> Result<(), ControlPlaneError> {
     // DNS config is process config: a missing zone/token is a boot
-    // error, never a first-signup surprise. Forces the LazyLock now.
-    ensure_dns_config()?;
+    // error, never a first-signup surprise. Forcing the `LazyLock`
+    // resolves the secrets + builds the DNS client now.
+    let _ = secret::root_domain();
+    let _ = get_dns_api();
     FORWARDER
         .get_or_try_init(|| async {
             Forwarder::new_live(Config::default())
@@ -664,89 +675,168 @@ pub async fn init_globals(
     ROUTING_TABLE
         .get_or_try_init(|| async {
             let table = RoutingTable::new();
-            control_plane()
-                .rehydrate(&table, forwarder())
-                .await?;
+            control_plane().rehydrate(&table, forwarder()).await?;
             Ok::<RoutingTable, ControlPlaneError>(table)
         })
         .await?;
     Ok(())
 }
 
-// ── HTTP handlers ────────────────────────────────────────────────
+// ── HTTP API ─────────────────────────────────────────────────────
 
-/// The HTTP handlers read the process singletons directly (no
-/// `AppState` to ferry them — they are `'static`; see the globals
-/// above).
+/// The HTTP API is a poem-openapi service (see `health.rs` for the
+/// pattern): operations are `#[oai]` methods, so the OpenAPI v3 spec is
+/// derived from the code ("compiles ⟹ spec-correct"). The handlers read
+/// the process singletons directly — no `AppState`, they are `'static`.
+/// Every operation except `/pubkey` takes an [`AdminKey`] arg, so the
+/// spec declares the bearer scheme and the Authorize button in swagger
+/// works.
 
 /// The signup request body: the username that becomes the customer's
 /// DNS hostname.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Object)]
 pub struct SignupRequest {
     pub username: String,
 }
 
-#[handler]
-async fn signup(Json(req): Json<SignupRequest>) -> Response {
-    match control_plane().signup(&req.username).await {
-        Ok(resp) => Json(resp).with_status(StatusCode::CREATED).into_response(),
-        Err(ControlPlaneError::Duplicate(username)) => {
-            tracing::warn!(username = %username, "signup: username taken");
-            (StatusCode::CONFLICT, "username already taken").into_response()
+/// `/pubkey` response: the edge's own WG public key.
+#[derive(Debug, Serialize, Deserialize, Object)]
+pub struct PubkeyResponse {
+    pub public_key: String,
+}
+
+/// Status + body for `POST /signup`.
+#[derive(ApiResponse)]
+enum SignupApiResponse {
+    /// Customer created.
+    #[oai(status = "201")]
+    Created(Json<SignupResponse>),
+    /// Invalid username.
+    #[oai(status = "400")]
+    BadRequest(Json<String>),
+    /// Username already taken.
+    #[oai(status = "409")]
+    Conflict(Json<String>),
+    /// Internal error.
+    #[oai(status = "500")]
+    Internal(Json<String>),
+}
+
+/// Status + body for `GET /customers`.
+#[derive(ApiResponse)]
+enum ListApiResponse {
+    #[oai(status = "200")]
+    Ok(Json<Vec<Customer>>),
+    #[oai(status = "500")]
+    Internal(Json<String>),
+}
+
+/// Status + body for `DELETE /customers/:username`.
+#[derive(ApiResponse)]
+enum DeleteApiResponse {
+    #[oai(status = "204")]
+    NoContent,
+    #[oai(status = "404")]
+    NotFound(Json<String>),
+    #[oai(status = "500")]
+    Internal(Json<String>),
+}
+
+/// Status + body for `GET /pubkey`.
+#[derive(ApiResponse)]
+enum PubkeyApiResponse {
+    #[oai(status = "200")]
+    Ok(Json<PubkeyResponse>),
+    #[oai(status = "500")]
+    Internal(Json<String>),
+}
+
+/// The control-plane API. Unit struct — reads the process globals.
+struct ControlPlaneApi;
+
+#[OpenApi]
+impl ControlPlaneApi {
+    /// Create a customer (allocate a /128, WG keypair, forwards, DNS).
+    #[oai(path = "/signup", method = "post")]
+    async fn signup(
+        &self,
+        _auth: AdminKey,
+        Json(req): Json<SignupRequest>,
+    ) -> SignupApiResponse {
+        match control_plane().signup(&req.username).await {
+            Ok(resp) => SignupApiResponse::Created(Json(resp)),
+            Err(ControlPlaneError::Duplicate(username)) => {
+                tracing::warn!(username = %username, "signup: username taken");
+                SignupApiResponse::Conflict(Json("username already taken".to_string()))
+            }
+            Err(ControlPlaneError::InvalidUsername(username)) => {
+                tracing::warn!(username = %username, "signup: invalid username");
+                SignupApiResponse::BadRequest(Json("invalid username".to_string()))
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "signup failed");
+                SignupApiResponse::Internal(Json("internal error".to_string()))
+            }
         }
-        Err(ControlPlaneError::InvalidUsername(username)) => {
-            tracing::warn!(username = %username, "signup: invalid username");
-            (StatusCode::BAD_REQUEST, "invalid username").into_response()
+    }
+
+    /// List customers in allocation order.
+    #[oai(path = "/customers", method = "get")]
+    async fn list_customers(&self, _auth: AdminKey) -> ListApiResponse {
+        match control_plane().list().await {
+            Ok(customers) => ListApiResponse::Ok(Json(customers)),
+            Err(err) => {
+                tracing::error!(error = %err, "list customers failed");
+                ListApiResponse::Internal(Json("internal error".to_string()))
+            }
         }
-        Err(err) => {
-            tracing::error!(error = %err, "signup failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    }
+
+    /// Delete a customer (disruption-free: drops the WG peer via wg set).
+    #[oai(path = "/customers/:username", method = "delete")]
+    async fn delete_customer(
+        &self,
+        _auth: AdminKey,
+        Path(username): Path<String>,
+    ) -> DeleteApiResponse {
+        match control_plane().delete(&username).await {
+            Ok(()) => DeleteApiResponse::NoContent,
+            Err(ControlPlaneError::NotFound(_)) => {
+                DeleteApiResponse::NotFound(Json("customer not found".to_string()))
+            }
+            Err(err) => {
+                tracing::error!(error = %err, username = %username, "delete customer failed");
+                DeleteApiResponse::Internal(Json("internal error".to_string()))
+            }
+        }
+    }
+
+    /// The edge's own WG public key. Open (no auth) — it is a public
+    /// key, and a convenient debug check.
+    #[oai(path = "/pubkey", method = "get")]
+    async fn edge_pubkey(&self) -> PubkeyApiResponse {
+        match control_plane().edge_public_key().await {
+            Ok(pubkey) => PubkeyApiResponse::Ok(Json(PubkeyResponse { public_key: pubkey })),
+            Err(err) => {
+                tracing::error!(error = %err, "edge pubkey failed");
+                PubkeyApiResponse::Internal(Json("internal error".to_string()))
+            }
         }
     }
 }
 
-#[handler]
-async fn list_customers() -> Response {
-    match control_plane().list().await {
-        Ok(customers) => Json(customers).into_response(),
-        Err(err) => {
-            tracing::error!(error = %err, "list customers failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
-#[handler]
-async fn delete_customer(Path(username): Path<String>) -> Response {
-    match control_plane().delete(&username).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(ControlPlaneError::NotFound(_)) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => {
-            tracing::error!(error = %err, username = %username, "delete customer failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
-#[handler]
-async fn edge_pubkey() -> Response {
-    match control_plane().edge_public_key().await {
-        Ok(pubkey) => Json(serde_json::json!({ "public_key": pubkey })).into_response(),
-        Err(err) => {
-            tracing::error!(error = %err, "edge pubkey failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
-/// Build the control-plane HTTP app. Stateless: handlers read the
-/// process globals, so no `.data(state)` is needed.
-pub fn app() -> impl Endpoint {
+/// Build the control-plane HTTP app: the OpenAPI service, its bundled
+/// swagger UI at `/docs`, and the spec at `/openapi.json`. Stateless —
+/// handlers read the process globals.
+pub fn app() -> Route {
+    let api = ControlPlaneApi;
+    let service = OpenApiService::new(api, "cococoir control plane", "0.1.0");
+    let ui = service.swagger_ui();
+    let spec = service.spec_endpoint();
     Route::new()
-        .at("/signup", post(signup))
-        .at("/customers", poem::get(list_customers))
-        .at("/customers/:id", poem::delete(delete_customer))
-        .at("/pubkey", poem::get(edge_pubkey))
+        .nest("/", service)
+        .nest("/docs", ui)
+        .nest("/openapi.json", spec)
 }
 
 /// Entry point for the controlplane binary.
@@ -861,7 +951,8 @@ mod tests {
             Box::leak(Box::new(crate::controlplane::wg::MockWgClient::new()));
         let dns: &'static crate::controlplane::dns::MockDnsApiClient =
             Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
-        let cp_owned = ControlPlane::with_deps(&url, subnet, wg_subnet, wg, dns).unwrap();
+        let cp_owned =
+            ControlPlane::with_deps(&url, subnet, wg_subnet, "interdim.net", wg, dns).unwrap();
         let table_owned = RoutingTable::new();
         let forwarder_owned = Forwarder::new_live(Config::default()).unwrap();
 
@@ -869,9 +960,15 @@ mod tests {
         // get_or_try_init, so no Redis hydration and a mock WG client).
         // set() errors (with the prior value) if the cell is already
         // full — a loud tripwire against two tests sharing a singleton.
-        assert!(CONTROL_PLANE.set(cp_owned).is_ok(), "control plane set once");
+        assert!(
+            CONTROL_PLANE.set(cp_owned).is_ok(),
+            "control plane set once"
+        );
         assert!(FORWARDER.set(forwarder_owned).is_ok(), "forwarder set once");
-        assert!(ROUTING_TABLE.set(table_owned).is_ok(), "routing table set once");
+        assert!(
+            ROUTING_TABLE.set(table_owned).is_ok(),
+            "routing table set once"
+        );
 
         let cp = control_plane();
         let table = routing_table();
@@ -880,7 +977,9 @@ mod tests {
         // Boot step: install the edge's identity into wg0 once. The
         // test's set() seam bypasses init_globals, so do the boot
         // install explicitly to mirror production.
-        cp.install_edge_identity().await.expect("install edge identity");
+        cp.install_edge_identity()
+            .await
+            .expect("install edge identity");
 
         let first = cp.signup("alice").await.expect("first signup");
         let second = cp.signup("bob").await.expect("second signup");
@@ -916,7 +1015,9 @@ mod tests {
         let customers = cp.list().await.expect("list");
         assert_eq!(customers.len(), 2);
 
-        cp.delete(&first.customer.username).await.expect("delete first");
+        cp.delete(&first.customer.username)
+            .await
+            .expect("delete first");
         assert_eq!(table.len(), 1);
         assert_eq!(forwarder.stats().forwards.len(), 2);
         assert_eq!(wg.removed.lock().unwrap().len(), 1);
@@ -927,12 +1028,140 @@ mod tests {
         assert_eq!(customers.len(), 1);
         assert_eq!(customers[0].username, second.customer.username);
 
-        cp.delete(&second.customer.username).await.expect("delete second");
+        cp.delete(&second.customer.username)
+            .await
+            .expect("delete second");
         assert!(matches!(
             cp.delete(&second.customer.username).await,
             Err(ControlPlaneError::NotFound(_))
         ));
         assert_eq!(table.len(), 0);
         assert_eq!(forwarder.stats().forwards.len(), 0);
+    }
+
+    // ── HTTP API endpoint tests ──────────────────────────────────
+    //
+    // The auth gate and the OpenAPI spec are testable without Redis or
+    // the process globals: auth fails during request extraction (before
+    // the handler body runs), and the spec is derived from the code. So
+    // these run against the real `app()` in any environment. The
+    // /pubkey *handler* needs the control-plane global + a live store
+    // (covered by `redis_store_round_trip`), so here we assert only the
+    // spec-level fact that /pubkey is unguarded.
+
+    use poem::http::StatusCode;
+    use poem::test::TestClient;
+
+    /// POST a signup without a bearer header → 401 (auth fails at
+    /// extraction, before the handler reads any global).
+    #[tokio::test]
+    async fn signup_requires_auth() {
+        let resp = TestClient::new(app())
+            .post("/signup")
+            .body_json(&serde_json::json!({ "username": "carol" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_customers_requires_auth() {
+        let resp = TestClient::new(app()).get("/customers").send().await;
+        assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn delete_customer_requires_auth() {
+        let resp = TestClient::new(app())
+            .delete("/customers/carol")
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A *wrong* bearer token also fails (the gate is real, not just
+    /// "a header present"). The checker SHA-256s + constant-time
+    /// compares, so any non-matching token → 401. This exercises the
+    /// real checker path against the real `SECRETS`... but `SECRETS` is
+    /// a boot-only LazyLock, so in a test environment (no edge.env) it
+    /// panics rather than resolving. We therefore assert the extraction
+    /// rejects a structurally-invalid header (no scheme) here, and lean
+    /// on `verify_token` unit tests for the crypto. Documented: the
+    /// end-to-end "right key → 200, wrong key → 401" is proven by the
+    /// L2 live test once the box holds edge.env.
+    #[tokio::test]
+    async fn signup_rejects_missing_scheme() {
+        let resp = TestClient::new(app())
+            .post("/signup")
+            .body_json(&serde_json::json!({ "username": "carol" }))
+            .header("Authorization", "carol")
+            .send()
+            .await;
+        // No `Bearer` scheme → not a valid bearer token → 401, without
+        // consulting the admin hash.
+        assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The OpenAPI spec is derived from the code: every protected
+    /// operation must carry the bearer security requirement, and
+    /// /pubkey must be unguarded (its operation declares no security).
+    /// This is the tripwire that keeps the auth gate wired — a future
+    /// edit that drops `_auth: AdminKey` from a handler silently opens
+    /// that operation, and this test catches it.
+    #[tokio::test]
+    async fn spec_gates_protected_ops_and_leaves_pubkey_open() {
+        let resp = TestClient::new(app()).get("/openapi.json").send().await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        let spec: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let paths = spec.get("paths").expect("paths present");
+
+        // The bearer scheme is declared globally.
+        let schemes = spec
+            .get("components")
+            .and_then(|c| c.get("securitySchemes"))
+            .expect("securitySchemes present");
+        assert!(
+            schemes.get("AdminKey").is_some(),
+            "spec declares the AdminKey security scheme"
+        );
+
+        // signup/list/delete require the scheme.
+        for (path, methods) in [
+            ("/signup", &["post"][..]),
+            ("/customers", &["get"][..]),
+            ("/customers/{username}", &["delete"][..]),
+        ] {
+            let method = methods[0];
+            let op = paths
+                .get(path)
+                .unwrap_or_else(|| panic!("{path} in spec"))
+                .get(method)
+                .unwrap_or_else(|| panic!("{method} op in {path}"));
+            assert!(
+                op.get("security").is_some(),
+                "{path} {method} declares a security requirement"
+            );
+        }
+
+        // /pubkey is unguarded (no security requirement).
+        let pubkey = paths
+            .get("/pubkey")
+            .expect("/pubkey in spec")
+            .get("get")
+            .expect("get op in /pubkey");
+        assert!(
+            pubkey.get("security").is_none(),
+            "/pubkey declares NO security requirement"
+        );
+    }
+
+    /// The swagger UI is served at /docs (mirroring health.rs).
+    #[tokio::test]
+    async fn swagger_ui_served_at_docs() {
+        let resp = TestClient::new(app()).get("/docs").send().await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("swagger"), "swagger UI served at /docs");
     }
 }

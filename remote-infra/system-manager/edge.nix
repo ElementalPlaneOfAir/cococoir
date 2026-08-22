@@ -90,11 +90,16 @@
     serviceConfig = {
       Type = "simple";
       ExecStart = "${cococoirEdgePkg}/bin/cococoir-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
-      # DNS config for the runtime provisioning client (zone + token).
-      # Written by provision-edge.sh to /etc/cococoir/dns.env (mode
-      # 0600, never in the repo). The service fails at boot — not on
-      # first signup — if the file is missing (ensure_dns_config).
-      EnvironmentFile = "/etc/cococoir/dns.env";
+      # The edge secrets (DNS zone + token, root domain, admin key
+      # hash) are resolved by the secretspec SDK from /etc/cococoir/
+      # (secretspec.toml + edge.env, written by provision-edge.sh, mode
+      # 0600, never in the repo). WorkingDirectory=/etc/cococoir so the
+      # SDK's CWD-walk finds secretspec.toml; EnvironmentFile lands the
+      # dotenv values in the process env as a belt-and-suspenders. The
+      # service fails at boot — not on first signup — if either file is
+      # missing (SECRETS is a panic-on-fail LazyLock).
+      WorkingDirectory = "/etc/cococoir";
+      EnvironmentFile = "/etc/cococoir/edge.env";
       Restart = "on-failure";
       RestartSec = 5;
       # Runs as root to bind privileged ports (80, 443) with
