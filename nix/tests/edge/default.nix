@@ -1,134 +1,169 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — L2 test: cococoir-edge forwarder over WireGuard.
+# Cococoir v2 — L2 test: cocococoir-edge control plane + forwarder over WG.
 #
-# Two-VM nixosTest that exercises the full L4-forwarder-over-WG path:
+# Two-VM nixosTest exercising the *current* edge model (ADR-025):
+# the edge box is Redis-driven, binds per-customer IPv6 /128s with
+# IPV6_FREEBIND, and has no config file. The edge binary runs via a
+# systemd unit mirroring remote-infra/system-manager/edge.nix (the box
+# in production is a stock Debian host managed by system-manager, not a
+# NixOS `services.cococoir-edge` module — that module was deleted).
 #
-#   curl (on edge)
-#     -> cococoir-edge listener (192.168.1.10:80, per-IP bind)
+# The full path under test:
+#
+#   curl (inside edge, to its own customer /128 via a lo route)
+#     -> cocococoir-edge forwarder, [2001:db8:1::2]:80 (IPV6_FREEBIND)
 #       -> WireGuard tunnel (10.10.0.0/24)
-#         -> cococoir-client listener (10.10.0.2:80)
-#           -> 127.0.0.1:80 (python3 -m http.server)
+#         -> cocococoir-client forwarder, 10.10.0.2:80 (wg0)
+#           -> 127.0.0.1:80 (python3 -m http.server, Caddy stand-in)
 #
-# If the test passes, the data path works: a per-IP-bound listener on
-# the VPS can be reached, forwarded over WireGuard to the customer
-# box, and handed off to a local service. This is the core of the
-# cococoir networking model, and the per-IP bind exercises the v0.5
-# PR 1 forwarder's per-IP code path (retry-with-backoff on the
-# initial bind, graceful shutdown). The forwarder waits for the IP
-# to appear on the local interface before binding, so the test adds
-# 192.168.1.10 as a secondary address on eth1.
+# The customer is created by a real `POST /signup` on the edge's control
+# plane (bearer admin key), which allocates the /128, generates the
+# customer's WG keypair, adds the peer to the edge's wg0, and binds the
+# forwarder live. The customer box is wired *dynamically* in the test
+# with the signup's returned key, because the client's wg0 private key
+# only exists once signup has run.
 #
-# What this test does NOT cover (intentional, v0/v0.5):
-#   - Multi-customer per-IP binding on a single VPS (v0.5 PR 2
-#     brings Hetzner IP provisioning; this test has a single
-#     bind, but the forwarder code path is the same).
-#   - TLS (Caddy lives on the customer box and is not in this test;
-#     the v0.5 Caddy module will add a TLS-terminating test).
-#   - The control channel between edge and client (v0.5 PR 4).
-#   - The probe system (v0.5 PR 4).
+# Honest limits (documented, not hidden):
+#   - The curl originates inside the edge VM at a lo-routed /128, not
+#     from the internet. Two-node nixosTest has no IPv6 transit between
+#     VMs. What IS real: the /128 FREEBIND bind, the WG tunnel, the
+#     customer box forwarder, and the local HTTP handoff.
+#   - DNS is throwaway (non-fatal): signup's AAAA upsert + the reconcile
+#     loop fail loudly and are logged; they cannot take the edge down.
+#   - Redis is nixpkgs `services.redis`, not the edge.nix custom AOF
+#     unit; the edge connects to the same 127.0.0.1:6379 either way.
 #
-# Why this is the right v0 test: the "given 3 inputs, does the system
-# work end-to-end" question (PLAN_2.md, "Why 3 inputs, not zero config")
-# starts with the network. If the forwarder can't carry a single
-# HTTP request from the public listener to a local service, nothing
-# else matters.
-{pkgs, ...}:
+# The L1 tripwire (vmtest-wiring) and L0 unit tests cover wiring and the
+# forwarder in isolation; this test is the only check that proves the
+# real signup -> /128 -> WG -> box data path end to end.
+{pkgs, cococoirPkg, ...}:
 let
   fixtures = ./fixtures;
-  # Inline the keys as strings. The fixtures/ paths are outside the
-  # Nix store, so they aren't visible inside the nixosTest VM. Using
-  # `privateKey` (inline) and `publicKey` (inline) puts the key bytes
-  # into the Nix store path that the VM does see. Acceptable for a
-  # test: the keys are throwaway fixtures, not real production keys.
-  # (Real production wires the key from sops-nix or age, which makes
-  # the secret available in the VM's filesystem at boot.)
-  edgePublic = builtins.readFile (fixtures + "/edge-public");
-  clientPublic = builtins.readFile (fixtures + "/client-public");
-  edgePrivate = builtins.readFile (fixtures + "/edge-private");
-  clientPrivate = builtins.readFile (fixtures + "/client-private");
+  # Throwaway edge wg0 key (the edge overwrites it at boot via
+  # install_edge_identity). Inline so it lands in the store path the VM
+  # sees. The real WG identity is generated + persisted in Redis.
+  edgePublic = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/edge-public"));
+  edgePrivate = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/edge-private"));
+  # Throwaway client wg0 key used only so 10.10.0.2 is local at boot (so
+  # the forwarder binds); the test swaps in the signup's real key after
+  # /signup returns it.
+  clientPrivate = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/client-private"));
+
+  # The five boot secrets the edge requires (secret.rs panics if any is
+  # absent). DNS_* are throwaway — DNS is non-fatal here. ROOT_DOMAIN is
+  # the customer hostname suffix. ADMIN_KEY_HASH is sha256("test-admin-key")
+  # = 944650a7...; the testScript signs up with `Bearer test-admin-key`.
+  edgeSecretspec = ''
+    [project]
+    name = "cococoir-edge"
+    revision = "1.0"
+
+    [profiles.default]
+    DNS_ZONE_ID = { description = "Hetzner DNS zone id", required = true }
+    DNS_ZONE_NAME = { description = "Hetzner DNS zone apex", required = true }
+    DNS_TOKEN = { description = "Hetzner DNS API token", required = true }
+    ROOT_DOMAIN = { description = "Root domain", required = true }
+    ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
+  '';
+  edgeEnv = ''
+    DNS_ZONE_ID=test-zone
+    DNS_ZONE_NAME=example.net
+    DNS_TOKEN=test-token
+    ROOT_DOMAIN=edge-test.local
+    ADMIN_KEY_HASH=944650a7cd0f9e14d5c4fb15edbffb7fa45fb9ed36a4fa9be3d7e5476ae51bd9
+  '';
+
+  # The edge box's routed subnet. 2001:db8::/32 is the documentation
+  # range; customer 1 is host 2 -> 2001:db8:1::2. The /64 is never added
+  # to an interface — the forwarder binds each customer /128 via
+  # IPV6_FREEBIND, and the test routes it to loopback to reach it.
+  subnet = "2001:db8:1::/64";
 in {
   edge-forward = pkgs.testers.nixosTest {
     name = "cococoir-edge-forward";
 
     nodes = {
-      edge = {...}: {
-        imports = [
-          (import ../../nixos-modules)
+      edge = {lib, ...}: {
+        # The edge box in production is stock Debian + system-manager. We
+        # don't have a NixOS `services.cococoir-edge` module, so this node
+        # reproduces the edge.nix unit shape directly: the binary, Redis,
+        # wg0, and the boot secrets.
+
+        environment.systemPackages = with pkgs; [
+          wireguard-tools # RealWgClient shells out to `wg set wg0 ...`
+          curl
+          jq
+          iproute2
         ];
 
-        cococoir.baseDomain = "edge-test.local";
-        cococoir.storage.enable = false;
-        cococoir.services.dex.enable = false;
-        services.cococoir-edge.enable = true;
+        # Redis — the edge's store. nixpkgs services.redis binds
+        # 127.0.0.1:6379, matching the edge's default --redis-url.
+        services.redis.servers."".enable = true;
 
-        # Generate /etc/cococoir-edge.json from a Nix attrset. The
-        # cococoir-edge module's configFile option defaults to this
-        # path, so no explicit override is needed. Same shape as the
-        # operator workflow in production: define forwards in Nix,
-        # serialize to JSON, drop it at the standard path.
-        #
-        # The forwarder binds to 192.168.1.10:80 (per-IP, not
-        # 0.0.0.0) so this test exercises the v0.5 PR 1 per-IP
-        # binding code path. 192.168.1.10 is assigned to eth1
-        # below as a /32 secondary.
-        environment.etc."cococoir-edge.json".text = builtins.toJSON {
-          forwards = [
-            {
-              listen_addr = "192.168.1.10:80";
-              proto = "tcp";
-              dest_addr = "10.10.0.2:80";
-            }
-          ];
-        };
-
-        # Add 192.168.1.10 as a /32 secondary on the user-network
-        # interface. nixosTest's default addressing puts a different
-        # 192.168.1.x address on eth1 already; this is a second
-        # local IP that the forwarder binds to. The /32 prefix
-        # avoids any interference with the test's own routing.
-        networking.interfaces.eth1.ipv4.addresses = [
-          { address = "192.168.1.10"; prefixLength = 32; }
-        ];
-
+        # wg0 up at boot with a throwaway key; the edge overwrites the
+        # key via install_edge_identity once it starts.
         networking.wireguard.interfaces.wg0 = {
           privateKey = edgePrivate;
           listenPort = 51820;
           ips = ["10.10.0.1/24"];
-          peers = [
-            {
-              publicKey = clientPublic;
-              allowedIPs = ["10.10.0.2/32"];
-            }
-          ];
         };
 
-        # Allow the WireGuard UDP port in from the test's virtual network.
+        # Accept WG handshakes from the customer box.
         networking.firewall.allowedUDPPorts = [51820];
+
+        # Boot secrets (secret.rs resolves them from /etc/cococoir/).
+        environment.etc."cococoir/secretspec.toml".text = edgeSecretspec;
+        environment.etc."cococoir/edge.env".text = edgeEnv;
+
+        # The edge service, mirroring edge.nix's unit. WorkingDirectory
+        # + EnvironmentFile mirror the SDK's resolution path.
+        systemd.services.cococoir-edge = {
+          description = "cococoir edge (L2 test) — forwarder + control plane";
+          after = ["network-online.target" "wireguard-wg0.service" "redis.service"];
+          wants = ["network-online.target" "wireguard-wg0.service" "redis.service"];
+          wantedBy = ["multi-user.target"];
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${cococoirPkg}/bin/cococoir-edge --subnet ${subnet} --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
+            WorkingDirectory = "/etc/cococoir";
+            EnvironmentFile = "/etc/cococoir/edge.env";
+            # NixOS systemd units don't inherit environment.systemPackages
+            # PATH (unlike the Debian box edge.nix targets). The edge
+            # shells out to `wg set wg0 ...`, so put wireguard-tools on
+            # this unit's PATH (systemd sets PATH via Environment, not a
+            # Path= directive).
+            Environment = ["PATH=${lib.makeBinPath [pkgs.wireguard-tools]}"];
+            Restart = "on-failure";
+            RestartSec = 5;
+            NoNewPrivileges = true;
+          };
+        };
       };
 
-      client = {...}: {
-        imports = [
-          (import ../../nixos-modules)
+      client = {lib, ...}: {
+        # The customer box. Its wg0 is NOT brought up at boot: the
+        # client's private key only exists after signup. So boot runs
+        # only the local HTTP stand-in; the test brings up wg0 with the
+        # signup key and starts the forwarder unit manually (wantedBy =
+        # []), avoiding a bind race (the forwarder would retry 10.10.0.2:80
+        # forever before the address exists).
+
+        environment.systemPackages = with pkgs; [
+          wireguard-tools
+          curl
+          iproute2
         ];
 
-        cococoir.baseDomain = "edge-test.local";
-        cococoir.storage.enable = false;
-        cococoir.services.dex.enable = false;
-        services.cococoir-client.enable = true;
+        # Open the WG-side TCP port. NixOS's default firewall rejects
+        # incoming TCP on wg0; the client forwarder binds 10.10.0.2:80 to
+        # receive forwarded traffic from the edge.
+        networking.firewall.allowedTCPPorts = [80];
 
-        # Same pattern as the edge: forwards in Nix, JSON-serialized
-        # to /etc/cococoir-client.json (the module's configFile
-        # default). Replaces the previous fixtures/client.json file.
-        environment.etc."cococoir-client.json".text = builtins.toJSON {
-          forwards = [
-            {
-              listen_addr = "10.10.0.2:80";
-              proto = "tcp";
-              dest_addr = "127.0.0.1:80";
-            }
-          ];
-        };
-
+        # wg0 up at boot with a THROWAWAY key (the real customer key only
+        # exists after /signup). The throwaway key exists only so
+        # 10.10.0.2 is local at boot and the forwarder binds cleanly;
+        # after signup the test swaps in the real key + edge peer via
+        # `wg set`. The throwaway edgePublic peer is replaced then too.
         networking.wireguard.interfaces.wg0 = {
           privateKey = clientPrivate;
           ips = ["10.10.0.2/24"];
@@ -142,15 +177,19 @@ in {
           ];
         };
 
-        # Open the WG-side TCP port. NixOS's default firewall rejects
-        # incoming TCP on the WG interface; cococoir-client binds
-        # there to receive forwarded traffic from the edge. Without
-        # this rule, the dial from the edge times out.
-        networking.firewall.allowedTCPPorts = [80];
+        # Client config: bind the customer's WG IP -> local service.
+        environment.etc."cococoir-client.json".text = builtins.toJSON {
+          forwards = [
+            {
+              listen_addr = "10.10.0.2:80";
+              proto = "tcp";
+              dest_addr = "127.0.0.1:80";
+            }
+          ];
+        };
 
-        # Stand-in for Caddy: a python3 http.server bound to
-        # 127.0.0.1:80, serving a fixed HTML file. Replaced by the
-        # real Caddy module in the v0.5 Caddy test.
+        # Stand-in for Caddy: a python3 http.server bound to 127.0.0.1:80,
+        # serving a fixed HTML file. Auto-started at boot.
         systemd.services.test-http = let
           responseDir = pkgs.runCommand "cococoir-test-response" {} ''
             mkdir -p $out
@@ -165,62 +204,108 @@ in {
           serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 -m http.server 80 --bind 127.0.0.1 --directory ${responseDir}";
           serviceConfig.Restart = "always";
         };
+
+        # The client forwarder — auto-starts at boot, AFTER wg0 is up (so the
+        # 10.10.0.2:80 bind has an address). The throwaway wg0 key means
+        # the tunnel isn't authenticated yet, but the bind succeeds; the
+        # test swaps in the real key without touching this service.
+        systemd.services.cococoir-client = {
+          description = "cococoir client (L2 test) — forwarder";
+          after = ["network-online.target" "wireguard-wg0.service"];
+          wants = ["network-online.target" "wireguard-wg0.service"];
+          wantedBy = ["multi-user.target"];
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${cococoirPkg}/bin/cococoir-client -config /etc/cococoir-client.json -log-format text -health-addr 127.0.0.1:9090";
+            Restart = "on-failure";
+            RestartSec = 5;
+          };
+        };
       };
     };
 
     testScript = ''
-      # Boot order: both VMs up, both WG interfaces up, both cococoir
-      # services up, test-http listening on the client.
+      import json
+
+      # Boot order: both VMs up; edge needs wg0 + Redis + the edge
+      # binary; client needs the local HTTP stand-in.
       edge.wait_for_unit("multi-user.target")
       client.wait_for_unit("multi-user.target")
-
       edge.wait_for_unit("wireguard-wg0.service")
-      client.wait_for_unit("wireguard-wg0.service")
-
+      edge.wait_for_unit("redis.service")
       edge.wait_for_unit("cococoir-edge.service")
+      client.wait_for_unit("wireguard-wg0.service")
       client.wait_for_unit("cococoir-client.service")
+      client.wait_for_unit("test-http.service")
 
-      client.wait_for_open_port(80)
-
-      # Sanity check: the python server is up and serves the fixture.
+      # Sanity: the python server is up and serves the fixture.
       client.succeed("curl -sf http://127.0.0.1:80/ | grep -q 'cococoir test response'")
 
-      # Sanity check: the WG tunnel carries traffic (ping across it).
-      edge.wait_until_succeeds("ping -c 1 -W 2 10.10.0.2", timeout=10)
+      # The edge's control-plane API is up.
+      edge.wait_for_open_port(8081)
 
-      # The test: from inside the edge VM, curl hits the local
-      # cococoir-edge listener at 192.168.1.10:80 (per-IP bind),
-      # which forwards over WG to the client, which forwards to
-      # local python on 127.0.0.1:80. The HTML body is the assertion.
-      output = edge.succeed("curl -sf http://192.168.1.10:80/")
-      assert "cococoir test response" in output, f"unexpected response: {output!r}"
+      # Real signup via the control plane (bearer admin key). Allocates
+      # the /128, generates the customer's WG keypair, adds the WG peer
+      # to wg0, binds the /128 forward. DNS fails (throwaway) — non-fatal.
+      signup = edge.succeed(
+          "curl -sf -H 'Authorization: Bearer test-admin-key' "
+          "-H 'Content-Type: application/json' "
+          "-d '{\"username\":\"alice\"}' "
+          "http://127.0.0.1:8081/signup"
+      )
+      data = json.loads(signup)
+      customer_ipv6 = data["customer"]["ipv6"]
+      customer_wgip = data["customer"]["wg_ip"]
+      wg_private_key = data["wg_private_key"]
+      edge_public_key = data["edge_public_key"]
 
-      # Health endpoint: each cococoir service exposes /healthz, /readyz,
-      # /status on 127.0.0.1:9090 by default. The endpoints let a
-      # misbehaving VM be inspected from the test driver (or an
-      # operator) without booting the test again.
+      # The edge forwarder must have bound the customer's /128 live
+      # (IPV6_FREEBIND). Prove it via the /status endpoint before we
+      # depend on it. (listen_addr is "[<ipv6>]:80" — grep the bracketed
+      # address, not "<ipv6>:80".)
+      edge.wait_until_succeeds(
+          "curl -sf http://127.0.0.1:9090/status | grep -q '[{}]'".format(customer_ipv6)
+      )
+
+      # Wire the customer box with the signup's real keypair: swap the wg0
+      # private key + peer on the live interface (the forwarder has been
+      # bound since boot and keeps running). Remove the throwaway peer;
+      # add the edge's real public key as the tunnel peer.
+      client.succeed(
+          "printf '%s\n' '{}' > /tmp/cococoir-client.priv\n".format(wg_private_key)
+          + "wg set wg0 private-key /tmp/cococoir-client.priv\n"
+          + "wg set wg0 peer {} allowed-ips 10.10.0.1/32 endpoint edge:51820 persistent-keepalive 25\n".format(edge_public_key)
+          + "wg set wg0 peer {} remove\n".format("${edgePublic}")
+          + "rm /tmp/cococoir-client.priv"
+      )
+      client.wait_until_succeeds(
+          "curl -sf http://127.0.0.1:9090/status | grep -q '" + customer_wgip + ":80'"
+      )
+
+      # Route the edge's own customer /128 to loopback so the FREEBIND
+      # socket is reachable from inside the edge VM (no IPv6 transit
+      # between nixosTest VMs).
+      edge.succeed("ip -6 route add {} dev lo".format(customer_ipv6))
+
+      # THE TEST: from the edge, hit the customer /128 -> edge forwarder
+      # -> WireGuard tunnel -> customer box forwarder -> local http. The
+      # HTML body is the assertion.
+      output = edge.succeed("curl -g -sf http://[{}]:80/".format(customer_ipv6))
+      assert "cococoir test response" in output, "unexpected response: {!r}".format(output)
+
+      # Health endpoints respond on both boxes.
       edge.wait_for_open_port(9090)
       client.wait_for_open_port(9090)
+      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:9090/healthz"), "edge /healthz"
+      assert "ok" in client.succeed("curl -sf http://127.0.0.1:9090/healthz"), "client /healthz"
 
-      # /healthz is always 200 if the process is alive.
-      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:9090/healthz"), "edge /healthz did not return ok"
-      assert "ok" in client.succeed("curl -sf http://127.0.0.1:9090/healthz"), "client /healthz did not return ok"
-
-      # /readyz returns 200 once at least one forward is bound.
-      assert edge.succeed("curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/readyz") == "200", "edge /readyz not 200"
-      assert client.succeed("curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/readyz") == "200", "client /readyz not 200"
-
-      # /status returns the full state as JSON. Assert the component
-      # field and that the bind is recorded on both services.
+      # /status: the edge shows the bound /128 forward; the client shows
+      # its WG-side forward.
       edge_status = edge.succeed("curl -sf http://127.0.0.1:9090/status")
-      assert '"component": "cococoir-edge"' in edge_status, f"edge status missing component: {edge_status!r}"
-      assert '"bound": true' in edge_status, f"edge status missing bound:true: {edge_status!r}"
-      assert '"listen_addr": "192.168.1.10:80"' in edge_status, f"edge status missing per-IP listen: {edge_status!r}"
-
+      assert customer_ipv6 in edge_status, "edge status missing /128 forward"
+      assert '"bound": true' in edge_status, "edge forward not bound"
       client_status = client.succeed("curl -sf http://127.0.0.1:9090/status")
-      assert '"component": "cococoir-client"' in client_status, f"client status missing component: {client_status!r}"
-      assert '"bound": true' in client_status, f"client status missing bound:true: {client_status!r}"
-      assert '"listen_addr": "10.10.0.2:80"' in client_status, f"client status missing WG listen: {client_status!r}"
+      assert customer_wgip + ":80" in client_status, "client status missing wg forward"
 
       print("edge-forward: PASS")
     '';

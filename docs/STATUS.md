@@ -22,12 +22,22 @@ Regenerated: 2026-08-22T15:46:05Z — git 475cd01
 ## Works
 
 - **v0 L4 forwarder — Rust port (ADR-024)**, L0 `forwarder-unit-tests`
-  runs 145 `cargo test`s across the workspace; `edge-forward` nixosTest
-  was the L2 data-path proof (currently **broken** — see Broken; the
-  edge box now runs via system-manager, not a NixOS `services.cococoir-edge`
-  module that the L2 test still references). Go module + orphaned
+  runs 145 `cargo test`s across the workspace. Go module + orphaned
   `internal/store` deleted. CLI flags, config JSON schema, binary names,
   and `/status` JSON contract unchanged.
+- **Edge L2 e2e over the control plane (2026-08-23,
+  `.specify/specs/edge-l2-e2e/`)** — replaces the obsolete
+  config-file/IPv4 `edge-forward` test with the current model: the edge
+  binary run by a systemd unit mirroring `system-manager/edge.nix`
+  (Redis-backed, boot secrets from `/etc/cococoir/`), a real
+  `POST /signup` (bearer admin key), and the full
+  signup → `/128` (IPV6_FREEBIND) → WireGuard → customer-box → local
+  HTTP path. Proof: **`edge-forward: PASS`** on `nix build
+  .#checks.x86_64-linux.edge-forward` (2-VM nixosTest; the edge's
+  `/status` shows the bound `[2001:db8:1::2]:80`, and `curl` to the
+  `/128` returns the fixture over the live tunnel). The curl originates
+  at a lo-routed `/128` inside the edge VM (no IPv6 transit between
+  nixosTest VMs) — documented in the test header.
 - **Secretspec scopes for provisioning (2026-08-22)** —
   `.specify/specs/secretspec-scopes/proposal.md`. One
   `secretspec.toml` serves both consumers: the edge binary's typed
@@ -235,14 +245,6 @@ Regenerated: 2026-08-22T15:46:05Z — git 475cd01
 
 ## Broken / landmines
 
-- **`edge-forward` L2 check fails to build (pre-existing, 2026-08-23)** —
-  the test's edge VM references `services.cococoir-edge.enable = true`,
-  but no NixOS `services.cococoir-edge` module exists: the edge box now
-  runs via system-manager (`remote-infra/system-manager/edge.nix`), and
-  the NixOS edge module was removed (`82f2276 "edge: remove more
-  redundant nixos stuff"`) without updating the test. Unrelated to the
-  rust-workspace arc; flagged, not fixed (fixing means either restoring
-  a NixOS edge module or rewriting the test around system-manager).
 - `jellarr.timer` (daily) can rerun jellarr against a live system;
   harmless but unverified.
 - jellarr P0 (ECONNREFUSED on fresh boot) — SUSPECTED fixed by jellyfin

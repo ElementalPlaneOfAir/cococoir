@@ -17,15 +17,15 @@
 {pkgs, sopsModule ? null}:
 let
   lib = pkgs.lib;
-  edgeTests = let raw = import ./edge {inherit pkgs;}; in {
-    edge-forward = raw.edge-forward.test;
-  };
-  contractConformanceTests = import ./contract-conformance {inherit pkgs;};
-  docRefsTests = import ./doc-refs {inherit pkgs;};
   # Built with crane (github:ipetkov/crane, injected into pkgs by the
   # flake): `buildDepsOnly` compiles the workspace deps once and caches
   # them, so a source change only rebuilds the crate itself.
   cococoirPkg = pkgs.callPackage ../packages/cococoir {};
+  edgeTests = let raw = import ./edge {inherit pkgs cococoirPkg;}; in {
+    edge-forward = raw.edge-forward.test;
+  };
+  contractConformanceTests = import ./contract-conformance {inherit pkgs;};
+  docRefsTests = import ./doc-refs {inherit pkgs;};
 in {
   # ── L0: forwarder Rust unit tests ────────────────────────────────
   # `cargo test` on the cococoir crate. No /dev/kvm, no QEMU.
@@ -48,10 +48,10 @@ in {
   in
     craneLib.cargoTest commonArgs;
 
-  # ── L2: edge <-> client over WireGuard ───────────────────────────
-  # 2-VM nixosTest. Exercises the full L4-forwarder-over-WG path:
-  # cococoir-edge (VPS, per-IP bind at 192.168.1.10:80) ->
-  # WireGuard tunnel -> cococoir-client (box) -> 127.0.0.1:80
-  # (python http server, Caddy stand-in). See
-  # nix/tests/edge/default.nix for the full design.
+# ── L2: edge <-> client over WireGuard ───────────────────────────
+  # 2-VM nixosTest. Exercises the control-plane edge's full
+  # signup -> /128 -> WireGuard -> box path: a real POST /signup on the
+  # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
+  # cocococoir-client (box) -> 127.0.0.1:80 (python http server, Caddy
+  # stand-in). See nix/tests/edge/default.nix for the full design.
 } // edgeTests // contractConformanceTests // docRefsTests
