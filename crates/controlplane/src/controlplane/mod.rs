@@ -55,7 +55,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::forwarder::{Config, Forward, Forwarder, Proto};
+use cococoir_core::forwarder::{Config, Forward, Forwarder, Proto};
 
 /// Redis key namespace for the control plane.
 const CUST_KEY: &str = "cococoir:customer:";
@@ -837,22 +837,6 @@ pub fn app() -> Route {
         .nest("/", service)
         .nest("/docs", ui)
         .nest("/openapi.json", spec)
-}
-
-/// Entry point for the controlplane binary.
-pub async fn controlplane_entry(
-    redis_url: String,
-    subnet: String,
-    wg_subnet: String,
-) -> Result<(), std::io::Error> {
-    let subnet = Subnet64::from_str(&subnet).map_err(std::io::Error::other)?;
-    let wg_subnet = WgSubnet::from_str(&wg_subnet).map_err(std::io::Error::other)?;
-    init_globals(&redis_url, subnet, wg_subnet)
-        .await
-        .map_err(|err| std::io::Error::other(format!("control plane init: {err}")))?;
-    poem::Server::new(poem::listener::TcpListener::bind("0.0.0.0:8081"))
-        .run(app())
-        .await
 }
 
 #[cfg(test)]

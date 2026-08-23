@@ -3,11 +3,14 @@ pub mod components;
 mod db;
 pub mod nix_config_parser;
 
+pub use auth::AuthMode;
+pub use db::Db;
+
 use crate::dashboard::auth::{
     clear_session_cookie_header, gate_request, read_cookie, session_cookie_header, verify_password,
-    AuthMode, SESSION_COOKIE,
+    SESSION_COOKIE,
 };
-use crate::dashboard::db::{Db, DbError};
+use crate::dashboard::db::DbError;
 use crate::dashboard::components::{
     EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, HtmxTest, HtmxTestProps,
     IndexPage, IndexProps, LoginPage, LoginPageProps,
@@ -38,7 +41,7 @@ const PAGE_LOAD_KEY: &str = "page_loads";
 pub struct ConfigPath(PathBuf);
 
 impl ConfigPath {
-    fn resolve() -> Self {
+    pub fn resolve() -> Self {
         Self(
             std::env::var_os("COCOCOIR_CONFIG_PATH")
                 .map(PathBuf::from)
@@ -457,15 +460,21 @@ fn app(db: Db, auth: AuthMode, config_path: ConfigPath) -> impl Endpoint {
         .data(config_path)
 }
 
-pub async fn dashboard_entry() -> Result<(), std::io::Error> {
-    let db = Db::open().await.map_err(|error| {
-        tracing::error!(error = %error, "dashboard database failed to open");
-        std::io::Error::other("dashboard database failed to open")
-    })?;
-    let config_path = ConfigPath::resolve();
-    tracing::info!(config = %config_path.as_path().display(), "dashboard config path");
+pub async fn serve(
+    db: Db,
+    auth: AuthMode,
+    config_path: ConfigPath,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), std::io::Error> {
     Server::new(TcpListener::bind("0.0.0.0:3000"))
-        .run(app(db, AuthMode::current().clone(), config_path))
+        .run_with_graceful_shutdown(
+            app(db, auth, config_path),
+            async move {
+                let mut shutdown = shutdown;
+                let _ = shutdown.wait_for(|v| *v).await;
+            },
+            None,
+        )
         .await
 }
 

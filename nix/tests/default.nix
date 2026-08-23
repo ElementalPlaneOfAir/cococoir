@@ -2,7 +2,7 @@
 # Cococoir v2 — test suite.
 #
 # Test layers:
-#   L0: `go test ./...` on the cococoir Go module. No /dev/kvm,
+#   L0: `cargo test` on the Rust workspace. No /dev/kvm,
 #       no QEMU. Catches forwarder regressions in seconds.
 #   L1: pure option-tree evaluation. No VM, no QEMU. Catches
 #       derivation bugs and contract-conformance drift.

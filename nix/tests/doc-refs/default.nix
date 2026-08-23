@@ -35,7 +35,7 @@ let
     ../../../nix/nixos-modules/services/_contract.nix
     ../../../nix/nixos-modules/services/cryptpad.nix
     ../../../nix/nixos-modules/services/jellyfin.nix
-    ../../../packages/cococoir/default.nix
+    ../../packages/cococoir/default.nix
   ];
   adrRefsIn = file:
     lib.concatLists (builtins.filter (x: x != null) (

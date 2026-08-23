@@ -26,8 +26,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 TOFU_DIR="tofu"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-# The repo-root symlink into the crate, so the file: provider root
-# (`./remote-infra/.secrets`) resolves against the repo root.
+# The standalone provisioning toml at the repo root (operator-side only),
+# so the file: provider root (`./remote-infra/.secrets`) resolves against
+# the repo root.
 TOML="$REPO_ROOT/secretspec.toml"
 
 command -v tofu >/dev/null || command -v opentofu >/dev/null \
@@ -103,7 +104,7 @@ ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
    printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\n' \
      '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' > /etc/cococoir/edge.env && \
    chmod 0600 /etc/cococoir/edge.env && chmod 0644 /etc/cococoir/secretspec.toml" \
-  < "$REPO_ROOT/packages/cococoir/secretspec.toml"
+  < "$REPO_ROOT/crates/controlplane/secretspec.toml"
 
 echo "==> [6/6] wire the WG tunnel interface"
 # The edge box owns its WireGuard identity at runtime: cococoir-edge

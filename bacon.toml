@@ -1,0 +1,14 @@
+[settings]
+default_job = "check"
+
+[jobs.check]
+command = ["cargo", "check", "--all-targets"]
+
+[jobs.dashboard]
+# The merged client binary runs both the forwarder (needs a -config)
+# and the embedded dashboard. The empty dev config keeps the forwarder
+# alive with zero forwards so the dashboard is reachable at :3000.
+command = ["cargo", "run", "--bin", "cococoir-client", "--", "-config", "nix/dev/dashboard-config.json"]
+
+[keybindings]
+d = "job:dashboard"

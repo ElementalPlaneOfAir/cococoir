@@ -21,8 +21,8 @@
 
 use std::sync::Arc;
 
-use cococoir::controlplane::{Subnet64, WgSubnet, control_plane, forwarder, init_globals};
-use cococoir::health::{HealthServer, StatusFunc};
+use cococoir_controlplane::{Subnet64, WgSubnet, control_plane, forwarder, init_globals};
+use cococoir_core::health::{HealthServer, StatusFunc};
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -71,7 +71,7 @@ async fn main() -> Result<(), std::io::Error> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Control plane HTTP (signup/delete/customers/pubkey) on --api-addr.
-    let api = cococoir::controlplane::app();
+    let api = cococoir_controlplane::app();
     let api_addr2 = api_addr.clone();
     let api_shutdown = shutdown_rx.clone();
     let api_task = tokio::spawn(async move {

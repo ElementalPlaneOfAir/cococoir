@@ -22,11 +22,12 @@ Regenerated: 2026-08-22T15:46:05Z — git 475cd01
 ## Works
 
 - **v0 L4 forwarder — Rust port (ADR-024)**, L0 `forwarder-unit-tests`
-  runs 42 `cargo test`s; L2 `edge-forward` nixosTest passes against
-  the Rust binaries (`edge-forward: PASS` on `nix flake check`).
-  Go module + orphaned `internal/store` deleted. `packages/cococoir`
-  is now one Rust crate (tokio + poem); CLI flags, config JSON schema,
-  binary names, and `/status` JSON contract unchanged.
+  runs 145 `cargo test`s across the workspace; `edge-forward` nixosTest
+  was the L2 data-path proof (currently **broken** — see Broken; the
+  edge box now runs via system-manager, not a NixOS `services.cococoir-edge`
+  module that the L2 test still references). Go module + orphaned
+  `internal/store` deleted. CLI flags, config JSON schema, binary names,
+  and `/status` JSON contract unchanged.
 - **Secretspec scopes for provisioning (2026-08-22)** —
   `.specify/specs/secretspec-scopes/proposal.md`. One
   `secretspec.toml` serves both consumers: the edge binary's typed
@@ -35,17 +36,30 @@ Regenerated: 2026-08-22T15:46:05Z — git 475cd01
   `[scopes.provision]`). The operator store is a `file:` root at
   `remote-infra/.secrets/` (gitignored); `ADMIN_KEY` is generated once
   + persisted (hex, 16 bytes), so re-provisioning yields a stable
-  `ADMIN_KEY_HASH`. Crate moved `nix/packages/cococoir` →
-  `packages/cococoir`; real toml in the crate, symlinked at repo root
-  (a store-path symlink would dangle — the real file is required for
-  the Nix build). CLI pinned via `apps.secretspec` (`nix run
-  .#secretspec`, 0.19 — devenv's own 0.18 lacks the `file` backend, so
-  it was removed from devenv packages). WG key provisioning deleted
-  (script, tofu locals/output, customer wg0 peer render — edge owns
-  identities at runtime). Proof: edge systemConfig **builds** (`nix
-  build .#systemConfigs.edge`), `nix flake check` green except the
-  pre-existing `example123` placeholder, 145 `cargo test`s, `tofu
-  validate` green, ADMIN_KEY + hash identical across two exports.
+  `ADMIN_KEY_HASH`. (Its crate-move + symlink framing is superseded by
+  the rust-workspace arc below.) Proof: edge systemConfig **builds**,
+  `nix flake check` green except the pre-existing `example123`
+  placeholder, 145 `cargo test`s, `tofu validate` green, ADMIN_KEY +
+  hash identical across two exports.
+- **Rust workspace + per-system crates (2026-08-23, ADR-026,
+  `.specify/specs/rust-workspace/`)** — the monolith crate is a cargo
+  workspace at the repo root: `cococoir-core` (shared L4 engine),
+  `cococoir-controlplane` (the edge box = the control plane →
+  `cococoir-edge`), `cococoir-client` (forwarder + embedded config
+  dashboard, merged into ONE binary). Redundant `cococoir-controlplane`
+  and `cococoir-dashboard` binaries deleted. The edge's five secrets
+  moved to `crates/controlplane/secretspec.toml`; operator provisioning
+  secrets moved to a standalone root `secretspec.toml` (no symlink), so
+  `declare_secrets!`'s union no longer leaks operator secrets into the
+  box's type surface. The merge degrades gracefully: a dashboard DB
+  failure (e.g. a read-only home) drops the dashboard but keeps the
+  forwarder up. Deferred (documented in the proposal): the dashboard
+  `ADMIN_PASSWORD_HASH` secretspec migration and the `default`→`edge`
+  profile rename. Proof: 145 `cargo test`s; `doc-refs`,
+  `forwarder-unit-tests`, `vmtest-wiring`, `contract-conformance` green;
+  edge systemConfig **builds** both binaries named `cococoir-edge` /
+  `cococoir-client`; provisioning export resolves from the root toml
+  (`nix run .#secretspec -- export -P provisioning -S token`).
 - Health server on **poem + poem-openapi** (2026-08-08) — the same three
   wire endpoints (`/healthz`, `/readyz`, `/status`) byte-exact, plus a
   derived OpenAPI v3 spec at `/openapi.json` and a fully bundled swagger
@@ -221,6 +235,14 @@ Regenerated: 2026-08-22T15:46:05Z — git 475cd01
 
 ## Broken / landmines
 
+- **`edge-forward` L2 check fails to build (pre-existing, 2026-08-23)** —
+  the test's edge VM references `services.cococoir-edge.enable = true`,
+  but no NixOS `services.cococoir-edge` module exists: the edge box now
+  runs via system-manager (`remote-infra/system-manager/edge.nix`), and
+  the NixOS edge module was removed (`82f2276 "edge: remove more
+  redundant nixos stuff"`) without updating the test. Unrelated to the
+  rust-workspace arc; flagged, not fixed (fixing means either restoring
+  a NixOS edge module or rewriting the test around system-manager).
 - `jellarr.timer` (daily) can rerun jellarr against a live system;
   harmless but unverified.
 - jellarr P0 (ECONNREFUSED on fresh boot) — SUSPECTED fixed by jellyfin

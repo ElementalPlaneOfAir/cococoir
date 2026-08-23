@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared cmd entry point for `cococoir-edge` and `cococoir-client`.
+//! `cococoir-client` entry point — the customer box's single process.
 //!
-//! The Go original duplicated this ~85-line main across both
-//! binaries; this single function is the DRY replacement. Each binary
-//! is a thin wrapper:
-//!
-//! ```rust,ignore
-//! #[tokio::main]
-//! async fn main() {
-//!     std::process::exit(cococoir::app::run("cococoir-edge", "/etc/cococoir-edge.json").await);
-//! }
-//! ```
+//! Runs the L4 forwarder (receiving traffic from the edge) and the
+//! embedded config dashboard as concurrent tasks on one shared
+//! shutdown signal. `cococoir-edge` has its own control-plane main in
+//! the `cococoir-controlplane` crate, so this module is client-only.
 //!
 //! Flow: parse flags, init logger, read the JSON config, build the
-//! forwarder, start the health server, then block on the forwarder
-//! until SIGINT/SIGTERM. Both the forwarder and the health server
-//! stop on the same shutdown signal.
+//! forwarder, open the dashboard db + config path + auth mode, start
+//! the health server and the dashboard server, then block on the
+//! forwarder until SIGINT/SIGTERM. All three stop on one signal.
 
 use std::sync::Arc;
 
@@ -24,9 +18,10 @@ use tokio::sync::watch;
 use tracing::{error, info};
 use tracing::span;
 
-use crate::forwarder::{Config, Forward, Forwarder};
-use crate::health::{HealthServer, StatusFunc};
-use crate::logger;
+use crate::dashboard;
+use cococoir_core::forwarder::{Config, Forward, Forwarder};
+use cococoir_core::health::{HealthServer, StatusFunc};
+use cococoir_core::logger;
 
 /// The on-disk config file shape. Matches the Go binaries'
 /// `configFile` struct; `deny_unknown_fields` rejects a typo'd key
@@ -88,6 +83,29 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Dashboard: open the sqlite db, resolve the edited config path,
+    // and freeze the auth mode before the forwarder starts blocking.
+    // A db open failure is non-fatal: the dashboard degrades off and
+    // the forwarder keeps running (a read-only home or a transient
+    // sqlite error must never take down the L4 path).
+    let dashboard_task = match dashboard::Db::open().await {
+        Ok(db) => {
+            let config_path = dashboard::ConfigPath::resolve();
+            tracing::info!(config = %config_path.as_path().display(), "dashboard config path");
+            let auth = dashboard::auth::AuthMode::current().clone();
+            let dashboard_shutdown = shutdown_rx.clone();
+            Some(tokio::spawn(async move {
+                if let Err(err) = dashboard::serve(db, auth, config_path, dashboard_shutdown).await {
+                    error!(err = %err, "dashboard server exited with error");
+                }
+            }))
+        }
+        Err(err) => {
+            error!(err = %err, "dashboard disabled: database failed to open; running forwarder only");
+            None
+        }
+    };
+
     // Health server. The status closure reads the forwarder's stats
     // on every request. Same decoupling as Go: health never imports
     // forwarder types.
@@ -121,8 +139,12 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
     };
 
     // The forwarder's run() only returns after its shutdown drain;
-    // the health server and signal task stop on the same signal.
+    // the dashboard (if running), health server, and signal task stop
+    // on the same signal.
     let _ = health_task.await;
+    if let Some(dashboard_task) = dashboard_task {
+        let _ = dashboard_task.await;
+    }
     let _ = signal_task.await;
     code
 }

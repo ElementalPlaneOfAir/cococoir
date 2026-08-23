@@ -38,7 +38,7 @@
 
   outputs = inputs: let
     # nixpkgs with the crane flake injected as an attribute, so any
-    # `pkgs.callPackage ./packages/cococoir {}` (in the NixOS
+    # `pkgs.callPackage ./nix/packages/cococoir {}` (in the NixOS
     # modules, the tests, the edge systemConfig) resolves the `crane`
     # arg it now needs, without threading the flake input through every
     # call site.
@@ -92,7 +92,7 @@
       flake.systemConfigs.edge = inputs.system-manager.lib.makeSystemConfig {
         modules = [./remote-infra/system-manager/edge.nix];
         specialArgs = {
-          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./packages/cococoir {
+          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/cococoir {
             crane = inputs.crane;
           };
         };

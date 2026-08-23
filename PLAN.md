@@ -48,18 +48,21 @@ need to keep working — we only read it as a source of patterns.
 
 ## v0 — L4 forwarder (shipped)
 
-One Rust crate at `packages/cococoir/` producing two binaries:
+A cargo workspace at the repo root (ADR-026) producing two binaries:
 
-- **`cococoir-edge`** — VPS-side L4 forwarder. Per-IP binding, retry
-  with backoff on transient bind errors, graceful shutdown.
-- **`cococoir-client`** — customer-box-side L4 forwarder. Receives
-  WireGuard traffic, forwards to `127.0.0.1:<port>` where local
-  Caddy terminates TLS. The binary also embeds a prober, a
-  journald tailer, an OTEL SDK, and an embedded dashboard
-  (those land in v2 work; v0 ships the forwarder + health endpoint).
+- **`cococoir-edge`** — the edge box's single process (in
+  `cococoir-controlplane` crate): L4 forwarder + control-plane API.
+  Per-IP binding, retry with backoff on transient bind errors, graceful
+  shutdown.
+- **`cococoir-client`** — the customer box's single process (in
+  `cococoir-client` crate): the L4 forwarder receiving WireGuard
+  traffic (forwarding to `127.0.0.1:<port>` where local Caddy
+  terminates TLS) plus the embedded config dashboard. The binary also
+  embeds a prober, a journald tailer, and an OTEL SDK (those land in
+  v2 work; v0 ships the forwarder + health endpoint + dashboard).
 
-Shared modules in `packages/cococoir/src/` (ADR-024, ported from
-Go):
+Shared L4 engine in `cococoir-core` (ADR-024, ported from Go):
+`crates/core/src/`
 
 - **`forwarder`** — TCP + UDP forwarding, retry, drain, signal
   handling. ~15 unit tests.
@@ -481,19 +484,19 @@ revisited.
   Fresh-boot verified 2026-07-31 + 2026-08-01.*
 - **ADR-024: The cococoir service is Rust, not Go (supersedes
   ADR-017's language).** The entire Go role — forwarder, edge/client
-  mains, health server, logger — is ported to a single Rust crate
-  (`packages/cococoir`). The CLI flags, config JSON schema,
-  binary names, and `/status` JSON contract are unchanged, so the
-  systemd modules and the `edge-forward` L2 test needed no edits.
-  Rationale (see `writing/llm/rust-rewrite.md`): schema/type modeling
-  for the v2+v3 config-agent thesis, the LLM compile-time feedback
-  loop, and boundary strictness on untrusted telemetry input. The
-  usual justifications — memory safety, performance — are a wash and
-  were explicitly rejected. `internal/store` (bbolt, orphaned) was
-  deleted, not ported: nothing imported it, and v3's control plane
-  targets Postgres. The port is verified by the L2 `edge-forward`
-  nixosTest (`edge-forward: PASS`), which now runs against the Rust
-  binaries.
+  mains, health server, logger — is ported to Rust. (The code now
+  lives in a cargo workspace — see ADR-026; this ADR decides *language*,
+  not layout.) The CLI flags, config JSON schema, binary names, and
+  `/status` JSON contract are unchanged, so the systemd modules and the
+  `edge-forward` L2 test needed no edits. Rationale (see
+  `writing/llm/rust-rewrite.md`): schema/type modeling for the v2+v3
+  config-agent thesis, the LLM compile-time feedback loop, and boundary
+  strictness on untrusted telemetry input. The usual justifications —
+  memory safety, performance — are a wash and were explicitly rejected.
+  `internal/store` (bbolt, orphaned) was deleted, not ported: nothing
+  imported it, and v3's control plane targets Postgres. The port is
+  verified by the L2 `edge-forward` nixosTest (`edge-forward: PASS`),
+  which now runs against the Rust binaries.
 - **ADR-025: IPv6 is the per-customer routing primitive; the control
   plane is a separate minimal service (extends ADR-016).** The
   per-customer-IPv4 model in ADR-016 costs ~$1.50/mo per address and
@@ -539,6 +542,30 @@ revisited.
     demo proves the `/128` + AAAA + WG + Caddy data path with a static
     single customer; the control plane automates what the demo
     provisions by hand.
+- **ADR-026: The Rust code is a cargo workspace of per-system crates;
+  each secrets-consuming crate owns its `secretspec.toml` (extends
+  ADR-024).** The monolith crate became two product systems with
+  diverging dep trees and one shared secret contract that dragged
+  operator-side provisioning into the edge binary's compiled union.
+  The code is split into three crates at the repo root:
+  `cococoir-core` (the shared L4 engine — forwarder, tcp, udp, retry,
+  logger, health; no binaries, no secrets), `cococoir-controlplane`
+  (the edge box, which *is* the control plane — hosts `cococoir-edge`),
+  and `cococoir-client` (the customer box — forwarder + embedded config
+  dashboard as ONE binary). The redundant `cococoir-controlplane`
+  binary and `cococoir-dashboard` binary are deleted: each was a second
+  name for an existing system. Secrets follow the system boundary: the
+  edge's five secrets live in
+  `crates/controlplane/secretspec.toml` (`[profiles.default]`); the
+  operator's provisioning secrets (`HETZNER_TOKEN`, `ADMIN_KEY`) moved
+  to a standalone repo-root `secretspec.toml` that no crate extends, so
+  `declare_secrets!`'s union-over-all-profiles can no longer leak
+  operator secrets into the box's compiled type surface. `REDIS_URL` is
+  a CLI flag, not a secret, so it is not migrated. The dashboard's
+  `ADMIN_PASSWORD_HASH` stays an env read for now (the secretspec
+  migration is deferred — see the rust-workspace proposal). ADR-024's
+  contract — binary names, CLI flags, config JSON, `/status` schema — is
+  preserved for the two surviving binaries.
 
 ## Implementation backlog
 

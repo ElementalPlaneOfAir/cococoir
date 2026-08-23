@@ -1,32 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — Go client service module.
+# Cococoir v2 — client service module (Rust workspace).
 #
-# v0.5 PR 1: the cococoir-client binary is the second of two entry
-# points built from the consolidated packages/cococoir module.
-# The shared forwarder lives in packages/cococoir/internal/forwarder.
-# See edge.nix for the per-IP binding, retry-with-backoff, and
-# graceful shutdown notes.
-#
-# Runs on the customer box. The client receives L4 traffic from
-# cococoir-edge over the WireGuard tunnel and forwards it to
-# 127.0.0.1:<port> where the local Caddy terminates TLS. The client
-# is the "second half" of the cococoir network: the edge forwards
-# from the public internet to the customer box; the client forwards
-# from the tunnel to the local services.
+# The cocococoir-client binary is the customer-box's single process: it
+# runs the L4 forwarder (receiving traffic from cocococoir-edge over the
+# WireGuard tunnel and forwarding to 127.0.0.1:<port> where the local
+# Caddy terminates TLS) and the embedded config dashboard. The shared
+# forwarder engine lives in crates/core; the client is built from the
+# Rust workspace at nix/packages/cococoir.
 #
 # v0 scope of this module:
 #   - No SIGHUP hot-reload. NixOS rebuild -> systemd restart.
 #   - No WireGuard interface config. Operator wires
 #     `networking.wireguard.interfaces.wg0` in the machine config
-#     directly. (When the credential story is solved, cococoir will
-#     own the WG config too — same as edge.nix.)
+#     directly.
 #   - No probe system. The client grows a probe agent in v0.5 PR 4
 #     that does HTTP GETs against local services and POSTs JSON
 #     summaries to the edge's collector.
 #   - No control-channel client. The client grows an HTTP client in
 #     v0.5 PR 4 to talk to the edge's admin API.
 #
-# Config schema (JSON, matches the Go binary in packages/cococoir):
+# Config schema (JSON):
 #   { "forwards": [
 #       { "listen_addr": "10.10.0.2:443", "proto": "tcp", "dest_addr": "127.0.0.1:443" },
 #       { "listen_addr": "10.10.0.2:443", "proto": "udp", "dest_addr": "127.0.0.1:443" }
@@ -41,7 +34,7 @@
   clientPkg = pkgs.callPackage ../packages/cococoir {};
 in {
   options.services.cococoir-client = {
-    enable = lib.mkEnableOption "cococoir v2 Go client service (L4 TCP/UDP forwarder on the customer box)";
+    enable = lib.mkEnableOption "cococoir v2 client service (L4 TCP/UDP forwarder + embedded dashboard on the customer box)";
 
     configFile = lib.mkOption {
       type = lib.types.path;
@@ -94,7 +87,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     systemd.services.cococoir-client = {
-      description = "Cococoir v2 client service — L4 TCP/UDP forwarder (customer box)";
+      description = "Cococoir v2 client service — L4 TCP/UDP forwarder + embedded dashboard (customer box)";
       after = ["network-online.target" "wireguard-wg0.service"];
       wants = ["network-online.target"];
       wantedBy = ["multi-user.target"];
@@ -104,6 +97,13 @@ in {
         ExecStart = "${cfg.package}/bin/cococoir-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
         Restart = "on-failure";
         RestartSec = 5;
+
+        # The embedded dashboard's sqlite DB. StateDirectory creates
+        # /var/lib/cococoir (root-owned) and makes it writable even with
+        # ProtectSystem=strict; XDG_DATA_HOME points Db::open() there
+        # (its default ~/.local/share is masked by ProtectHome).
+        StateDirectory = "cococoir";
+        Environment = "XDG_DATA_HOME=/var/lib/cococoir";
 
         # Hardening. Client runs as root for v0 (binding to the WG
         # interface doesn't require it, but matching the edge's
