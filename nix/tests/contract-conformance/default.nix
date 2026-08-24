@@ -51,24 +51,28 @@ let
       "name = \"radarr\";"
       "defaultPort = 7878;"
       "defaultHealthPath = "
+      "requires = [\"jellyfin\"];"
     ];
     sonarr = [
       "mkCococoirService {"
       "name = \"sonarr\";"
       "defaultPort = 8989;"
       "defaultHealthPath = "
+      "requires = [\"jellyfin\"];"
     ];
     lidarr = [
       "mkCococoirService {"
       "name = \"lidarr\";"
       "defaultPort = 8686;"
       "defaultHealthPath = "
+      "requires = [\"jellyfin\"];"
     ];
     prowlarr = [
       "mkCococoirService {"
       "name = \"prowlarr\";"
       "defaultPort = 9696;"
       "defaultHealthPath = "
+      "requires = [\"jellyfin\"];"
     ];
   };
 

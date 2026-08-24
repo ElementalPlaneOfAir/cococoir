@@ -12,6 +12,7 @@ mkCococoirService {
   description = "Prowlarr indexer management";
   defaultPort = 9696;
   defaultHealthPath = "/ping";
+  requires = ["jellyfin"];
   extraConfig = {lib, ...}: {
     services.prowlarr = {
       enable = true;

@@ -21,6 +21,7 @@ mkCococoirService {
   description = "Radarr movie management";
   defaultPort = 7878;
   defaultHealthPath = "/ping";
+  requires = ["jellyfin"];
   extraConfig = {lib, ...}: {
     services.radarr = {
       enable = true;

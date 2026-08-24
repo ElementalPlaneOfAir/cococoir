@@ -76,16 +76,18 @@ let
 
   subvolumeCreateLine = sv: ''
     echo "[cococoir-btrfs] subvolume ${sv.path}"
-    ${pkgs.btrfs-progs}/bin/btrfs subvolume show ${escapeShellArg sv.path} >/dev/null 2>&1 && \
-      { echo "  -> already exists"; } || \
-      {
-        echo "  -> creating"
-        ${pkgs.coreutils}/bin/mkdir -p "$(dirname ${escapeShellArg sv.path})"
-        ${pkgs.btrfs-progs}/bin/btrfs subvolume create ${escapeShellArg sv.path}
-        ${optionalString (sv.quota != null) ''
-          ${pkgs.btrfs-progs}/bin/btrfs qgroup limit ${escapeShellArg sv.quota} ${escapeShellArg sv.path}
-        ''}
-      }
+    if ${pkgs.btrfs-progs}/bin/btrfs subvolume show ${escapeShellArg sv.path} >/dev/null 2>&1; then
+      echo "  -> already a subvolume"
+    elif [ -e ${escapeShellArg sv.path} ]; then
+      echo "  -> existing path (not a subvolume); skipping create"
+    else
+      echo "  -> creating"
+      ${pkgs.coreutils}/bin/mkdir -p "$(dirname ${escapeShellArg sv.path})"
+      ${pkgs.btrfs-progs}/bin/btrfs subvolume create ${escapeShellArg sv.path}
+      ${optionalString (sv.quota != null) ''
+        ${pkgs.btrfs-progs}/bin/btrfs qgroup limit ${escapeShellArg sv.quota} ${escapeShellArg sv.path}
+      ''}
+    fi
     ${optionalString (sv.owner != null) ''
       ${pkgs.coreutils}/bin/chown ${escapeShellArg (sv.owner.user + (if sv.owner.group != null then ":" + sv.owner.group else ""))} ${escapeShellArg sv.path}
       ${optionalString (sv.owner.mode != null) ''
@@ -152,6 +154,11 @@ in
             paths for stable disk identification across reboots.
             btrfs can add/remove/replace devices at any time;
             drives do not need to be the same size.
+
+            A single device is supported: pair it with
+            `layout = "stripe"` (one copy, no redundancy — the
+            power-user / single-drive posture). `layout = "mirror"`
+            on one device works but buys nothing and warns.
           '';
         };
       };

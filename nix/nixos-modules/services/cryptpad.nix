@@ -47,7 +47,10 @@ mkCococoirService {
   defaultPort = 3000;
   defaultHealthPath = "/checkup/";
   storageNeeded = true;
-  extraConfig = {cfg, lib, pkgs, ...}: {
+  extraConfig = {cfg, lib, pkgs, config, ...}: let
+    dataRoot = config.cococoir.storage.btrfs.pool.mountpoint;
+    cryptpadDataPath = "${dataRoot}/cryptpad/data";
+  in {
     users.users.cococoir-cryptpad = {
       isSystemUser = true;
       group = "cococoir-cryptpad";
@@ -64,7 +67,7 @@ mkCococoirService {
         httpPort = cfg.port;
         httpUnsafeOrigin = "https://${cfg.domain}";
         httpSafeOrigin = "https://${cfg.domain}";
-        filePath = "/data/cryptpad/data";
+        filePath = cryptpadDataPath;
         blockDailyCheck = true;
         logToStdout = true;
         installMethod = "cococoir";
@@ -74,7 +77,7 @@ mkCococoirService {
     systemd.services.cryptpad = {
       after = ["cococoir-btrfs-subvolumes.service"];
       requires = ["cococoir-btrfs-subvolumes.service"];
-      unitConfig.RequiresMountsFor = "/data/cryptpad/data";
+      unitConfig.RequiresMountsFor = cryptpadDataPath;
       confinement.enable = lib.mkForce false;
       serviceConfig = {
         # The subvolume is chowned to cococoir-cryptpad by the btrfs
@@ -83,7 +86,7 @@ mkCococoirService {
         DynamicUser = lib.mkForce false;
         User = "cococoir-cryptpad";
         Group = "cococoir-cryptpad";
-        ReadWritePaths = ["/data/cryptpad/data"];
+        ReadWritePaths = [cryptpadDataPath];
       };
       # cryptpad first-boot bug: on an empty decree file, api.js
       # writes SET_BEARER_SECRET but never applies it to the running
@@ -109,7 +112,7 @@ mkCococoirService {
     };
 
     cococoir.storage.btrfs.subvolumes."cryptpad-data" = {
-      mountpoint = "/data/cryptpad/data";
+      mountpoint = lib.mkDefault cryptpadDataPath;
       quota = "100G";
       owner = {
         user = "cococoir-cryptpad";

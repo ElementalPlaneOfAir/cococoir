@@ -42,7 +42,10 @@
     # modules, the tests, the edge systemConfig) resolves the `crane`
     # arg it now needs, without threading the flake input through every
     # call site.
-    withCrane = system: (import inputs.nixpkgs { inherit system; }).extend (final: prev: {
+    withCrane = system: (import inputs.nixpkgs {
+      inherit system;
+      config.allowUnfree = true;
+    }).extend (final: prev: {
       crane = inputs.crane;
     });
     vmtestPkgs = withCrane "x86_64-linux";
@@ -57,18 +60,24 @@
       ];
     };
 
-    # Customer box (home machine, full v2 stack). Rendered by
-    # remote-infra/tofu from templates/example123.nix.tftpl — do not
-    # hand-edit. Needs jellarr for jellyfin declarative config + OIDC.
-    example123 = inputs.nixpkgs.lib.nixosSystem {
+    # amon-sul — the first real customer box. Imports jellarr + sops-nix
+    # itself (in nixosConfigurations/amon-sul.nix), so only the module
+    # file is listed here.
+    amonSul = inputs.nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
-      pkgs = withCrane "x86_64-linux";
+      pkgs = vmtestPkgs;
+      specialArgs = { inherit inputs; };
       modules = [
-        ./remote-infra/nix/example123.nix
-        inputs.jellarr.nixosModules.default
+        ./nixosConfigurations/amon-sul.nix
       ];
     };
 
+    # Customer box (home machine, full v2 stack) is rendered by
+    # remote-infra/tofu from templates/example123.nix.tftpl — do not
+    # hand-edit, and it is NOT exposed as a flake nixosConfiguration:
+    # its storage/bootloader are placeholder values until a real box
+    # is provisioned, so including it would keep `nix flake check`
+    # permanently red.
     nixosModulesWithJellarr = {
       imports = [
         inputs.jellarr.nixosModules.default
@@ -107,7 +116,7 @@
       #   # or headless: nix run .#vmtest -- -nographic
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
-      flake.nixosConfigurations.example123 = example123;
+      flake.nixosConfigurations.amon-sul = amonSul;
 
       perSystem = {pkgs, self', system, ...}: let
         # Real nixpkgs for dev tooling. flake-parts' perSystem `pkgs`

@@ -12,6 +12,7 @@ mkCococoirService {
   description = "Lidarr music management";
   defaultPort = 8686;
   defaultHealthPath = "/ping";
+  requires = ["jellyfin"];
   extraConfig = {lib, ...}: {
     services.lidarr = {
       enable = true;

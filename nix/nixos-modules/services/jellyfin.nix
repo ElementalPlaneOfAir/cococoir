@@ -51,7 +51,28 @@ mkCococoirService {
   defaultPort = 8096;
   defaultHealthPath = "/health";
   storageNeeded = true;
-  extraConfig = {cfg, lib, options, ...}: let
+  extraOptions = {
+    mediaRoot = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Base directory for the jellyfin media libraries (movies, shows,
+        music). null = derive from the btrfs pool mountpoint
+        (`<pool>/media`). Override to point at media that already lives
+        elsewhere (e.g. an existing `/media/entertain`).
+      '';
+    };
+  };
+  extraConfig = {cfg, lib, options, config, ...}: let
+    dataRoot = config.cococoir.storage.btrfs.pool.mountpoint;
+    mediaRoot =
+      if cfg.mediaRoot == null then "${dataRoot}/media" else cfg.mediaRoot;
+    mediaPaths = {
+      movies = "${mediaRoot}/movies";
+      shows = "${mediaRoot}/shows";
+      music = "${mediaRoot}/music";
+      metadata = "${dataRoot}/jellyfin/metadata";
+    };
     base = {
       services.jellyfin = {
         enable = true;
@@ -67,7 +88,7 @@ mkCococoirService {
 
       cococoir.storage.btrfs.subvolumes = {
         "media-movies" = {
-          mountpoint = "/data/media/movies";
+          mountpoint = lib.mkDefault mediaPaths.movies;
           quota = "2T";
           owner = {
             user = "jellyfin";
@@ -76,7 +97,7 @@ mkCococoirService {
           };
         };
         "media-shows" = {
-          mountpoint = "/data/media/shows";
+          mountpoint = lib.mkDefault mediaPaths.shows;
           quota = "2T";
           owner = {
             user = "jellyfin";
@@ -85,7 +106,7 @@ mkCococoirService {
           };
         };
         "media-music" = {
-          mountpoint = "/data/media/music";
+          mountpoint = lib.mkDefault mediaPaths.music;
           quota = "1T";
           owner = {
             user = "jellyfin";
@@ -94,7 +115,7 @@ mkCococoirService {
           };
         };
         "jellyfin-metadata" = {
-          mountpoint = "/data/jellyfin/metadata";
+          mountpoint = lib.mkDefault mediaPaths.metadata;
           quota = "50G";
           owner = {
             user = "jellyfin";
@@ -108,10 +129,10 @@ mkCococoirService {
         after = ["cococoir-btrfs-subvolumes.service"];
         requires = ["cococoir-btrfs-subvolumes.service"];
         unitConfig.RequiresMountsFor = [
-          "/data/media/movies"
-          "/data/media/shows"
-          "/data/media/music"
-          "/data/jellyfin/metadata"
+          mediaPaths.movies
+          mediaPaths.shows
+          mediaPaths.music
+          mediaPaths.metadata
         ];
       };
     };
@@ -142,21 +163,21 @@ mkCococoirService {
             name = "Movies";
             collectionType = "movies";
             libraryOptions.pathInfos = [
-              { path = "/data/media/movies"; }
+              { path = mediaPaths.movies; }
             ];
           }
           {
             name = "TV Shows";
             collectionType = "tvshows";
             libraryOptions.pathInfos = [
-              { path = "/data/media/shows"; }
+              { path = mediaPaths.shows; }
             ];
           }
           {
             name = "Music";
             collectionType = "music";
             libraryOptions.pathInfos = [
-              { path = "/data/media/music"; }
+              { path = mediaPaths.music; }
             ];
           }
         ];

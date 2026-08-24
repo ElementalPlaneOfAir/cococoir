@@ -50,6 +50,7 @@ args:
 let
   cfg = config.cococoir.services.${args.name};
   hasBucket = args.storageNeeded or false;
+  requires = args.requires or [];
   baseDomain = config.cococoir.baseDomain;
   sub = args.conventionalSubdomain or args.name;
 in
@@ -160,14 +161,22 @@ in
             '';
           }
         ]
-        ++ lib.optional hasBucket {
-          assertion = cfg.storageNeeded or false -> config.cococoir.storage.enable;
+++ lib.optional hasBucket {
+          assertion = hasBucket -> config.cococoir.storage.enable;
           message = ''
-            cococoir.services.${args.name}: `cococoir.storage.enable`
+            cocococoir.services.${args.name}: `cococoir.storage.enable`
             is not set. ${args.name} requires the storage layer
             (btrfs pool + subvolumes).
           '';
-        };
+        }
+        ++ map (req: {
+          assertion = cfg.enable -> config.cococoir.services.${req}.enable;
+          message = ''
+            cocococoir.services.${args.name}: requires
+            `cococoir.services.${req}.enable`. Enable ${req} (or the
+            ${req} service group) to use ${args.name}.
+          '';
+        }) requires;
 
         services.caddy.virtualHosts."${cfg.domain}".extraConfig =
           lib.mkDefault (let

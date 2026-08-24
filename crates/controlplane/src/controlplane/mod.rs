@@ -32,7 +32,6 @@
 
 pub mod auth;
 pub mod dns;
-pub mod routing_config;
 pub mod secret;
 pub mod wg;
 pub use auth::{verify_token, AdminKey};
@@ -40,7 +39,6 @@ pub use dns::{
     customer_hostname, get_dns_api, reconcile_pass, remove_customer, resolve_aaaa,
     resolve_aaaa_boxed, upsert_customer, DnsApiClient, DnsError, HetznerDns, MockDnsApiClient,
 };
-pub use routing_config::{RoutingTable, WgPeer};
 pub use secret::{admin_key_hash, root_domain};
 pub use wg::{RealWgClient, WgClient, WgError};
 
@@ -70,18 +68,17 @@ const CUST_INDEX: &str = "cococoir:customers";
 /// identity survives restarts and customer configs keep working.
 const EDGE_PRIV_KEY: &str = "cococoir:edge:private-key";
 
-/// The process's three singletons: the control plane (Redis-backed),
-/// the live forwarder, and the routing table. All are process-lifetime
-/// — built once at boot, never dropped — so they live as `'static`
-/// `OnceCell`s, not injected `Arc`s (see
-/// `writing/human/lifetimes_in_rust.md`). `get_or_try_init` publishes
-/// only a *hydrated* value: the routing table's init future rebuilds it
-/// from Redis (`rehydrate`) before it becomes visible, so no consumer
-/// ever sees an empty table. Tests `set()` their own instance to bypass
-/// hydration (mutually exclusive with `get_or_try_init` on one cell).
+/// The process's two singletons: the control plane (Redis-backed) and
+/// the live forwarder. Both are process-lifetime — built once at boot,
+/// never dropped — so they live as `'static` `OnceCell`s, not injected
+/// `Arc`s (see `writing/human/lifetimes_in_rust.md`). The forwarder is
+/// the in-process source of truth for live listeners; the control plane
+/// mutates it directly at signup/delete and rehydrates it from Redis on
+/// boot. `get_or_try_init` publishes only a *hydrated* value. Tests
+/// `set()` their own instance to bypass hydration (mutually exclusive
+/// with `get_or_try_init` on one cell).
 static CONTROL_PLANE: tokio::sync::OnceCell<ControlPlane> = tokio::sync::OnceCell::const_new();
 static FORWARDER: tokio::sync::OnceCell<Forwarder> = tokio::sync::OnceCell::const_new();
-static ROUTING_TABLE: tokio::sync::OnceCell<RoutingTable> = tokio::sync::OnceCell::const_new();
 
 /// The edge's routed IPv6 subnet, e.g. `2a01:4f8:c17:1::/64`.
 ///
@@ -396,7 +393,6 @@ impl ControlPlane {
     /// self-heals a failed record.
     pub async fn signup(&self, username: &str) -> Result<SignupResponse, ControlPlaneError> {
         validate_username(username)?;
-        let table = routing_table();
         let forwarder = forwarder();
         let mut conn = self.conn().await?;
         // Host 1 is the edge's own primary /128; customers start at 2.
@@ -432,27 +428,28 @@ impl ControlPlane {
         }
         let _: i64 = conn.rpush(CUST_INDEX, username).await?;
 
-        // Live wiring: routing table + forwarder listeners + WG peer.
-        table.upsert(
-            ipv6.parse().expect("allocated /128 parses"),
-            WgPeer {
-                wg_ip: wg_ip.clone(),
-                wg_public_key: customer.wg_public_key.clone(),
-            },
-        );
-        self.wg
-            .add_peer(&wg_ip, &customer.wg_public_key)
-            .map_err(|err| ControlPlaneError::Wg(err))?;
+        // Live wiring: WG peer + forwarder listeners. The store entry is
+        // committed before wiring, so a crash mid-wiring leaves a record
+        // that rehydrate wires up on next boot. A *wiring* failure, by
+        // contrast, rolls the store entry back: the username and /128
+        // must not stay burned when the peer/forward could not be
+        // created, because the customer's private key is returned only
+        // once and a zombie record would lose it forever.
+        if let Err(err) = self.wg.add_peer(&wg_ip, &customer.wg_public_key) {
+            self.rollback_signup(&mut conn, forwarder, username, &customer).await;
+            return Err(ControlPlaneError::Wg(err));
+        }
         for port in [80u16, 443] {
             let fwd = Forward {
                 listen_addr: format!("[{ipv6}]:{port}"),
                 proto: Proto::Tcp,
                 dest_addr: format!("{wg_ip}:{port}"),
             };
-            forwarder.add_forward(&fwd).await.map_err(|err| {
+            if let Err(err) = forwarder.add_forward(&fwd).await {
+                self.rollback_signup(&mut conn, forwarder, username, &customer).await;
                 let addr = &fwd.listen_addr;
-                ControlPlaneError::Forward(format!("add forward {addr}: {err}"))
-            })?;
+                return Err(ControlPlaneError::Forward(format!("add forward {addr}: {err}")));
+            }
         }
 
         // DNS last, non-fatal: the reconcile loop self-heals failures.
@@ -503,26 +500,17 @@ impl ControlPlane {
     /// customer registered in Redis but not forwarded.
     pub async fn rehydrate(
         &self,
-        table: &RoutingTable,
         forwarder: &Forwarder,
     ) -> Result<usize, ControlPlaneError> {
         let customers = self.list().await?;
         let mut count = 0usize;
         for customer in &customers {
-            let ipv6: Ipv6Addr = match customer.ipv6.parse() {
-                Ok(ip) => ip,
-                Err(_) => {
-                    tracing::error!(username = %customer.username, ipv6 = %customer.ipv6, "skipping corrupt customer");
-                    continue;
-                }
-            };
-            table.upsert(
-                ipv6,
-                WgPeer {
-                    wg_ip: customer.wg_ip.clone(),
-                    wg_public_key: customer.wg_public_key.clone(),
-                },
-            );
+            // Parse as a validity gate: a corrupt /128 is skipped loudly,
+            // never panicked on.
+            if customer.ipv6.parse::<Ipv6Addr>().is_err() {
+                tracing::error!(username = %customer.username, ipv6 = %customer.ipv6, "skipping corrupt customer");
+                continue;
+            }
             if let Err(err) = self.wg.add_peer(&customer.wg_ip, &customer.wg_public_key) {
                 tracing::error!(username = %customer.username, wg_ip = %customer.wg_ip, err = %err, "rehydrate wg add failed");
             }
@@ -538,50 +526,101 @@ impl ControlPlane {
             }
             count += 1;
         }
-        tracing::info!(customers = count, forwards = %forwarder.stats().forwards.len(), "routing table rehydrated");
+        tracing::info!(customers = count, forwards = %forwarder.stats().forwards.len(), "live forwards rehydrated");
         Ok(count)
     }
 
-    /// Delete a customer: remove the record, the routing table entry,
-    /// the live forwards, the WG peer (via `wg set`), and the DNS AAAA
-    /// records. Reads the process routing table + forwarder globals.
+    /// Delete a customer: unwire the WG peer + live forwards + DNS AAAA
+    /// records, then remove the store entry. Unwiring comes FIRST and is
+    /// best-effort: the store entry is the durable source `rehydrate`
+    /// reads, so it must be the last thing removed — if unwiring fails
+    /// mid-way and the entry were already gone, the orphaned listeners
+    /// would be unfixable on any future boot.
     pub async fn delete(&self, username: &str) -> Result<(), ControlPlaneError> {
-        let table = routing_table();
         let forwarder = forwarder();
         let mut conn = self.conn().await?;
-        let json: Option<String> = conn.get(format!("{CUST_KEY}{username}")).await?;
-        let removed: i64 = conn.del(format!("{CUST_KEY}{username}")).await?;
-        if removed == 0 {
+        let key = format!("{CUST_KEY}{username}");
+        let json: Option<String> = conn.get(&key).await?;
+        let Some(json) = json else {
             return Err(ControlPlaneError::NotFound(username.to_string()));
-        }
-        let _: i64 = conn.lrem(CUST_INDEX, 1, username).await?;
-
-        if let Some(json) = json {
-            if let Ok(customer) = serde_json::from_str::<Customer>(&json) {
-                let ipv6: Ipv6Addr = customer.ipv6.parse().expect("stored /128 parses");
-                table.remove(&ipv6);
-                self.wg
-                    .remove_peer(&customer.wg_public_key)
-                    .map_err(|err| ControlPlaneError::Wg(err))?;
-                for port in [80u16, 443] {
-                    let fwd = Forward {
-                        listen_addr: format!("[{}]:{port}", customer.ipv6),
-                        proto: Proto::Tcp,
-                        dest_addr: format!("{}:{port}", customer.wg_ip),
-                    };
-                    forwarder.remove_forward(&fwd);
-                }
-                // DNS removal is best-effort: the customer is already
-                // gone from the tunnel; a provider outage leaves a
-                // stale record that the reconcile loop cannot prune
-                // (it only re-applies for existing customers). Logged
-                // loudly, never silent.
-                if let Err(err) = remove_customer(self.dns, username, self.root_domain).await {
-                    tracing::error!(username = %username, err = %err, "delete: dns remove failed; stale records may remain");
-                }
+        };
+        let customer: Customer = match serde_json::from_str(&json) {
+            Ok(customer) => customer,
+            Err(err) => {
+                // Corrupt record: we cannot unwire it (its data is gone),
+                // but the store entry must still drop so the username is
+                // freed and rehydrate stops resurrecting it.
+                tracing::error!(username = %username, err = %err, "delete: corrupt customer record; removing entry without unwiring");
+                let _: i64 = conn.del(&key).await?;
+                let _: i64 = conn.lrem(CUST_INDEX, 1, username).await?;
+                return Ok(());
             }
+        };
+
+        // Unwire first, best-effort: a WG or DNS failure is logged, never
+        // fatal, so the store entry is always removed.
+        if let Err(err) = self.wg.remove_peer(&customer.wg_public_key) {
+            tracing::error!(username = %username, err = %err, "delete: wg peer removal failed; stale peer may remain");
         }
+        for port in [80u16, 443] {
+            let fwd = Forward {
+                listen_addr: format!("[{}]:{port}", customer.ipv6),
+                proto: Proto::Tcp,
+                dest_addr: format!("{}:{port}", customer.wg_ip),
+            };
+            forwarder.remove_forward(&fwd);
+        }
+        // DNS removal is best-effort: the customer is already gone from
+        // the tunnel; a provider outage leaves a stale record that the
+        // reconcile loop cannot prune (it only re-applies for existing
+        // customers). Logged loudly, never silent.
+        if let Err(err) = remove_customer(self.dns, username, self.root_domain).await {
+            tracing::error!(username = %username, err = %err, "delete: dns remove failed; stale records may remain");
+        }
+
+        // Store last.
+        let _: i64 = conn.del(&key).await?;
+        let _: i64 = conn.lrem(CUST_INDEX, 1, username).await?;
         Ok(())
+    }
+
+    /// Best-effort rollback of a failed [`ControlPlane::signup`]: drop
+    /// the store entry and unwire whatever was partially created. Runs
+    /// after the record is committed but a live-wiring step failed, so
+    /// the username + /128 are freed and `rehydrate` cannot resurrect a
+    /// zombie (whose private key would be unrecoverable). Never fails the
+    /// original error; logs any cleanup failure.
+    async fn rollback_signup(
+        &self,
+        conn: &mut redis::aio::Connection,
+        forwarder: &Forwarder,
+        username: &str,
+        customer: &Customer,
+    ) {
+        let _: i64 = match conn.del(format!("{CUST_KEY}{username}")).await {
+            Ok(n) => n,
+            Err(err) => {
+                tracing::error!(username = %username, err = %err, "signup rollback: store delete failed; zombie record may persist");
+                return;
+            }
+        };
+        let _: i64 = match conn.lrem(CUST_INDEX, 1, username).await {
+            Ok(n) => n,
+            Err(err) => {
+                tracing::error!(username = %username, err = %err, "signup rollback: index removal failed");
+                return;
+            }
+        };
+        if let Err(err) = self.wg.remove_peer(&customer.wg_public_key) {
+            tracing::error!(username = %username, err = %err, "signup rollback: wg peer removal failed");
+        }
+        for port in [80u16, 443] {
+            forwarder.remove_forward(&Forward {
+                listen_addr: format!("[{}]:{port}", customer.ipv6),
+                proto: Proto::Tcp,
+                dest_addr: format!("{}:{port}", customer.wg_ip),
+            });
+        }
     }
 
     /// One DNS reconcile pass: verify each customer's two AAAA records
@@ -625,12 +664,6 @@ pub fn validate_username(username: &str) -> Result<(), ControlPlaneError> {
     }
 }
 
-/// The process's routing table. Panics if the edge did not initialize
-/// it — a signed-up-against edge always has it set.
-pub fn routing_table() -> &'static RoutingTable {
-    ROUTING_TABLE.get().expect("routing table not initialized")
-}
-
 /// The process's forwarder. Panics if not initialized.
 pub fn forwarder() -> &'static Forwarder {
     FORWARDER.get().expect("forwarder not initialized")
@@ -641,14 +674,13 @@ pub fn control_plane() -> &'static ControlPlane {
     CONTROL_PLANE.get().expect("control plane not initialized")
 }
 
-/// Initialize the three process globals, hydrating from Redis before
-/// any of them is visible. Order matters: forwarder → control plane →
-/// routing table (the table's init calls `rehydrate`, which needs the
-/// control plane's Redis connection and the forwarder to bind into).
-/// Each `get_or_try_init` returns `Err` on unreachable Redis rather
-/// than panicking, so a boot or test that can't reach Redis fails
-/// cleanly. Tests bypass this entirely by `set()`-ing their own
-/// instances.
+/// Initialize the process globals, hydrating the live forwarder from
+/// Redis before it becomes visible. Order matters: forwarder → control
+/// plane → rehydrate (rehydrate needs the control plane's Redis
+/// connection and the forwarder to bind into). Each `get_or_try_init`
+/// returns `Err` on unreachable Redis rather than panicking, so a boot
+/// or test that can't reach Redis fails cleanly. Tests bypass this
+/// entirely by `set()`-ing their own instances.
 pub async fn init_globals(
     redis_url: &str,
     subnet: Subnet64,
@@ -672,13 +704,10 @@ pub async fn init_globals(
             Ok::<ControlPlane, ControlPlaneError>(cp)
         })
         .await?;
-    ROUTING_TABLE
-        .get_or_try_init(|| async {
-            let table = RoutingTable::new();
-            control_plane().rehydrate(&table, forwarder()).await?;
-            Ok::<RoutingTable, ControlPlaneError>(table)
-        })
-        .await?;
+    // Obligatory reconcile-on-boot: rebuild the live forwards from the
+    // durable store before the edge accepts traffic, so a crash never
+    // leaves a customer registered in Redis but not forwarded.
+    control_plane().rehydrate(forwarder()).await?;
     Ok(())
 }
 
@@ -937,7 +966,6 @@ mod tests {
             Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
         let cp_owned =
             ControlPlane::with_deps(&url, subnet, wg_subnet, "interdim.net", wg, dns).unwrap();
-        let table_owned = RoutingTable::new();
         let forwarder_owned = Forwarder::new_live(Config::default()).unwrap();
 
         // Pre-seed the process globals (the test seam: set() bypasses
@@ -949,13 +977,8 @@ mod tests {
             "control plane set once"
         );
         assert!(FORWARDER.set(forwarder_owned).is_ok(), "forwarder set once");
-        assert!(
-            ROUTING_TABLE.set(table_owned).is_ok(),
-            "routing table set once"
-        );
 
         let cp = control_plane();
-        let table = routing_table();
         let forwarder = forwarder();
 
         // Boot step: install the edge's identity into wg0 once. The
@@ -988,10 +1011,8 @@ mod tests {
         // (on first generation), not per-signup.
         assert_eq!(wg.private_keys.lock().unwrap().len(), 1);
 
-        // The routing table got both entries; the forwarder bound 4
-        // live listeners (2 customers × 2 ports); the WG client added
-        // both peers to the kernel interface.
-        assert_eq!(table.len(), 2);
+        // The forwarder bound 4 live listeners (2 customers × 2 ports); the
+        // WG client added both peers to the kernel interface.
         assert_eq!(forwarder.stats().forwards.len(), 4);
         assert!(forwarder.stats().forwards.iter().all(|s| s.bound));
         assert_eq!(wg.added.lock().unwrap().len(), 2);
@@ -1002,7 +1023,6 @@ mod tests {
         cp.delete(&first.customer.username)
             .await
             .expect("delete first");
-        assert_eq!(table.len(), 1);
         assert_eq!(forwarder.stats().forwards.len(), 2);
         assert_eq!(wg.removed.lock().unwrap().len(), 1);
         // Deleting removed the customer's DNS records (2 per customer).
@@ -1019,7 +1039,6 @@ mod tests {
             cp.delete(&second.customer.username).await,
             Err(ControlPlaneError::NotFound(_))
         ));
-        assert_eq!(table.len(), 0);
         assert_eq!(forwarder.stats().forwards.len(), 0);
     }
 

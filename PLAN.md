@@ -567,6 +567,24 @@ revisited.
   contract — binary names, CLI flags, config JSON, `/status` schema — is
   preserved for the two surviving binaries.
 
+- **ADR-027: Non-catalog services are userland NixOS modules, not
+  factory services.** The `mkCococoirService` factory implies a Caddy
+  vhost + Dex OIDC + health-prober + btrfs-subvolume contract. Services
+  the customer runs that are *not* in the catalog (matrix-synapse,
+  minecraft, bridges, one-off daemons) want none of that. They are
+  declared as **plain NixOS modules the customer imports in their
+  machine config** (`nixosConfigurations/<machine>/custom/*.nix`), never
+  under `nix/nixos-modules/services/`. They compose with cococoir only
+  through ordinary additive nixpkgs options (their own Caddy vhost, a
+  storage mount, a secret). `contract-conformance` governs the catalog
+  only, so userland modules are structurally out of its scope — no
+  special-casing. This is the same layer split as the dashboard's
+  `dashboard.nix`: cococoir owns the catalog + platform; the customer
+  owns the long tail. Rejected: forcing customs through the factory
+  (applies a contract they don't need); a per-service
+  `cococoir.integrations.X.enable` escape hatch (violates "no separate
+  toggle", ADR-020).
+
 ## Implementation backlog
 
 Build order. No dates. Each item: what it produces, what test

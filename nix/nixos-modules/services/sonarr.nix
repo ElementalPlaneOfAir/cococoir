@@ -12,6 +12,7 @@ mkCococoirService {
   description = "Sonarr TV show management";
   defaultPort = 8989;
   defaultHealthPath = "/ping";
+  requires = ["jellyfin"];
   extraConfig = {lib, ...}: {
     services.sonarr = {
       enable = true;
