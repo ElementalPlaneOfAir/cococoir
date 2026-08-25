@@ -151,6 +151,13 @@ Root causes, all fixed in this repo:
   in `custom/matrix.nix`. Reuses the legacy `/var/lib/postgresql` data dir.
 - **`wg0`**: the write of `/etc/wireguard/fractal-private.key` did not persist
   on the box. **Operational** — must be re-written before the re-switch.
+- **DNS dead**: `/etc/resolv.conf` came up with `options edns0` and **no
+  `nameserver` lines**. Root cause: `networking.useDHCP` was still `true`
+  (from `hardware-configuration.nix` `mkDefault`, never overridden) on a fully
+  static interface — dhcpcd managed resolv.conf, never leased, and dropped the
+  explicit `networking.nameservers`. Fixed by `networking.useDHCP = false` in
+  `amon-sul.nix`; verified the rendered `localCommands` now run
+  `resolvconf -m 1 -a static` with `nameserver 8.8.8.8`/`1.1.1.1`.
 - `jellarr-api-key-bootstrap` and `cococoir-client` being absent on the box
   were symptoms of the half-completed `switch-to-configuration`, not separate
   bugs; a clean re-switch recreates all units (verified the client unit renders

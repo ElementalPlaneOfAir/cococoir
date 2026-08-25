@@ -39,6 +39,12 @@
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
+  # Fully static networking: override hardware-config's
+  # `useDHCP = mkDefault true`. Under global DHCP mode dhcpcd manages
+  # /etc/resolv.conf and, since this interface never leases, it drops
+  # the explicit nameservers (resolv.conf came up with `options edns0`
+  # and no `nameserver` lines → DNS dead). Static config → static path.
+  networking.useDHCP = false;
   networking.interfaces.enp11s0 = {
     useDHCP = false;
     ipv4.addresses = [{address = "192.168.0.7"; prefixLength = 24;}];
