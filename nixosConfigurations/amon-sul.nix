@@ -103,14 +103,14 @@
   services.dex.settings.staticPasswords = [
     {
       email = "nicole@fractal.interdim.net";
-      hash = "$2b$10$REPLACE_NICOLE";
+      hash = "$2b$10$ab2woi0QuI5sczAk3Wg1EOtdh9DgGQjUF9YyKhKIBu9UOmn1G0Dmu";
       username = "nicole";
       userID = "00000000-0000-0000-0000-000000000001";
       groups = ["admins"];
     }
     {
       email = "brad@fractal.interdim.net";
-      hash = "$2b$10$REPLACE_BRAD";
+      hash = "$2b$10$lBlef1v6je65.nf8h5kud..ChUot1RV1EMAVVdlBHQ.bhSqID5A0y";
       username = "brad";
       userID = "00000000-0000-0000-0000-000000000002";
       groups = ["users"];
@@ -119,15 +119,20 @@
 
   # ── Tunnel client half (filled from the signup flow) ─────────────
   services.cococoir-client.enable = true;
+  # Dashboard admin login (the box's control plane). The bcrypt hash of
+  # AMON_SUL_MASTER_PASSWORD lives in /etc/cococoir-admin.env (0600,
+  # written at deploy), NOT in the nix store. Fail-closed: the unit stops
+  # rather than run the dashboard with no auth.
+  services.cococoir-client.adminPasswordEnvFile = "/etc/cococoir-admin.env";
   environment.etc."cococoir-client.json".text = builtins.toJSON {
     forwards = [
       {
-        listen_addr = "10.10.0.2:80";
+        listen_addr = "10.10.0.3:80";
         proto = "tcp";
         dest_addr = "127.0.0.1:80";
       }
       {
-        listen_addr = "10.10.0.2:443";
+        listen_addr = "10.10.0.3:443";
         proto = "tcp";
         dest_addr = "127.0.0.1:443";
       }
@@ -136,8 +141,16 @@
 
   networking.wireguard.interfaces.wg0 = {
     privateKeyFile = "/etc/wireguard/fractal-private.key";
-    ips = ["10.10.0.2/24"];
-    peers = [];
+    ips = ["10.10.0.3/24"];
+    peers = [
+      {
+        # The edge (62.238.111.21): public key from GET /pubkey.
+        publicKey = "lX+5lGEF1qDJEag13Kymyxy/SJH63LPxKTvMg50WE2E=";
+        endpoint = "62.238.111.21:51820";
+        allowedIPs = ["10.10.0.0/24"];
+        persistentKeepalive = 25;
+      }
+    ];
   };
 
   networking.hosts = {

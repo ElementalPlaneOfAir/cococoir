@@ -56,6 +56,22 @@
         at build time.
       '';
     };
+    "cococoir-admin-password-hash" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        A bcrypt hash (cost >= 10) of the box's dashboard admin
+        password — the control plane that edits global settings
+        and users. The client service loads it via
+        `services.cococoir-client.adminPasswordEnvFile` as
+        `COCOCOIR_ADMIN_PASSWORD_HASH`; without it the dashboard
+        runs in Dev mode (no auth), which must never be the case
+        on a reachable box. Wire a sops template rendering
+        `COCOCOIR_ADMIN_PASSWORD_HASH=''${cococoir-admin-password-hash}`
+        to this secret for T7.
+      '';
+    };
   };
 in
 {

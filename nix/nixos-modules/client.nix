@@ -83,6 +83,20 @@ in {
         collection.
       '';
     };
+
+    adminPasswordEnvFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Path to a file containing `COCOCOIR_ADMIN_PASSWORD_HASH=<bcrypt-hash>`
+        — the embedded dashboard's admin login (the box's control plane).
+        The dashboard reads this env var; without it the dashboard runs
+        in Dev mode (no login), which must never be the case on a
+        reachable box. Keep the hash in a secret (sops template or a
+        root-owned 0600 file written at deploy) rather than in the store.
+        Convert a sops template's rendered path here for T7.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -97,6 +111,11 @@ in {
         ExecStart = "${cfg.package}/bin/cococoir-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
         Restart = "on-failure";
         RestartSec = 5;
+
+        # The embedded dashboard's admin password, if the operator wired
+        # one. Fail-closed: a referenced-but-missing file stops the unit
+        # rather than falling back to Dev mode.
+        EnvironmentFile = lib.mkIf (cfg.adminPasswordEnvFile != null) cfg.adminPasswordEnvFile;
 
         # The embedded dashboard's sqlite DB. StateDirectory creates
         # /var/lib/cococoir (root-owned) and makes it writable even with

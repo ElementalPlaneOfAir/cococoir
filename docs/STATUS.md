@@ -102,10 +102,59 @@ Regenerated: 2026-08-24T03:17:43Z — git e90a2e7
 
 ## Current focus
 
-IPv6 edge demo arc (`.specify/specs/ipv6-edge-demo/`): stock-Debian edge
-managed by system-manager, live on 62.238.111.21. The control plane owns
-customer `/128`s + WG peers live. Next (ADR-025 order): auth on the
-control plane is done (bearer); retire the static `dns.tf` wildcard.
+The edge is **deployed and operational** on 62.238.111.21 (stock Debian +
+system-manager): Redis, wg0 (10.10.0.1/24), and the merged
+cococoir-edge binary all active. Proof: `GET /pubkey` returns the edge's
+WG key; `POST /signup` created `fractal` → `/128 2a01:4f9:c014:2c44::3`
++ WG peer `10.10.0.3` + live AAAA for `fractal.interdim.net` and
+`*.fractal.interdim.net` (verified via `dig` and the Hetzner API).
+
+Fixed: the control plane's Hetzner DNS client used the deprecated DNS
+Console API (`dns.hetzner.com/api/v1`, `Auth-API-Token`), which Hetzner
+shut down (migrated to the Cloud DNS API `api.hetzner.cloud/v1/zones/*/rrsets`
++ Bearer, 2026-05). DNS-on-signup silently failed. Rewrote the client and
+added L0 tripwires (`hetzner_base_is_cloud_api`,
+`rrsets_response_deserializes_cloud_api_shape`,
+`new_rrset_serializes_cloud_api_shape`); `cargo test -p cococoir-controlplane`
+PASS. Also fixed `edge.nix.tftpl` (redis StateDirectory + `LANG=C.UTF-8`;
+cococoir-edge `path = [ wireguard-tools ]`) and `provision-edge.sh` (wg
+full-path on the non-interactive SSH PATH).
+
+Wired the customer box's **dashboard admin login** (`COCOCOIR_ADMIN_PASSWORD_HASH`)
+into `services.cococoir-client.adminPasswordEnvFile` — the dashboard
+(control plane of the box) was running in Dev mode (no auth) because Nix
+never passed the env var the Rust code already reads. Added the option to
+`client.nix`, wired `/etc/cococoir-admin.env` in `amon-sul.nix`, and added
+`cococoir-admin-password-hash` to the sops inventory (T7 home).
+
+Next: amon-sul migration (`.specify/specs/amon-sul-migration/`) — write
+`/etc/cococoir-admin.env` + fractal WG private key on the box, relabel
+`/dev/sda1` → `tank`, `nixos-rebuild switch` over SSH.
+
+## amon-sul first deploy (2026-08-25) — found & fixed
+
+First `nixos-rebuild switch` on the box activated but failed (exit 4).
+Root causes, all fixed in this repo:
+
+- **`openssl: command not found`** in `cococoir-cryptpad-oidc-secret` and
+  `cococoir-jellyfin-oidc-secret`. Those service scripts call bare
+  `openssl` with no `path`. Fixed by adding `path = [ pkgs.openssl ]`
+  to both (`integrations/cryptpad-oidc.nix`, `integrations/jellyfin-oidc.nix`),
+  matching the existing `services/jellyfin.nix` precedent. This also unblocks
+  `dex` (its `BindReadOnlyPaths` requires the secret files these create) and
+  `jellyfin` (failed as a dependency of the oidc chain).
+- **`matrix-synapse`**: the nixpkgs module defaults `settings.database` to
+  `psycopg2`/`matrix-synapse` even when postgres is disabled, so the homeserver
+  pointed at a socket that was never started. Fixed by enabling
+  `services.postgresql` with `ensureDatabases = ["matrix-synapse"]` +
+  `ensureUsers` (`ensureDBOwnership`, this nixpkgs renamed `ensurePermissions`)
+  in `custom/matrix.nix`. Reuses the legacy `/var/lib/postgresql` data dir.
+- **`wg0`**: the write of `/etc/wireguard/fractal-private.key` did not persist
+  on the box. **Operational** — must be re-written before the re-switch.
+- `jellarr-api-key-bootstrap` and `cococoir-client` being absent on the box
+  were symptoms of the half-completed `switch-to-configuration`, not separate
+  bugs; a clean re-switch recreates all units (verified the client unit renders
+  with `EnvironmentFile=/etc/cococoir-admin.env`).
 
 v2 gate: a clean `scripts/vmtest-e2e.sh` PASS — the last remaining
 failure is the jellarr P0.

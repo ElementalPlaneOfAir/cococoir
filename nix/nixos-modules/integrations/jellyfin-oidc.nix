@@ -52,6 +52,7 @@ mkIf oidcEnabled (lib.mkMerge [
       description = "Generate Jellyfin OIDC client secret";
       wantedBy = ["multi-user.target"];
       before = ["dex.service"];
+      path = [pkgs.openssl];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

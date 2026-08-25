@@ -115,13 +115,14 @@ echo "==> [6/6] wire the WG tunnel interface"
 # from tofu's single source of truth.
 WG_IP=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_wg_ip)         # 10.10.0.1
 WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || echo "51820")
-ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
-  "wg genkey > /etc/wireguard/wg0-throwaway.key && \
-   chmod 0600 /etc/wireguard/wg0-throwaway.key && \
-   printf '[Interface]\nAddress = %s/24\nListenPort = %s\nPrivateKey = %s\n' \
-     '$WG_IP' '$WG_PORT' \"\$(cat /etc/wireguard/wg0-throwaway.key)\" > /etc/wireguard/wg0.conf && \
-   chmod 0600 /etc/wireguard/wg0.conf && rm -f /etc/wireguard/wg0-throwaway.key && \
-   systemctl restart wg-quick-wg0 cococoir-edge"
+  ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
+    "mkdir -p /etc/wireguard && \
+     /run/current-system/sw/bin/wg genkey > /etc/wireguard/wg0-throwaway.key && \
+     chmod 0600 /etc/wireguard/wg0-throwaway.key && \
+     printf '[Interface]\nAddress = %s/24\nListenPort = %s\nPrivateKey = %s\n' \
+       '$WG_IP' '$WG_PORT' \"\$(cat /etc/wireguard/wg0-throwaway.key)\" > /etc/wireguard/wg0.conf && \
+     chmod 0600 /etc/wireguard/wg0.conf && rm -f /etc/wireguard/wg0-throwaway.key && \
+     systemctl restart wg-quick-wg0 cococoir-edge"
 
 echo ""
 echo "==> Edge box up. Its WG public key is served by the control plane"

@@ -41,6 +41,7 @@ mkIf oidcEnabled {
     description = "CryptPad OIDC client secret (Dex)";
     wantedBy = [ "multi-user.target" ];
     before = [ "dex.service" "cryptpad.service" ];
+    path = [ pkgs.openssl ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

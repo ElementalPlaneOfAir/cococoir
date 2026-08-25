@@ -22,6 +22,22 @@
   pkgs,
   ...
 }: {
+  # The nixpkgs matrix-synapse module defaults `settings.database` to
+  # psycopg2/matrix-synapse regardless of postgres being enabled, so the
+  # homeserver comes up pointing at a postgres socket that is never
+  # started unless we bring postgres up too. Enable it against the
+  # existing data dir (/var/lib/postgresql) so the legacy DB is reused.
+  services.postgresql = {
+    enable = true;
+    ensureDatabases = ["matrix-synapse"];
+    ensureUsers = [
+      {
+        name = "matrix-synapse";
+        ensureDBOwnership = true;
+      }
+    ];
+  };
+
   services.matrix-synapse = {
     enable = true;
     settings = {

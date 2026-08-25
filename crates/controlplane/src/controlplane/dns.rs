@@ -60,33 +60,48 @@ pub trait DnsApiClient: Send + Sync {
     async fn remove_aaaa(&self, name: &str) -> Result<(), DnsError>;
 }
 
-/// Hetzner DNS API base URL.
-const HETZNER_BASE: &str = "https://dns.hetzner.com/api/v1";
+/// Hetzner DNS API base URL. The legacy DNS Console API
+/// (`dns.hetzner.com/api/v1` + `Auth-API-Token`) is deprecated and
+/// shutting down; zones now live in the Cloud API at
+/// `api.hetzner.cloud/v1` and authenticate with the same Bearer token
+/// as every other Cloud resource.
+const HETZNER_BASE: &str = "https://api.hetzner.cloud/v1";
 
-/// A record as returned by the Hetzner DNS API.
+/// An RRSet as returned by the Hetzner Cloud DNS API: a name + type
+/// (e.g. `*.bob` + `AAAA`) holding one or more record values. The id
+/// is just `{name}/{type}`, so the client keys on `name` + `type`.
 #[derive(Debug, Deserialize)]
-struct HetznerRecord {
-    id: String,
+struct HetznerRrset {
     #[serde(rename = "type")]
     type_: String,
     name: String,
+    records: Vec<RrsetRecord>,
+}
+
+/// One value inside an RRSet.
+#[derive(Debug, Deserialize)]
+struct RrsetRecord {
     value: String,
 }
 
-/// The payload Hetzner's create/update record endpoints expect.
+/// The payload Hetzner's create-rrset endpoint expects.
 #[derive(Debug, Serialize)]
-struct NewRecord<'a> {
+struct NewRrset<'a> {
     #[serde(rename = "type")]
     type_: &'static str,
     name: &'a str,
-    value: String,
-    zone_id: &'a str,
     ttl: u32,
+    records: Vec<NewRrsetRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct NewRrsetRecord {
+    value: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct RecordsResponse {
-    records: Vec<HetznerRecord>,
+struct RrsetsResponse {
+    rrsets: Vec<HetznerRrset>,
 }
 
 /// The real provisioning client: talks to Hetzner's DNS API.
@@ -158,34 +173,36 @@ impl HetznerDns {
             })
     }
 
-    async fn get_records(&self, name: &str) -> Result<Vec<HetznerRecord>, DnsError> {
+    async fn get_rrset(&self, name: &str) -> Result<Option<HetznerRrset>, DnsError> {
         let resp = self
             .http()
-            .get(format!("{HETZNER_BASE}/records"))
-            .header("Auth-API-Token", &self.token)
-            .query(&[
-                ("zone_id", self.zone_id.as_str()),
-                ("name", name),
-                ("type", "AAAA"),
-            ])
+            .get(format!("{HETZNER_BASE}/zones/{}/rrsets", self.zone_id))
+            .bearer_auth(&self.token)
             .send()
             .await?
             .error_for_status()?;
-        let body: RecordsResponse = resp.json().await?;
-        Ok(body.records)
+        let body: RrsetsResponse = resp.json().await?;
+        // Filter client-side for the exact name + type: the provider's
+        // `name` query filter does exact match, but a client-side find
+        // keeps the guarantee even if those semantics drift.
+        Ok(body
+            .rrsets
+            .into_iter()
+            .find(|r| r.type_ == "AAAA" && r.name == name))
     }
 
-    async fn create_record(&self, name: &str, ipv6: Ipv6Addr) -> Result<(), DnsError> {
-        let body = NewRecord {
+    async fn create_rrset(&self, name: &str, ipv6: Ipv6Addr) -> Result<(), DnsError> {
+        let body = NewRrset {
             type_: "AAAA",
             name,
-            value: ipv6.to_string(),
-            zone_id: &self.zone_id,
-            ttl: 3600,
+            ttl: 300,
+            records: vec![NewRrsetRecord {
+                value: ipv6.to_string(),
+            }],
         };
         self.http()
-            .post(format!("{HETZNER_BASE}/records"))
-            .header("Auth-API-Token", &self.token)
+            .post(format!("{HETZNER_BASE}/zones/{}/rrsets", self.zone_id))
+            .bearer_auth(&self.token)
             .json(&body)
             .send()
             .await?
@@ -193,28 +210,13 @@ impl HetznerDns {
         Ok(())
     }
 
-    async fn update_record(&self, id: &str, name: &str, ipv6: Ipv6Addr) -> Result<(), DnsError> {
-        let body = NewRecord {
-            type_: "AAAA",
-            name,
-            value: ipv6.to_string(),
-            zone_id: &self.zone_id,
-            ttl: 3600,
-        };
+    async fn delete_rrset(&self, name: &str) -> Result<(), DnsError> {
         self.http()
-            .put(format!("{HETZNER_BASE}/records/{id}"))
-            .header("Auth-API-Token", &self.token)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(())
-    }
-
-    async fn delete_record(&self, id: &str) -> Result<(), DnsError> {
-        self.http()
-            .delete(format!("{HETZNER_BASE}/records/{id}"))
-            .header("Auth-API-Token", &self.token)
+            .delete(format!(
+                "{HETZNER_BASE}/zones/{}/rrsets/{name}/AAAA",
+                self.zone_id
+            ))
+            .bearer_auth(&self.token)
             .send()
             .await?
             .error_for_status()?;
@@ -226,27 +228,23 @@ impl HetznerDns {
 impl DnsApiClient for HetznerDns {
     async fn upsert_aaaa(&self, name: &str, ipv6: Ipv6Addr) -> Result<(), DnsError> {
         let relative = self.relative_name(name)?;
-        let existing = self.get_records(&relative).await?;
-        match existing.first() {
-            Some(record) => {
-                self.update_record(&record.id, &relative, ipv6).await?;
-                // Self-heal duplicates: if a previous bug left extra
-                // records for the same name, drop them so round-robin
-                // doesn't alternate between correct and stale values.
-                for dup in existing.iter().skip(1) {
-                    self.delete_record(&dup.id).await?;
-                }
+        let target = ipv6.to_string();
+        if let Some(rrset) = self.get_rrset(&relative).await? {
+            if rrset.records.len() == 1 && rrset.records[0].value == target {
+                return Ok(());
             }
-            None => self.create_record(&relative, ipv6).await?,
+            // The Cloud DNS API has no single-record update (PUT is
+            // 422), so a stale value is delete-then-recreate.
+            self.delete_rrset(&relative).await?;
         }
+        self.create_rrset(&relative, ipv6).await?;
         Ok(())
     }
 
     async fn remove_aaaa(&self, name: &str) -> Result<(), DnsError> {
         let relative = self.relative_name(name)?;
-        let existing = self.get_records(&relative).await?;
-        for record in existing {
-            self.delete_record(&record.id).await?;
+        if self.get_rrset(&relative).await?.is_some() {
+            self.delete_rrset(&relative).await?;
         }
         Ok(())
     }
@@ -565,5 +563,47 @@ mod tests {
         let customers = vec![("bob".to_string(), ip)];
         let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
         assert_eq!(reapplied, 2);
+    }
+
+    // Tripwires for the 2026 Hetzner migration: the legacy DNS Console
+    // API (`dns.hetzner.com/api/v1`, `Auth-API-Token`, flat `records`)
+    // was shut down in favour of the Cloud DNS API
+    // (`api.hetzner.cloud/v1`, Bearer, `rrsets`). Each assert below
+    // fails if the client is reverted to the deprecated shape.
+
+    #[test]
+    fn hetzner_base_is_cloud_api() {
+        assert_eq!(HETZNER_BASE, "https://api.hetzner.cloud/v1");
+    }
+
+    #[test]
+    fn rrsets_response_deserializes_cloud_api_shape() {
+        let json = r#"{"meta":{"pagination":{}},"rrsets":[{"id":"*.bob/AAAA","name":"*.bob","type":"AAAA","ttl":null,"labels":{},"records":[{"value":"2a01:4f9:c014:2c44::2","comment":""}],"zone":123}]}"#;
+        let parsed: RrsetsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.rrsets.len(), 1);
+        let rr = &parsed.rrsets[0];
+        assert_eq!(rr.name, "*.bob");
+        assert_eq!(rr.type_, "AAAA");
+        assert_eq!(rr.records[0].value, "2a01:4f9:c014:2c44::2");
+    }
+
+    #[test]
+    fn new_rrset_serializes_cloud_api_shape() {
+        let ip: Ipv6Addr = "2a01:4f9:c014:2c44::2".parse().unwrap();
+        let body = NewRrset {
+            type_: "AAAA",
+            name: "*.bob",
+            ttl: 300,
+            records: vec![NewRrsetRecord {
+                value: ip.to_string(),
+            }],
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["type"], "AAAA");
+        assert_eq!(json["name"], "*.bob");
+        assert_eq!(json["ttl"], 300);
+        assert_eq!(json["records"][0]["value"], "2a01:4f9:c014:2c44::2");
+        // The Cloud API bodies the zone id in the URL path, not the body.
+        assert!(json.get("zone_id").is_none());
     }
 }
