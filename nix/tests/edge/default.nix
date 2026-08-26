@@ -124,7 +124,7 @@ in {
           wantedBy = ["multi-user.target"];
           serviceConfig = {
             Type = "simple";
-            ExecStart = "${cococoirPkg}/bin/cococoir-edge --subnet ${subnet} --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
+            ExecStart = "${cococoirPkg}/bin/cococoir-edge --subnet ${subnet} --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
             WorkingDirectory = "/etc/cococoir";
             EnvironmentFile = "/etc/cococoir/edge.env";
             # NixOS systemd units don't inherit environment.systemPackages
@@ -262,9 +262,10 @@ in {
       # The edge forwarder must have bound the customer's /128 live
       # (IPV6_FREEBIND). Prove it via the /status endpoint before we
       # depend on it. (listen_addr is "[<ipv6>]:80" — grep the bracketed
-      # address, not "<ipv6>:80".)
+      # address, not "<ipv6>:80".) The edge serves /status on the same
+      # 8081 handler as the API.
       edge.wait_until_succeeds(
-          "curl -sf http://127.0.0.1:9090/status | grep -q '[{}]'".format(customer_ipv6)
+          "curl -sf http://127.0.0.1:8081/status | grep -q '[{}]'".format(customer_ipv6)
       )
 
       # Wire the customer box with the signup's real keypair: swap the wg0
@@ -293,15 +294,16 @@ in {
       output = edge.succeed("curl -g -sf http://[{}]:80/".format(customer_ipv6))
       assert "cococoir test response" in output, "unexpected response: {!r}".format(output)
 
-      # Health endpoints respond on both boxes.
-      edge.wait_for_open_port(9090)
+      # Health endpoints respond on both boxes (edge on the merged 8081
+      # handler; the client still has its own on 9090).
+      edge.wait_for_open_port(8081)
       client.wait_for_open_port(9090)
-      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:9090/healthz"), "edge /healthz"
+      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:8081/healthz"), "edge /healthz"
       assert "ok" in client.succeed("curl -sf http://127.0.0.1:9090/healthz"), "client /healthz"
 
       # /status: the edge shows the bound /128 forward; the client shows
       # its WG-side forward.
-      edge_status = edge.succeed("curl -sf http://127.0.0.1:9090/status")
+      edge_status = edge.succeed("curl -sf http://127.0.0.1:8081/status")
       assert customer_ipv6 in edge_status, "edge status missing /128 forward"
       assert '"bound": true' in edge_status, "edge forward not bound"
       client_status = client.succeed("curl -sf http://127.0.0.1:9090/status")

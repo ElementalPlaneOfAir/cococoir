@@ -17,6 +17,8 @@ resource "local_file" "edge_nix" {
   filename = "${path.module}/../system-manager/edge.nix"
   content = templatefile("${path.module}/templates/edge.nix.tftpl", {
     edge_ipv6_subnet = local.edge_ipv6_subnet
+    edge_ipv4        = hcloud_server.edge.ipv4_address
+    edge_primary_v6  = local.edge_primary_v6
     wg_subnet        = var.wg_subnet
     wg_listen_port   = tostring(var.wg_listen_port)
   })

@@ -163,5 +163,96 @@ Root causes, all fixed in this repo:
   bugs; a clean re-switch recreates all units (verified the client unit renders
   with `EnvironmentFile=/etc/cococoir-admin.env`).
 
+## amon-sul second deploy (2026-08-25) — partial
+
+After re-push + re-switch: **postgresql, dex, jellyfin-oidc, cryptpad-oidc,
+cococoir-client all started** (the openssl + postgres fixes landed). Three
+left down:
+
+- **matrix-synapse**: postgres up, but synapse aborts —
+  `IncorrectDatabaseSetup: collation 'en_US.UTF-8' should be 'C'`. The legacy
+  DB was created en_US.UTF-8; recreating would destroy data. Fix (in working
+  tree, NOT yet deployed): `database.args.allow_unsafe_locale = true` in
+  `custom/matrix.nix`. Pending re-switch.
+- **wireguard-wg0**: `fopen: No such file or directory` — key file
+  `/etc/wireguard/fractal-private.key` not present. **Operational**: write it
+  (key `RfSaKgWjOFWzSASyOPxfcBNYafoudDNDMgzWDOm951E=`), then `systemctl start
+  wireguard-wg0`.
+- **jellarr-api-key-bootstrap** (exit 1): its script does
+  `systemctl stop jellyfin` then a `sqlite3` INSERT then
+  `systemctl start jellyfin`; the INSERT fails so `set -e` exits **leaving
+  jellyfin stopped** (jellyfin shows `inactive`). Needs the actual sqlite3
+  error (`sudo sqlite3 /var/lib/jellyfin/data/jellyfin.db '.schema ApiKeys'`
+  + reproduce the INSERT).
+
+## Edge public-surface gap + agreed architecture (2026-08-25)
+
+- **Edge services are healthy** (`cococoir-edge` + `redis` active).
+- **No public control-plane surface exists**: the API listens on
+  `0.0.0.0:8081` (local reach 200, no local iptables/ufw) but the **Hetzner
+  Cloud Firewall** (`remote-infra/tofu/main.tf:37`) only opens 22/80/443/51820
+  UDP/ICMP — so `:8081` is dropped off-box. `:9090` health is localhost-only.
+  `::3:80/443` is the forwarder fronting fractal (correct), not a public server.
+- **Agreed fix**: add **Caddy to the edge** serving `interdim.net` over
+  `https://interdim.net` (A `62.238.111.21` + AAAA `2a01:4f9:c014:2c44::1`),
+  reverse-proxying `127.0.0.1:8081`. IPv6 canonical choice = **`subnet::1`**
+  (`::` is subnet-router anycast owned by Hetzner's gateway; `::1` reads as
+  loopback). Customer `/128` allocator starts at `::2`+ so `::1` is free.
+  Code lives in `remote-infra/tofu/templates/edge.nix.tftpl` + `dns.tf`.
+- **DONE — edge Caddy deployed (2026-08-26)**: Caddy added to
+  `edge.nix.tftpl` + `render.tf` (passes `edge_ipv4`/`edge_primary_v6`), unit
+  binds IPv4 + `::1` only (never shadows the forwarder's `::3`), proxy →
+  `127.0.0.1:8081`. Applied via system-manager switch; `https://interdim.net`
+  now serves real Let's Encrypt cert (`CN=interdim.net`, HTTP-01 verified) and
+  `https://interdim.net/pubkey` returns `lX+5lGEF1qDJEag13Kymyxy/SJH63LPxKTvMg50WE2E=`.
+  Proof: curl over IPv4 + `openssl s_client` verify OK; `ss` shows Caddy on
+  IPv4+`::1` and forwarder on `::3` coexisting.
+- **DONE — health + swagger over the same HTTPS surface**: Caddyfile routes
+  `/healthz` `/readyz` `/status` → `127.0.0.1:9090` (the health server stays
+  localhost-only behind Caddy) and everything else (`/docs` swagger UI,
+  `/openapi.json`, `/pubkey`, `/signup`, ...) → `127.0.0.1:8081`. All reachable
+  at `https://interdim.net/*`. Proof: `/healthz`→200 "ok", `/status`→200
+  (live forwarder state), `/docs`→200 full swagger-ui HTML (1.6MB). Note:
+  after re-render + system-manager switch, a `systemctl restart caddy` is
+  needed — system-manager doesn't restart a service whose unit definition
+  didn't change, so the new Caddyfile wasn't picked up until the manual restart.
+- **DONE — health merged into the API handler (code-level, supersedes the
+  Caddy route split)**: `HealthApi` (in `crates/core/src/health.rs`) is now
+  public with `new(status_func)`; `cococoir_controlplane::app()` builds one
+  poem-openapi service from `(ControlPlaneApi, HealthApi)`, so the edge serves
+  `/healthz` `/readyz` `/status` and the control-plane API (swagger `/docs`,
+  `/openapi.json`, `/pubkey`, `/signup`) from ONE listener on `:8081`. The
+  `--health-addr` flag and separate `:9090` edge health server are gone (the
+  customer-box *client* still runs `HealthServer` on `:9090` for itself).
+  Caddyfile reverted to a single `reverse_proxy 127.0.0.1:8081`. Proof: cargo
+  tests incl. `health_merged_into_api_handler` + all 23 `nix flake check`
+  checks (incl. `edge-forward` nixosTest, updated to probe edge health on
+  `:8081`); live `https://interdim.net/{healthz,readyz,status,pubkey,docs}` = 200.
+- **Systemd unit-name corruption on the edge box (found during deploy)**: the
+  `cococoir-edge` systemd unit NAME PREFIX is poisoned on the box — systemd
+  starts such a unit at boot but un-tracks it on the first `daemon-reload`
+  (`is-active`/`cat`/`start` all report "not found"), so system-manager
+  switches could never restart it. Verified: identical unit content loads fine
+  under other names (`zzz-edge-a`, `cocoedge-diag`); only `cococoir-edge*` is
+  refused, surviving daemon-reload/reexec/symlink-recreate/reboot. **Fix**:
+  edge service renamed to `edge-control-plane` in `edge.nix.tftpl`, which is
+  tracked and survives reload. Deploy gotcha to remember for this box.
+- **Agreed architecture for keygen**: fold WG keygen into the **dashboard**
+  (client generates + persists its own keypair, sends only the pubkey to the
+  edge; edge never holds customer private keys). Dashboard fetches the signup
+  from the public `interdim.net` endpoint in the same step, then manages wg0
+  (drop the NixOS wg0 module + operator key-file step). `POST /signup` changes
+  to accept a client `public_key` (still AdminKey-auth'd for now; future =
+  website-signup device token). This also kills the edge-holds-private-keys
+  smell and the `fopen` fragility.
+
+## Next move
+
+1. **DONE** — edge Caddy + `::1` public surface (`https://interdim.net`).
+2. Spec + build **dashboard-keygen** (edge `/signup` accepts pubkey; client
+   keygen + persist + wg0 management; drop NixOS wg0).
+3. Unblock the box: write fractal WG key, `start wireguard-wg0`, re-switch
+   (picks up `allow_unsafe_locale`), diagnose jellarr-bootstrap.
+
 v2 gate: a clean `scripts/vmtest-e2e.sh` PASS — the last remaining
 failure is the jellarr P0.

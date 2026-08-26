@@ -15,14 +15,10 @@
 //!   --redis-url redis://127.0.0.1:6379
 //!   --subnet 2a01:4f8:c17:1::/64      (the box's routed subnet)
 //!   --wg-subnet 10.10.0.0/24          (WG tunnel net, edge .1, customers .2+)
-//!   --api-addr 0.0.0.0:8081           (control plane HTTP)
-//!   --health-addr 127.0.0.1:9090      (/healthz /readyz /status)
+//!   --api-addr 0.0.0.0:8081           (control plane HTTP + /healthz /readyz /status)
 #![deny(unsafe_code)]
 
-use std::sync::Arc;
-
-use cococoir_controlplane::{Subnet64, WgSubnet, control_plane, forwarder, init_globals};
-use cococoir_core::health::{HealthServer, StatusFunc};
+use cococoir_controlplane::{Subnet64, WgSubnet, control_plane, init_globals};
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -30,7 +26,6 @@ async fn main() -> Result<(), std::io::Error> {
     let mut subnet = String::new();
     let mut wg_subnet = "10.10.0.0/24".to_string();
     let mut api_addr = "0.0.0.0:8081".to_string();
-    let mut health_addr = "127.0.0.1:9090".to_string();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -42,11 +37,10 @@ async fn main() -> Result<(), std::io::Error> {
             "--subnet" => subnet = value,
             "--wg-subnet" => wg_subnet = value,
             "--api-addr" => api_addr = value,
-            "--health-addr" => health_addr = value,
             other => {
                 eprintln!("unknown flag {other}");
                 return Err(std::io::Error::other(
-                    "usage: cococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR] [--health-addr ADDR]",
+                    "usage: cocococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR]",
                 ));
             }
         }
@@ -70,7 +64,10 @@ async fn main() -> Result<(), std::io::Error> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Control plane HTTP (signup/delete/customers/pubkey) on --api-addr.
+    // Control plane HTTP (signup/delete/customers/pubkey) + health
+    // (/healthz /readyz /status) on --api-addr. app() merges the health
+    // endpoints into the same OpenAPI handler, so one listener serves
+    // both API checks and health checks.
     let api = cococoir_controlplane::app();
     let api_addr2 = api_addr.clone();
     let api_shutdown = shutdown_rx.clone();
@@ -89,19 +86,6 @@ async fn main() -> Result<(), std::io::Error> {
             .await
         {
             tracing::error!(err = %err, "api server exited with error");
-        }
-    });
-
-    // Health/status on --health-addr. The status closure reads the
-    // forwarder's live state on every request.
-    let status_func: StatusFunc = Arc::new(move || {
-        serde_json::to_value(forwarder().stats()).unwrap_or(serde_json::Value::Null)
-    });
-    let health_shutdown = shutdown_rx.clone();
-    let health_task = tokio::spawn(async move {
-        let server = HealthServer::new(health_addr.clone(), status_func);
-        if let Err(err) = server.run(health_shutdown).await {
-            tracing::error!(err = %err, "health server exited with error");
         }
     });
 
@@ -144,7 +128,7 @@ async fn main() -> Result<(), std::io::Error> {
         let _ = shutdown_tx.send(true);
     });
 
-    let _ = tokio::try_join!(api_task, health_task, reconcile_task, signal_task);
+    let _ = tokio::try_join!(api_task, reconcile_task, signal_task);
     Ok(())
 }
 

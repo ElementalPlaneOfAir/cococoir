@@ -25,6 +25,7 @@
   environment.systemPackages = with pkgs; [
     redis
     wireguard-tools
+    caddy
     jq
   ];
 
@@ -42,6 +43,21 @@
       appendonly yes
       appendfsync always
       dir /var/lib/redis
+    '';
+    # Caddy fronts the edge's own control plane at https://interdim.net
+    # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
+    # handler on 0.0.0.0:8081 — the control-plane API plus the /healthz
+    # /readyz /status endpoints (the edge serves both from one poem app),
+    # incl. the swagger UI at /docs and spec at /openapi.json — so a
+    # booting customer box's dashboard and an operator reach the join
+    # surface, health, and the swagger UI over TLS. Caddy binds ONLY the
+    # edge's own addresses (IPv4 + ::1) so it never shadows the
+    # forwarder's customer /128 listeners (e.g. ::3:80/443).
+    "caddy/Caddyfile".text = ''
+      interdim.net {
+        bind ${edge_ipv4} ${edge_primary_v6}
+        reverse_proxy 127.0.0.1:8081
+      }
     '';
   };
 
@@ -85,8 +101,35 @@
     };
   };
 
+  # ── Caddy (public HTTPS for the control plane) ──────────────────
+  # Serves https://interdim.net over the edge's own IPv4 + ::1 and
+  # proxies to the control-plane API. Binds only the edge's addresses
+  # (per the Caddyfile) so it never collides with the forwarder's
+  # customer /128 listeners. StateDirectory persists ACME certs/state.
+  systemd.services.caddy = {
+    description = "Caddy reverse proxy — cococoir control plane at https://interdim.net";
+    enable = true;
+    after = ["network-online.target"];
+    wants = ["network-online.target"];
+    wantedBy = ["multi-user.target"];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "$${pkgs.caddy}/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile";
+      StateDirectory = "caddy";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+  };
+
   # ── The merged edge: forwarder + control plane ──────────────────
-  systemd.services.cococoir-edge = {
+  # Unit name is `edge-control-plane`, NOT `cococoir-edge`: the systemd
+  # NAME PREFIX `cococoir-edge` is corrupted on the edge box — systemd
+  # starts such a unit at boot but un-tracks it on the first daemon-reload
+  # (is-active/cat/start all report "not found"), so no system-manager
+  # switch could ever restart it. Verified: identical unit content loads
+  # fine under any other name (e.g. zzz-edge-a), only `cococoir-edge*`
+  # is refused. A non-`cococoir-edge` name sidesteps it.
+  systemd.services.edge-control-plane = {
     description = "Cococoir edge — forwarder + control plane";
     enable = true;
     after = ["network-online.target" "wg-quick-wg0.service" "redis.service"];
@@ -98,7 +141,7 @@
     path = [ pkgs.wireguard-tools ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "$${cococoirEdgePkg}/bin/cococoir-edge --subnet ${edge_ipv6_subnet} --wg-subnet ${wg_subnet} --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --health-addr 127.0.0.1:9090";
+      ExecStart = "$${cococoirEdgePkg}/bin/cococoir-edge --subnet ${edge_ipv6_subnet} --wg-subnet ${wg_subnet} --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
       # The edge secrets (DNS zone + token, root domain, admin key
       # hash) are resolved by the secretspec SDK from /etc/cococoir/
       # (secretspec.toml + edge.env, written by provision-edge.sh, mode

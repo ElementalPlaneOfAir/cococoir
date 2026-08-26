@@ -70,9 +70,19 @@ enum StatusResponse {
     Status(PlainText<String>),
 }
 
-/// The three endpoints, declared as OpenAPI operations.
-struct HealthApi {
+/// The three endpoints, declared as OpenAPI operations. Reusable so a
+/// host can merge it into a wider OpenAPI service (the edge serves the
+/// control-plane API and `/healthz` `/readyz` `/status` from one
+/// handler) instead of running a separate health server.
+pub struct HealthApi {
     status_func: StatusFunc,
+}
+
+impl HealthApi {
+    /// `status_func` is called on every `/readyz` and `/status` request.
+    pub fn new(status_func: StatusFunc) -> Self {
+        Self { status_func }
+    }
 }
 
 #[OpenApi]
@@ -117,9 +127,7 @@ impl HealthServer {
     /// Builds the poem route: the three health endpoints plus the
     /// OpenAPI spec and its bundled swagger UI.
     fn router(&self) -> Route {
-        let api = HealthApi {
-            status_func: self.status_func.clone(),
-        };
+        let api = HealthApi::new(self.status_func.clone());
         let service = OpenApiService::new(api, "cococoir", "0.1.0");
         let ui = service.swagger_ui();
         let spec = service.spec_endpoint();

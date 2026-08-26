@@ -44,6 +44,17 @@
       server_name = config.cococoir.baseDomain;
       public_baseurl = "https://matrix.${config.cococoir.baseDomain}";
       enable_registration = false;
+      # The legacy DB was created with en_US.UTF-8 collation; synapse
+      # requires C. Recreating would destroy the existing data, so allow
+      # the unsafe locale rather than nuke the DB.
+      database = {
+        name = "psycopg2";
+        args = {
+          database = "matrix-synapse";
+          user = "matrix-synapse";
+          allow_unsafe_locale = true;
+        };
+      };
       listeners = [
         {
           port = 8008;

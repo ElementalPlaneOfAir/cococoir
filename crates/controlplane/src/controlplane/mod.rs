@@ -43,8 +43,10 @@ pub use secret::{admin_key_hash, root_domain};
 pub use wg::{RealWgClient, WgClient, WgError};
 
 use std::net::Ipv6Addr;
+use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use cococoir_core::health::{HealthApi, StatusFunc};
 use poem::Route;
 use poem_openapi::param::Path;
 use poem_openapi::payload::Json;
@@ -854,12 +856,22 @@ impl ControlPlaneApi {
     }
 }
 
-/// Build the control-plane HTTP app: the OpenAPI service, its bundled
-/// swagger UI at `/docs`, and the spec at `/openapi.json`. Stateless —
-/// handlers read the process globals.
+/// Build the control-plane HTTP app: the OpenAPI service (the control
+/// plane API merged with the health endpoints `/healthz` `/readyz`
+/// `/status`), its bundled swagger UI at `/docs`, and the spec at
+/// `/openapi.json`. The edge serves this one handler on its API port —
+/// health and API checks come from the same listener. Stateless —
+/// handlers read the process globals (the status func reads the
+/// forwarder's live state lazily, per request).
 pub fn app() -> Route {
-    let api = ControlPlaneApi;
-    let service = OpenApiService::new(api, "cococoir control plane", "0.1.0");
+    let status_func: StatusFunc = Arc::new(move || {
+        serde_json::to_value(forwarder().stats()).unwrap_or(serde_json::Value::Null)
+    });
+    let service = OpenApiService::new(
+        (ControlPlaneApi, HealthApi::new(status_func)),
+        "cococoir edge",
+        "0.1.0",
+    );
     let ui = service.swagger_ui();
     let spec = service.spec_endpoint();
     Route::new()
@@ -1166,5 +1178,17 @@ mod tests {
         assert_eq!(resp.0.status(), StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("swagger"), "swagger UI served at /docs");
+    }
+
+    /// The edge serves health from the same handler as the API: /healthz
+    /// is reachable on app() (no separate health listener). /healthz
+    /// always returns ok\n without touching the status func, so it works
+    /// even when the process globals aren't initialized.
+    #[tokio::test]
+    async fn health_merged_into_api_handler() {
+        let resp = TestClient::new(app()).get("/healthz").send().await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert_eq!(body, "ok\n");
     }
 }
