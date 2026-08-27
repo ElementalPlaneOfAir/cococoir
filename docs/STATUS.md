@@ -248,10 +248,19 @@ left down:
 
 ## Next move
 
-1. **DONE** — edge Caddy + `::1` public surface (`https://interdim.net`).
-2. Spec + build **dashboard-keygen** (edge `/signup` accepts pubkey; client
-   keygen + persist + wg0 management; drop NixOS wg0).
-3. Unblock the box: write fractal WG key, `start wireguard-wg0`, re-switch
+1. **DONE — edge Caddy + `::1` public surface** (`https://interdim.net`).
+2. **DONE — `/signup` accepts a client WG key, idempotent + rotates**
+   (`.specify/specs/client-supplied-wg-key/`): the edge no longer generates
+   or holds a customer private key — the client supplies its own `public_key`
+   (ADR-025). Same-key re-signup = idempotent no-op (same `/128`+`wg_ip`,
+   no wasted allocation); different-key re-signup = rotation (`remove_peer`
+   old, `add_peer` new on the same route). Response drops `wg_private_key`.
+   The L2 `edge-forward` test now has the customer box generate its own
+   keypair. Proof: `cargo test` 142 green + `nix flake check` 23/23.
+3. Spec + build **dashboard-keygen** (client keygen + persist + wg0
+   management + calls `/pubkey` + `/signup`; drop NixOS wg0 + operator
+   key-file step).
+4. Unblock the box: write fractal WG key, `start wireguard-wg0`, re-switch
    (picks up `allow_unsafe_locale`), diagnose jellarr-bootstrap.
 
 v2 gate: a clean `scripts/vmtest-e2e.sh` PASS — the last remaining

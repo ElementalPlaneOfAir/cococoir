@@ -17,11 +17,11 @@
 #           -> 127.0.0.1:80 (python3 -m http.server, Caddy stand-in)
 #
 # The customer is created by a real `POST /signup` on the edge's control
-# plane (bearer admin key), which allocates the /128, generates the
-# customer's WG keypair, adds the peer to the edge's wg0, and binds the
-# forwarder live. The customer box is wired *dynamically* in the test
-# with the signup's returned key, because the client's wg0 private key
-# only exists once signup has run.
+# plane (bearer admin key), which allocates the /128, adds the peer to the
+# edge's wg0, and binds the forwarder live. The customer box generates its
+# OWN WG keypair (ADR-025: the edge never holds a customer private key),
+# sends only the public key to /signup, and is wired *dynamically* in the
+# test with that key.
 #
 # Honest limits (documented, not hidden):
 #   - The curl originates inside the edge VM at a lo-routed /128, not
@@ -244,20 +244,26 @@ in {
       # The edge's control-plane API is up.
       edge.wait_for_open_port(8081)
 
-      # Real signup via the control plane (bearer admin key). Allocates
-      # the /128, generates the customer's WG keypair, adds the WG peer
-      # to wg0, binds the /128 forward. DNS fails (throwaway) — non-fatal.
+      # The customer box generates its own WG keypair — it holds the
+      # private key and sends only the public key to the edge (ADR-025).
+      client.succeed("wg genkey > /tmp/cococoir-client.priv")
+      client.succeed("wg pubkey < /tmp/cococoir-client.priv > /tmp/cococoir-client.pub")
+      client_pub = client.succeed("cat /tmp/cococoir-client.pub").strip()
+
+      # Real signup via the control plane (bearer admin key) with the
+      # client's public key. Allocates the /128, adds the WG peer to wg0,
+      # binds the /128 forward. DNS fails (throwaway) — non-fatal.
       signup = edge.succeed(
           "curl -sf -H 'Authorization: Bearer test-admin-key' "
           "-H 'Content-Type: application/json' "
-          "-d '{\"username\":\"alice\"}' "
+          "-d '{\"username\":\"alice\",\"public_key\":\"" + client_pub + "\"}' "
           "http://127.0.0.1:8081/signup"
       )
       data = json.loads(signup)
       customer_ipv6 = data["customer"]["ipv6"]
       customer_wgip = data["customer"]["wg_ip"]
-      wg_private_key = data["wg_private_key"]
       edge_public_key = data["edge_public_key"]
+      assert data["customer"]["wg_public_key"] == client_pub, "edge stored the client's public key"
 
       # The edge forwarder must have bound the customer's /128 live
       # (IPV6_FREEBIND). Prove it via the /status endpoint before we
@@ -268,13 +274,13 @@ in {
           "curl -sf http://127.0.0.1:8081/status | grep -q '[{}]'".format(customer_ipv6)
       )
 
-      # Wire the customer box with the signup's real keypair: swap the wg0
-      # private key + peer on the live interface (the forwarder has been
-      # bound since boot and keeps running). Remove the throwaway peer;
-      # add the edge's real public key as the tunnel peer.
+      # Wire the customer box's wg0 with ITS OWN generated keypair: the
+      # client already holds the private key, so apply it to the live
+      # interface and set the edge's real public key as the tunnel peer
+      # (the throwaway boot peer is removed). The forwarder has been
+      # bound since boot and keeps running.
       client.succeed(
-          "printf '%s\n' '{}' > /tmp/cococoir-client.priv\n".format(wg_private_key)
-          + "wg set wg0 private-key /tmp/cococoir-client.priv\n"
+          "wg set wg0 private-key /tmp/cococoir-client.priv\n"
           + "wg set wg0 peer {} allowed-ips 10.10.0.1/32 endpoint edge:51820 persistent-keepalive 25\n".format(edge_public_key)
           + "wg set wg0 peer {} remove\n".format("${edgePublic}")
           + "rm /tmp/cococoir-client.priv"

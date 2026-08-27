@@ -7,11 +7,12 @@
 //!
 //! What it does (demo slice):
 //!   - `POST /signup` — allocate the next `/128` from the box's
-//!     routed subnet, generate the customer's WireGuard keypair, store
-//!     the customer in Redis, add the customer's WG peer + live
-//!     forwards, and return a complete tunnel config (the customer's
-//!     private key + IPs + the edge's public key). The customer's box
-//!     dials out to the edge with that key.
+//!     routed subnet, store the customer in Redis, add the customer's
+//!     WG peer + live forwards, and return the route + the edge's public
+//!     key. The customer's box dials out to the edge with that key.
+//!     The client supplies its own WG public key (ADR-025: the edge
+//!     never holds a customer private key); the call is idempotent and
+//!     rotates the peer key on an existing route.
 //!   - `GET /customers` — list.
 //!   - `DELETE /customers/:id` — remove (disruption-free: the control
 //!     plane drops the WG peer via `wg set`, no restart).
@@ -230,14 +231,26 @@ pub struct Customer {
     pub wg_public_key: String,
 }
 
-/// The signup response. The customer's private key is returned ONCE —
-/// after this it is gone from the service (only the public key is
-/// stored).
+/// The signup response. The customer's private key never touches the
+/// service — the client generates + persists it and sends only the
+/// public key (ADR-025). The edge returns the route it allocated and
+/// its own public key so the client can dial out.
 #[derive(Debug, Serialize, Deserialize, Clone, Object)]
 pub struct SignupResponse {
     pub customer: Customer,
-    pub wg_private_key: String,
     pub edge_public_key: String,
+}
+
+/// Whether a [`ControlPlane::signup`] call created a new route or
+/// returned an existing one (idempotent no-op / key rotation).
+#[derive(Debug)]
+pub enum SignupOutcome {
+    /// A fresh `/128` + WG tunnel was allocated.
+    Created(SignupResponse),
+    /// The username already existed; the response carries the existing
+    /// route (unchanged `wg_ip`/`/128`), with the WG peer re-ensured or
+    /// rotated to the supplied key.
+    Existing(SignupResponse),
 }
 
 /// Error surface for control-plane operations.
@@ -257,6 +270,8 @@ pub enum ControlPlaneError {
     Dns(#[from] DnsError),
     #[error("invalid username: {0}")]
     InvalidUsername(String),
+    #[error("invalid wireguard public key: {0}")]
+    InvalidPubkey(String),
     #[error("username already taken: {0}")]
     Duplicate(String),
 }
@@ -393,12 +408,56 @@ impl ControlPlane {
     /// DNS runs LAST and is non-fatal: the customer is reachable at
     /// their `/128` regardless, and the background reconcile loop
     /// self-heals a failed record.
-    pub async fn signup(&self, username: &str) -> Result<SignupResponse, ControlPlaneError> {
+    pub async fn signup(
+        &self,
+        username: &str,
+        public_key: &str,
+    ) -> Result<SignupOutcome, ControlPlaneError> {
         validate_username(username)?;
+        validate_wg_pubkey(public_key)?;
         let forwarder = forwarder();
         let mut conn = self.conn().await?;
-        // Host 1 is the edge's own primary /128; customers start at 2.
-        // SETNX seeds the counter atomically so the first INCR returns 2.
+        let key = format!("{CUST_KEY}{username}");
+        let existing: Option<String> = conn.get(&key).await?;
+        let edge_public_key = self.edge_public_key().await?;
+
+        // Idempotent / rotate path: the route already exists.
+        if let Some(json) = existing {
+            let mut customer: Customer = serde_json::from_str(&json).map_err(|err| {
+                ControlPlaneError::Redis(redis::RedisError::from((
+                    redis::ErrorKind::ResponseError,
+                    "corrupt customer record",
+                    format!("{json}: {err}"),
+                )))
+            })?;
+            if customer.wg_public_key == public_key {
+                // Same key: idempotent no-op. Re-ensure the peer (kernel
+                // add_peer is idempotent); the `/128`+`wg_ip` are kept.
+                if let Err(err) = self.wg.add_peer(&customer.wg_ip, public_key) {
+                    tracing::error!(username = %username, err = %err, "signup idempotent: wg re-add failed");
+                }
+            } else {
+                // Different key: rotate. Remove the old peer first — two
+                // peers sharing the `/32` allowed-ips would be ambiguous —
+                // then add the new key on the SAME route (the forwarder
+                // dest `wg_ip` is unchanged). Persist the new pubkey.
+                if let Err(err) = self.wg.remove_peer(&customer.wg_public_key) {
+                    tracing::error!(username = %username, err = %err, "signup rotate: wg peer removal failed");
+                }
+                self.wg.add_peer(&customer.wg_ip, public_key)?;
+                customer.wg_public_key = public_key.to_string();
+                let updated = serde_json::to_string(&customer).expect("customer serializes");
+                conn.set::<_, _, ()>(&key, updated).await?;
+            }
+            return Ok(SignupOutcome::Existing(SignupResponse {
+                customer,
+                edge_public_key,
+            }));
+        }
+
+        // Fresh allocation. Existence is checked BEFORE allocating, so a
+        // repeat signup never burns a `/128` (the old INCR-before-check
+        // order wasted an index even on the Duplicate error).
         let _: () = conn.set_nx(ALLOC_COUNTER, 1).await?;
         // INCR is atomic: no two signups can get the same host index.
         let index: i64 = conn.incr(ALLOC_COUNTER, 1).await?;
@@ -411,19 +470,17 @@ impl ControlPlane {
         let wg_ip = self.wg_subnet.host_string(index as u64);
 
         let hostname = customer_hostname(username, self.root_domain);
-        let (public_key, private_key) = generate_wg_keypair();
         let customer = Customer {
             username: username.to_string(),
             hostname: hostname.clone(),
             ipv6: ipv6.clone(),
             wg_ip: wg_ip.clone(),
-            wg_public_key: public_key,
+            wg_public_key: public_key.to_string(),
         };
 
-        let key = format!("{CUST_KEY}{username}");
         let json = serde_json::to_string(&customer).expect("customer serializes");
-        // Uniqueness is structural: the username IS the Redis key, so
-        // a second signup with the same username collides here.
+        // Uniqueness is structural: the username IS the Redis key, so a
+        // concurrent signup for the same username collides here.
         let set: bool = conn.set_nx(&key, json).await?;
         if !set {
             return Err(ControlPlaneError::Duplicate(username.to_string()));
@@ -435,9 +492,8 @@ impl ControlPlane {
         // that rehydrate wires up on next boot. A *wiring* failure, by
         // contrast, rolls the store entry back: the username and /128
         // must not stay burned when the peer/forward could not be
-        // created, because the customer's private key is returned only
-        // once and a zombie record would lose it forever.
-        if let Err(err) = self.wg.add_peer(&wg_ip, &customer.wg_public_key) {
+        // created.
+        if let Err(err) = self.wg.add_peer(&wg_ip, public_key) {
             self.rollback_signup(&mut conn, forwarder, username, &customer).await;
             return Err(ControlPlaneError::Wg(err));
         }
@@ -466,13 +522,10 @@ impl ControlPlane {
             tracing::error!(username = %username, err = %err, "signup: dns upsert failed (customer reachable at /128; reconcile will self-heal)");
         }
 
-        let edge_public_key = self.edge_public_key().await?;
-
-        Ok(SignupResponse {
+        Ok(SignupOutcome::Created(SignupResponse {
             customer,
-            wg_private_key: private_key,
             edge_public_key,
-        })
+        }))
     }
 
     /// List customers in allocation order.
@@ -666,6 +719,19 @@ pub fn validate_username(username: &str) -> Result<(), ControlPlaneError> {
     }
 }
 
+/// Validate a client-supplied WireGuard public key: a well-formed WG
+/// public key is 32 bytes of base64. The kernel re-validates on `wg
+/// set`; this is a cheap structural gate so a bad key fails before any
+/// allocation or wiring.
+pub fn validate_wg_pubkey(public_key: &str) -> Result<(), ControlPlaneError> {
+    let ok = B64.decode(public_key).map(|b| b.len() == 32).unwrap_or(false);
+    if ok {
+        Ok(())
+    } else {
+        Err(ControlPlaneError::InvalidPubkey(public_key.to_string()))
+    }
+}
+
 /// The process's forwarder. Panics if not initialized.
 pub fn forwarder() -> &'static Forwarder {
     FORWARDER.get().expect("forwarder not initialized")
@@ -724,10 +790,13 @@ pub async fn init_globals(
 /// works.
 
 /// The signup request body: the username that becomes the customer's
-/// DNS hostname.
+/// DNS hostname, plus the customer's WireGuard public key (the client
+/// generates + holds the private key; the edge stores only the public
+/// key — ADR-025).
 #[derive(Debug, Deserialize, Object)]
 pub struct SignupRequest {
     pub username: String,
+    pub public_key: String,
 }
 
 /// `/pubkey` response: the edge's own WG public key.
@@ -742,10 +811,13 @@ enum SignupApiResponse {
     /// Customer created.
     #[oai(status = "201")]
     Created(Json<SignupResponse>),
-    /// Invalid username.
+    /// Customer already existed (idempotent no-op or key rotation).
+    #[oai(status = "200")]
+    Ok(Json<SignupResponse>),
+    /// Invalid username or public key.
     #[oai(status = "400")]
     BadRequest(Json<String>),
-    /// Username already taken.
+    /// Username already taken (concurrent race).
     #[oai(status = "409")]
     Conflict(Json<String>),
     /// Internal error.
@@ -787,22 +859,33 @@ struct ControlPlaneApi;
 
 #[OpenApi]
 impl ControlPlaneApi {
-    /// Create a customer (allocate a /128, WG keypair, forwards, DNS).
+    /// Create a customer (allocate a /128, forwards, DNS) or, if the
+    /// username already exists, re-ensure / rotate the WG peer on the
+    /// existing route. The client supplies its own WG public key; the
+    /// edge never sees the private key.
     #[oai(path = "/signup", method = "post")]
     async fn signup(
         &self,
         _auth: AdminKey,
         Json(req): Json<SignupRequest>,
     ) -> SignupApiResponse {
-        match control_plane().signup(&req.username).await {
-            Ok(resp) => SignupApiResponse::Created(Json(resp)),
-            Err(ControlPlaneError::Duplicate(username)) => {
-                tracing::warn!(username = %username, "signup: username taken");
-                SignupApiResponse::Conflict(Json("username already taken".to_string()))
-            }
+        match control_plane()
+            .signup(&req.username, &req.public_key)
+            .await
+        {
+            Ok(SignupOutcome::Created(resp)) => SignupApiResponse::Created(Json(resp)),
+            Ok(SignupOutcome::Existing(resp)) => SignupApiResponse::Ok(Json(resp)),
             Err(ControlPlaneError::InvalidUsername(username)) => {
                 tracing::warn!(username = %username, "signup: invalid username");
                 SignupApiResponse::BadRequest(Json("invalid username".to_string()))
+            }
+            Err(ControlPlaneError::InvalidPubkey(_)) => {
+                tracing::warn!("signup: invalid wireguard public key");
+                SignupApiResponse::BadRequest(Json("invalid wireguard public key".to_string()))
+            }
+            Err(ControlPlaneError::Duplicate(username)) => {
+                tracing::warn!(username = %username, "signup: username taken");
+                SignupApiResponse::Conflict(Json("username already taken".to_string()))
             }
             Err(err) => {
                 tracing::error!(error = %err, "signup failed");
@@ -1000,8 +1083,18 @@ mod tests {
             .await
             .expect("install edge identity");
 
-        let first = cp.signup("alice").await.expect("first signup");
-        let second = cp.signup("bob").await.expect("second signup");
+        let first_pub = generate_wg_keypair().0;
+        let second_pub = generate_wg_keypair().0;
+        let SignupOutcome::Created(first) =
+            cp.signup("alice", &first_pub).await.expect("first signup")
+        else {
+            panic!("first signup created");
+        };
+        let SignupOutcome::Created(second) =
+            cp.signup("bob", &second_pub).await.expect("second signup")
+        else {
+            panic!("second signup created");
+        };
         assert_ne!(first.customer.ipv6, second.customer.ipv6);
         assert_eq!(first.customer.ipv6, "2a01:4f8:c17:1::2");
         assert_eq!(first.customer.wg_ip, "10.10.0.2");
@@ -1032,16 +1125,79 @@ mod tests {
         let customers = cp.list().await.expect("list");
         assert_eq!(customers.len(), 2);
 
+        // Idempotent re-signup: same username + same key returns the
+        // existing route (no new /128, no new DNS, no new forwarder
+        // bind) and re-ensures the WG peer.
+        let dns_before = dns.upserts.lock().unwrap().len();
+        let forwards_before = forwarder.stats().forwards.len();
+        let SignupOutcome::Existing(first_again) =
+            cp.signup("alice", &first_pub).await.expect("idempotent re-signup")
+        else {
+            panic!("same-key re-signup is Existing");
+        };
+        assert_eq!(first_again.customer.ipv6, first.customer.ipv6, "same route");
+        assert_eq!(first_again.customer.wg_ip, first.customer.wg_ip, "same route");
+        assert_eq!(first_again.customer.wg_public_key, first_pub);
+        assert_eq!(dns.upserts.lock().unwrap().len(), dns_before, "no new DNS");
+        assert_eq!(
+            forwarder.stats().forwards.len(),
+            forwards_before,
+            "no new forwarder bind"
+        );
+        assert_eq!(wg.added.lock().unwrap().len(), 3, "peer re-ensured");
+
+        // Rotation: same username + a DIFFERENT key removes the old peer,
+        // adds the new key on the SAME /128 + wg_ip, and persists it.
+        let new_pub = generate_wg_keypair().0;
+        let SignupOutcome::Existing(rotated) =
+            cp.signup("alice", &new_pub).await.expect("rotate")
+        else {
+            panic!("rotation is Existing");
+        };
+        assert_eq!(rotated.customer.ipv6, first.customer.ipv6, "rotation keeps /128");
+        assert_eq!(rotated.customer.wg_ip, first.customer.wg_ip, "rotation keeps wg_ip");
+        assert_eq!(rotated.customer.wg_public_key, new_pub, "stored pubkey updated");
+        assert_eq!(dns.upserts.lock().unwrap().len(), dns_before, "rotation no new DNS");
+        assert!(
+            wg.removed.lock().unwrap().contains(&first_pub),
+            "old peer removed on rotation"
+        );
+        assert_eq!(wg.added.lock().unwrap().len(), 4, "new peer added on rotation");
+
+        // A fresh signup still gets host 4: the idempotent re-signup and
+        // rotation burned no /128.
+        let third_pub = generate_wg_keypair().0;
+        let SignupOutcome::Created(third) =
+            cp.signup("carol", &third_pub).await.expect("third signup")
+        else {
+            panic!("carol created");
+        };
+        assert_eq!(third.customer.ipv6, "2a01:4f8:c17:1::4", "no wasted allocation");
+
+        // The rotated key is what persisted: a subsequent signup with it
+        // is an Existing no-op.
+        let SignupOutcome::Existing(alice_now) =
+            cp.signup("alice", &new_pub).await.expect("alice current key")
+        else {
+            panic!("alice current key is Existing");
+        };
+        assert_eq!(alice_now.customer.wg_public_key, new_pub);
+
+        let customers = cp.list().await.expect("list with carol");
+        assert_eq!(customers.len(), 3);
+
         cp.delete(&first.customer.username)
             .await
             .expect("delete first");
-        assert_eq!(forwarder.stats().forwards.len(), 2);
-        assert_eq!(wg.removed.lock().unwrap().len(), 1);
+        // Rotation already removed alice's first key, so the delete
+        // removes the rotated key too (2 removals total for alice).
+        assert_eq!(forwarder.stats().forwards.len(), 4);
+        assert_eq!(wg.removed.lock().unwrap().len(), 2);
         // Deleting removed the customer's DNS records (2 per customer).
         assert_eq!(dns.removes.lock().unwrap().len(), 2);
 
         let customers = cp.list().await.expect("list after delete");
-        assert_eq!(customers.len(), 1);
+        assert_eq!(customers.len(), 2);
         assert_eq!(customers[0].username, second.customer.username);
 
         cp.delete(&second.customer.username)
@@ -1051,7 +1207,7 @@ mod tests {
             cp.delete(&second.customer.username).await,
             Err(ControlPlaneError::NotFound(_))
         ));
-        assert_eq!(forwarder.stats().forwards.len(), 0);
+        assert_eq!(forwarder.stats().forwards.len(), 2);
     }
 
     // ── HTTP API endpoint tests ──────────────────────────────────
