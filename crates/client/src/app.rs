@@ -19,6 +19,7 @@ use tracing::{error, info};
 use tracing::span;
 
 use crate::dashboard;
+use crate::tunnel::{self, TunnelConfig};
 use cococoir_core::forwarder::{Config, Forward, Forwarder};
 use cococoir_core::health::{HealthServer, StatusFunc};
 use cococoir_core::logger;
@@ -30,6 +31,11 @@ use cococoir_core::logger;
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
     forwards: Vec<Forward>,
+    /// Optional client-owned tunnel: if present, the client generates +
+    /// persists its own WG keypair, brings wg0 up, then the forwarder
+    /// binds the tunnel IP.
+    #[serde(default)]
+    tunnel: Option<TunnelConfig>,
 }
 
 /// CLI flags, mirroring the Go `flag` defaults.
@@ -69,6 +75,28 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
             return 1;
         }
     };
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Client-owned tunnel: generate + persist the WG keypair and bring
+    // wg0 up BEFORE the forwarder binds, so the forwarder's tunnel-IP
+    // listeners have an address. Fail-fast: if wg0 cannot come up, remote
+    // access is dead and the forwarder would only spin retrying binds.
+    if let Some(tunnel_cfg) = &cfg.tunnel {
+        let key_path = tunnel::key_path();
+        match tunnel::ensure_keypair(&key_path) {
+            Ok(pubkey) => tracing::info!(iface = %tunnel_cfg.iface, public_key = %pubkey, "wg0 keypair ensured"),
+            Err(err) => {
+                error!(err = %err, "tunnel: keypair failed");
+                return 1;
+            }
+        }
+        if let Err(err) = tunnel::bring_up_wg0(tunnel_cfg, &key_path) {
+            error!(err = %err, "tunnel: wg0 bring-up failed");
+            return 1;
+        }
+        tracing::info!(iface = %tunnel_cfg.iface, ip = %tunnel_cfg.ip, "wg0 up");
+    }
+
     let forwarder = match Forwarder::new(Config {
         forwards: cfg.forwards,
         component: component.to_string(),
@@ -80,8 +108,6 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
             return 1;
         }
     };
-
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Dashboard: open the sqlite db, resolve the edited config path,
     // and freeze the auth mode before the forwarder starts blocking.

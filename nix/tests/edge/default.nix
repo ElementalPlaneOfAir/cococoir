@@ -44,10 +44,6 @@ let
   # sees. The real WG identity is generated + persisted in Redis.
   edgePublic = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/edge-public"));
   edgePrivate = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/edge-private"));
-  # Throwaway client wg0 key used only so 10.10.0.2 is local at boot (so
-  # the forwarder binds); the test swaps in the signup's real key after
-  # /signup returns it.
-  clientPrivate = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/client-private"));
 
   # The five boot secrets the edge requires (secret.rs panics if any is
   # absent). DNS_* are throwaway — DNS is non-fatal here. ROOT_DOMAIN is
@@ -140,13 +136,11 @@ in {
         };
       };
 
-      client = {lib, ...}: {
-        # The customer box. Its wg0 is NOT brought up at boot: the
-        # client's private key only exists after signup. So boot runs
-        # only the local HTTP stand-in; the test brings up wg0 with the
-        # signup key and starts the forwarder unit manually (wantedBy =
-        # []), avoiding a bind race (the forwarder would retry 10.10.0.2:80
-        # forever before the address exists).
+      client = {lib, pkgs, ...}: {
+        # The customer box. wg0 is brought up by the CLIENT process itself
+        # (client-owned tunnel, ADR-025): cocococoir-client generates +
+        # persists its own keypair under /var/lib/cococoir, configures the
+        # interface, then the forwarder binds. No NixOS wireguard module.
 
         environment.systemPackages = with pkgs; [
           wireguard-tools
@@ -159,26 +153,18 @@ in {
         # receive forwarded traffic from the edge.
         networking.firewall.allowedTCPPorts = [80];
 
-        # wg0 up at boot with a THROWAWAY key (the real customer key only
-        # exists after /signup). The throwaway key exists only so
-        # 10.10.0.2 is local at boot and the forwarder binds cleanly;
-        # after signup the test swaps in the real key + edge peer via
-        # `wg set`. The throwaway edgePublic peer is replaced then too.
-        networking.wireguard.interfaces.wg0 = {
-          privateKey = clientPrivate;
-          ips = ["10.10.0.2/24"];
-          peers = [
-            {
-              publicKey = edgePublic;
-              endpoint = "edge:51820";
-              allowedIPs = ["10.10.0.1/32"];
-              persistentKeepalive = 25;
-            }
-          ];
-        };
-
-        # Client config: bind the customer's WG IP -> local service.
+        # Client config: the tunnel section drives the client-owned wg0.
+        # edge_pubkey is the throwaway fixture peer for now — the test
+        # swaps it for the edge's real boot-generated pubkey after signup
+        # (the edge generates a fresh key each test boot).
         environment.etc."cococoir-client.json".text = builtins.toJSON {
+          tunnel = {
+            ip = "10.10.0.2";
+            prefix = 24;
+            edge_pubkey = edgePublic;
+            edge_endpoint = "edge:51820";
+            edge_allowed_ips = "10.10.0.0/24";
+          };
           forwards = [
             {
               listen_addr = "10.10.0.2:80";
@@ -205,20 +191,23 @@ in {
           serviceConfig.Restart = "always";
         };
 
-        # The client forwarder — auto-starts at boot, AFTER wg0 is up (so the
-        # 10.10.0.2:80 bind has an address). The throwaway wg0 key means
-        # the tunnel isn't authenticated yet, but the bind succeeds; the
-        # test swaps in the real key without touching this service.
+        # The client process — owns wg0 + the forwarder. The client brings
+        # the tunnel up before the forwarder binds, so no bind race.
+        # StateDirectory=cococoir creates the writable key dir;
+        # path gives `wg`/`ip` on the unit's PATH.
         systemd.services.cococoir-client = {
-          description = "cococoir client (L2 test) — forwarder";
-          after = ["network-online.target" "wireguard-wg0.service"];
-          wants = ["network-online.target" "wireguard-wg0.service"];
+          description = "cococoir client (L2 test) — tunnel + forwarder";
+          after = ["network-online.target"];
+          wants = ["network-online.target"];
           wantedBy = ["multi-user.target"];
+          # The client shells out to `ip`/`wg`; give it them on PATH.
+          path = [pkgs.iproute2 pkgs.wireguard-tools];
           serviceConfig = {
             Type = "simple";
             ExecStart = "${cococoirPkg}/bin/cococoir-client -config /etc/cococoir-client.json -log-format text -health-addr 127.0.0.1:9090";
             Restart = "on-failure";
             RestartSec = 5;
+            StateDirectory = "cococoir";
           };
         };
       };
@@ -228,15 +217,17 @@ in {
       import json
 
       # Boot order: both VMs up; edge needs wg0 + Redis + the edge
-      # binary; client needs the local HTTP stand-in.
+      # binary; client needs the local HTTP stand-in. The client's wg0 is
+      # brought up by cocococoir-client itself (client-owned tunnel).
       edge.wait_for_unit("multi-user.target")
       client.wait_for_unit("multi-user.target")
       edge.wait_for_unit("wireguard-wg0.service")
       edge.wait_for_unit("redis.service")
       edge.wait_for_unit("cococoir-edge.service")
-      client.wait_for_unit("wireguard-wg0.service")
       client.wait_for_unit("cococoir-client.service")
       client.wait_for_unit("test-http.service")
+      # The client brought wg0 up with its own persisted keypair.
+      client.wait_until_succeeds("ip link show wg0")
 
       # Sanity: the python server is up and serves the fixture.
       client.succeed("curl -sf http://127.0.0.1:80/ | grep -q 'cococoir test response'")
@@ -244,11 +235,11 @@ in {
       # The edge's control-plane API is up.
       edge.wait_for_open_port(8081)
 
-      # The customer box generates its own WG keypair — it holds the
-      # private key and sends only the public key to the edge (ADR-025).
-      client.succeed("wg genkey > /tmp/cococoir-client.priv")
-      client.succeed("wg pubkey < /tmp/cococoir-client.priv > /tmp/cococoir-client.pub")
-      client_pub = client.succeed("cat /tmp/cococoir-client.pub").strip()
+      # The client owns wg0: it generated + persisted its own keypair at
+      # boot (under /var/lib/cococoir) and brought wg0 up. Read back the
+      # persisted public key — the client holds the private key and sends
+      # only the public key to the edge (ADR-025).
+      client_pub = client.succeed("wg pubkey < /var/lib/cococoir/wg-private.key").strip()
 
       # Real signup via the control plane (bearer admin key) with the
       # client's public key. Allocates the /128, adds the WG peer to wg0,
@@ -274,16 +265,15 @@ in {
           "curl -sf http://127.0.0.1:8081/status | grep -q '[{}]'".format(customer_ipv6)
       )
 
-      # Wire the customer box's wg0 with ITS OWN generated keypair: the
-      # client already holds the private key, so apply it to the live
-      # interface and set the edge's real public key as the tunnel peer
-      # (the throwaway boot peer is removed). The forwarder has been
-      # bound since boot and keeps running.
+      # The client's wg0 peer was configured from the config's throwaway
+      # edgePub key; point it at the edge's real boot-generated pubkey
+      # (the edge generates a fresh key each test boot, so the config
+      # can't know it ahead of time). The client's OWN private key is
+      # already on the interface — nothing to swap. The forwarder has
+      # been bound since boot and keeps running.
       client.succeed(
-          "wg set wg0 private-key /tmp/cococoir-client.priv\n"
-          + "wg set wg0 peer {} allowed-ips 10.10.0.1/32 endpoint edge:51820 persistent-keepalive 25\n".format(edge_public_key)
-          + "wg set wg0 peer {} remove\n".format("${edgePublic}")
-          + "rm /tmp/cococoir-client.priv"
+          "wg set wg0 peer {} remove\n".format("${edgePublic}")
+          + "wg set wg0 peer {} allowed-ips 10.10.0.0/24 endpoint edge:51820 persistent-keepalive 25\n".format(edge_public_key)
       )
       client.wait_until_succeeds(
           "curl -sf http://127.0.0.1:9090/status | grep -q '" + customer_wgip + ":80'"

@@ -22,3 +22,4 @@ rowan = "0.16"
 
 [dev-dependencies]
 poem = { workspace = true, features = ["test"] }
+tempfile = "3"

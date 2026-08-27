@@ -393,6 +393,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -431,10 +432,12 @@ dependencies = [
 name = "cococoir-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "libc",
  "poem",
  "poem-openapi",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "socket2 0.5.10",
@@ -443,6 +446,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "x25519-dalek",
 ]
 
 [[package]]

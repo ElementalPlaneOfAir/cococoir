@@ -253,15 +253,24 @@ left down:
    (`.specify/specs/client-supplied-wg-key/`): the edge no longer generates
    or holds a customer private key — the client supplies its own `public_key`
    (ADR-025). Same-key re-signup = idempotent no-op (same `/128`+`wg_ip`,
-   no wasted allocation); different-key re-signup = rotation (`remove_peer`
-   old, `add_peer` new on the same route). Response drops `wg_private_key`.
-   The L2 `edge-forward` test now has the customer box generate its own
-   keypair. Proof: `cargo test` 142 green + `nix flake check` 23/23.
-3. Spec + build **dashboard-keygen** (client keygen + persist + wg0
-   management + calls `/pubkey` + `/signup`; drop NixOS wg0 + operator
-   key-file step).
-4. Unblock the box: write fractal WG key, `start wireguard-wg0`, re-switch
-   (picks up `allow_unsafe_locale`), diagnose jellarr-bootstrap.
+   no wasted allocation); different-key re-signup = rotation. Response drops
+   `wg_private_key`. Proof: cargo + `nix flake check` 23/23 + live edge
+   (201/200/rotation verified).
+3. **DONE — dashboard-keygen: client owns wg0 + its key**
+   (`.specify/specs/dashboard-keygen/`): `cococoir-client` generates +
+   persists its own keypair (`/var/lib/cococoir/wg-private.key`, 0600) and
+   brings up wg0 itself from a `tunnel` config section — no NixOS wg0
+   module, no operator key-file step (kills the `fopen` fragility). WG
+   keygen/derive moved to shared `cococoir_core::wg`. Proof: cargo + `nix
+   flake check` 12/12 incl. the client-owned `edge-forward` L2.
+   Registration still needs ONE operator `/signup` rotation until the
+   customer-auth device token lands (ADR-025).
+4. **Deploy dashboard-keygen to amon-sul** (needs root on the box): rebuild
+   picks up the client-owned tunnel; then register the client's generated
+   pubkey on the edge via one `/signup` rotation. Then diagnose the two
+   still-broken units: matrix-synapse (`allow_unsafe_locale` landed but it
+   still crashes — needs journal) and jellarr-api-key-bootstrap (sqlite
+   `ApiKeys` INSERT fails, leaves jellyfin stopped).
 
 v2 gate: a clean `scripts/vmtest-e2e.sh` PASS — the last remaining
 failure is the jellarr P0.

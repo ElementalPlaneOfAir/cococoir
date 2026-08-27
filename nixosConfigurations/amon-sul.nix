@@ -123,7 +123,7 @@
     }
   ];
 
-  # ── Tunnel client half (filled from the signup flow) ─────────────
+  # ── Tunnel client half (client-owned, ADR-025) ──────────────────
   services.cococoir-client.enable = true;
   # Dashboard admin login (the box's control plane). The bcrypt hash of
   # AMON_SUL_MASTER_PASSWORD lives in /etc/cococoir-admin.env (0600,
@@ -131,6 +131,22 @@
   # rather than run the dashboard with no auth.
   services.cococoir-client.adminPasswordEnvFile = "/etc/cococoir-admin.env";
   environment.etc."cococoir-client.json".text = builtins.toJSON {
+    # The client owns wg0: it generates + persists its own WG keypair
+    # (/var/lib/cococoir/wg-private.key), brings the tunnel up from this
+    # stable config, then the forwarder binds the tunnel IP. There is no
+    # operator key-file step and no NixOS wireguard module. The tunnel
+    # comes up once the client's public key is registered on the edge
+    # (one authenticated /signup rotation at provision time).
+    tunnel = {
+      ip = "10.10.0.3";
+      prefix = 24;
+      # The edge's WG public key (GET /pubkey).
+      edge_pubkey = "lX+5lGEF1qDJEag13Kymyxy/SJH63LPxKTvMg50WE2E=";
+      # Dial-out to the edge over the public internet.
+      edge_endpoint = "62.238.111.21:51820";
+      # Route the edge's tunnel range over wg0.
+      edge_allowed_ips = "10.10.0.0/24";
+    };
     forwards = [
       {
         listen_addr = "10.10.0.3:80";
@@ -141,20 +157,6 @@
         listen_addr = "10.10.0.3:443";
         proto = "tcp";
         dest_addr = "127.0.0.1:443";
-      }
-    ];
-  };
-
-  networking.wireguard.interfaces.wg0 = {
-    privateKeyFile = "/etc/wireguard/fractal-private.key";
-    ips = ["10.10.0.3/24"];
-    peers = [
-      {
-        # The edge (62.238.111.21): public key from GET /pubkey.
-        publicKey = "lX+5lGEF1qDJEag13Kymyxy/SJH63LPxKTvMg50WE2E=";
-        endpoint = "62.238.111.21:51820";
-        allowedIPs = ["10.10.0.0/24"];
-        persistentKeepalive = 25;
       }
     ];
   };

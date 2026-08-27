@@ -692,12 +692,11 @@ impl ControlPlane {
 
 /// Generate a WireGuard keypair. WireGuard keys are Curve25519
 /// (x25519); the private key is a random 32-byte scalar, the public
-/// key is the x25519 base-point multiplication.
+/// key is the x25519 base-point multiplication. Delegates to the shared
+/// `cococoir_core::wg` helper so the crypto lives in one place (the
+/// client uses the same code).
 pub fn generate_wg_keypair() -> (String, String) {
-    use rand_core::OsRng;
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    (B64.encode(public.as_bytes()), B64.encode(secret.to_bytes()))
+    cococoir_core::wg::generate_keypair()
 }
 
 /// Validate a signup username as a DNS label, because the username

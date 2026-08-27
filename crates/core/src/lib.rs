@@ -12,3 +12,4 @@ pub mod logger;
 mod retry;
 mod tcp;
 mod udp;
+pub mod wg;

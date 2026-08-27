@@ -102,9 +102,16 @@ in {
   config = lib.mkIf cfg.enable {
     systemd.services.cococoir-client = {
       description = "Cococoir v2 client service — L4 TCP/UDP forwarder + embedded dashboard (customer box)";
-      after = ["network-online.target" "wireguard-wg0.service"];
+      # The client owns wg0 (client-side keygen): it brings the tunnel up
+      # itself, so it no longer waits on a NixOS wireguard-wg0 unit. It
+      # still needs real network-online to reach the edge.
+      after = ["network-online.target"];
       wants = ["network-online.target"];
       wantedBy = ["multi-user.target"];
+
+      # The client shells out to `ip`/`wg` to bring up wg0 (client-owned
+      # tunnel); systemd's default PATH lacks /run/current-system/sw/bin.
+      path = [pkgs.iproute2 pkgs.wireguard-tools];
 
       serviceConfig = {
         Type = "simple";
