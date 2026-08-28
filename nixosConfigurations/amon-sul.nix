@@ -35,6 +35,11 @@
 
   system.stateVersion = "24.11";
   networking.hostName = "amon-sul";
+  environment.systemPackages = with pkgs; [
+    git
+    fish
+  ];
+  services.tailscale.enable = true;
 
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
@@ -47,7 +52,12 @@
   networking.useDHCP = false;
   networking.interfaces.enp11s0 = {
     useDHCP = false;
-    ipv4.addresses = [{address = "192.168.0.7"; prefixLength = 24;}];
+    ipv4.addresses = [
+      {
+        address = "192.168.0.7";
+        prefixLength = 24;
+      }
+    ];
   };
   networking.defaultGateway = "192.168.0.1";
   networking.nameservers = ["8.8.8.8" "1.1.1.1"];

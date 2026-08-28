@@ -158,12 +158,21 @@ fn link_exists(iface: &str) -> bool {
 }
 
 /// True if the IP (token, any prefix) is already assigned to the iface.
+/// `ip addr show` renders each address as `<ip>/<prefix>`; strip the
+/// prefix so a restart detects an already-assigned `10.10.0.3/24` and
+/// does not re-add it (idempotency — a blind re-add fails with
+/// "Address already assigned").
 fn addr_present(iface: &str, ip: &str) -> bool {
     let Ok(output) = Command::new("ip").args(["addr", "show", "dev", iface]).output() else {
         return false;
     };
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.split_whitespace().any(|token| token == ip)
+    addr_token_matches(&String::from_utf8_lossy(&output.stdout), ip)
+}
+
+/// True if any whitespace token in `ip addr show` output matches `ip`,
+/// ignoring the `/prefix` suffix (rendered as `10.10.0.3/24`).
+fn addr_token_matches(text: &str, ip: &str) -> bool {
+    text.split_whitespace().any(|token| token.split('/').next() == Some(ip))
 }
 
 /// Run a single external command (`ip` or `wg`), returning its stderr on
@@ -207,6 +216,17 @@ mod tests {
         let second = ensure_keypair(&path).unwrap();
         assert_eq!(first, second);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), persisted);
+    }
+
+    #[test]
+    fn addr_token_matches_ignores_prefix() {
+        // `ip addr show` renders each address as `10.10.0.3/24`; a restart
+        // must recognize it as already present rather than re-add (which
+        // fails with "Address already assigned").
+        let out = "1: wg0: <POINTOPOINT,NOARP> mtu 1420\n    inet 10.10.0.3/24 scope global wg0\n";
+        assert!(addr_token_matches(out, "10.10.0.3"));
+        assert!(addr_token_matches(out, "10.10.0.3/24".split('/').next().unwrap()));
+        assert!(!addr_token_matches(out, "10.10.0.4"));
     }
 
     #[test]

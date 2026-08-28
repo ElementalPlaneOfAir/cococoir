@@ -70,7 +70,12 @@
     };
   };
 
+  # Bind localhost only: the client forwarder owns the tunnel IP
+  # (10.10.0.3:80/443) as the external ingress. A wildcard Caddy bind
+  # would collide with it (EADDRINUSE) and kill remote access for all
+  # services — same rule the service factory applies to public vhosts.
   services.caddy.virtualHosts."matrix.${config.cococoir.baseDomain}".extraConfig = ''
+    bind 127.0.0.1 ::1
     reverse_proxy 127.0.0.1:8008
   '';
 }
