@@ -252,25 +252,35 @@ left down:
 2. **DONE — `/signup` accepts a client WG key, idempotent + rotates**
    (`.specify/specs/client-supplied-wg-key/`): the edge no longer generates
    or holds a customer private key — the client supplies its own `public_key`
-   (ADR-025). Same-key re-signup = idempotent no-op (same `/128`+`wg_ip`,
-   no wasted allocation); different-key re-signup = rotation. Response drops
-   `wg_private_key`. Proof: cargo + `nix flake check` 23/23 + live edge
-   (201/200/rotation verified).
+   (ADR-025). Same-key re-signup = idempotent no-op; diff-key = rotation.
+   Proof: cargo + `nix flake check` 12/12 + live edge (201/200/rotation).
 3. **DONE — dashboard-keygen: client owns wg0 + its key**
    (`.specify/specs/dashboard-keygen/`): `cococoir-client` generates +
    persists its own keypair (`/var/lib/cococoir/wg-private.key`, 0600) and
-   brings up wg0 itself from a `tunnel` config section — no NixOS wg0
-   module, no operator key-file step (kills the `fopen` fragility). WG
-   keygen/derive moved to shared `cococoir_core::wg`. Proof: cargo + `nix
-   flake check` 12/12 incl. the client-owned `edge-forward` L2.
-   Registration still needs ONE operator `/signup` rotation until the
-   customer-auth device token lands (ADR-025).
-4. **Deploy dashboard-keygen to amon-sul** (needs root on the box): rebuild
-   picks up the client-owned tunnel; then register the client's generated
-   pubkey on the edge via one `/signup` rotation. Then diagnose the two
-   still-broken units: matrix-synapse (`allow_unsafe_locale` landed but it
-   still crashes — needs journal) and jellarr-api-key-bootstrap (sqlite
-   `ApiKeys` INSERT fails, leaves jellyfin stopped).
+   brings up wg0 itself. Deployed to amon-sul: **wg0 = 10.10.0.3/24 is UP**
+   and `cococoir-client` is active — the box-side network is done. Proof:
+   cargo + `nix flake check` 12/12 + live box (`ip addr show wg0`).
+4. **IN PROGRESS — Jellyfin on amon-sul** (NOT a network problem; the box
+   network is up). Root cause: the btrfs pool `/media` (`LABEL=tank`) is
+   not mounted — `/dev/sda1` is btrfs but unlabeled, so `media.mount` fails
+   → `cococoir-btrfs-subvolumes` fails → `jellyfin` "Dependency failed" →
+   `jellarr` polls `:8096` forever → `:8096` closed (local *and* remote).
+   The real media lives on the NVMe root (`/media/entertain`, `/dev/
+   nvme0n1p2`), not on the 14.6T pool. Plan (operator root on box):
+   label `/dev/sda1` tank, protect the NVMe media, mount the pool, migrate
+   the media into the pool subvolumes, start jellyfin. Also fixed
+   `storage/btrfs.nix` so the idempotent pool-create **ensures** the label
+   on an existing pool instead of exiting 0 unlabeled (this was the
+   silent-failure seam).
+5. **Remaining network gap: register the box's new key on the edge.** The
+   box generated a fresh keypair (`WWjmraMkC1K6quzoqwgRNpIjO6xxcTfOjVodz4BDxwQ=`);
+   the edge still holds fractal's old key, so no handshake yet. One operator
+   `/signup` rotation (admin key on the operator's machine, profile
+   `default` not `provisioning`) registers it — then remote routing works.
+   Blocked on the admin key store not being on this machine.
+6. Still broken on amon-sul (independent): `matrix-synapse` (crashes at
+   boot — needs journal), and `jellarr-api-key-bootstrap` (was cascading
+   off jellyfin being down). Revisit after Jellyfin is up.
 
 v2 gate: a clean `scripts/vmtest-e2e.sh` PASS — the last remaining
 failure is the jellarr P0.

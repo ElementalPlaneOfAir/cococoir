@@ -54,18 +54,29 @@ let
 
   poolCreate = pkgs.writeShellScript "cococoir-btrfs-pool-create" ''
     set -euo pipefail
+    found=0
     for dev in ${concatMapStringsSep " " escapeShellArg devices}; do
       if ${pkgs.util-linux}/bin/blkid -s TYPE -o value "$dev" 2>/dev/null | grep -qx btrfs; then
-        echo "[cococoir-btrfs] pool already exists on $dev"
-        exit 0
+        echo "[cococoir-btrfs] pool already exists on $dev; ensuring label ${label}"
+        # An existing pool that lacks the expected label silently breaks the
+        # LABEL=<label> mount (media.mount fails -> subvolumes fail -> the
+        # dependent service fails). Ensure the label rather than exiting 0.
+        current=$(${pkgs.btrfs-progs}/bin/btrfs filesystem label "$dev" 2>/dev/null || true)
+        if [ "$current" != "${label}" ]; then
+          echo "[cococoir-btrfs] relabeling $dev: ''${current}' -> '${label}'"
+          ${pkgs.btrfs-progs}/bin/btrfs filesystem label "$dev" "${label}"
+        fi
+        found=1
       fi
     done
-    echo "[cococoir-btrfs] creating pool ${label} on ${toString devices}"
-    ${pkgs.btrfs-progs}/bin/mkfs.btrfs -f \
-      -L ${escapeShellArg label} \
-      -d ${dataProfile} \
-      -m ${metadataProfile} \
-      ${concatMapStringsSep " " escapeShellArg devices}
+    if [ "$found" = 0 ]; then
+      echo "[cococoir-btrfs] creating pool ${label} on ${toString devices}"
+      ${pkgs.btrfs-progs}/bin/mkfs.btrfs -f \
+        -L ${escapeShellArg label} \
+        -d ${dataProfile} \
+        -m ${metadataProfile} \
+        ${concatMapStringsSep " " escapeShellArg devices}
+    fi
   '';
 
   subvolumeEntries = mapAttrsToList (name: sv: {

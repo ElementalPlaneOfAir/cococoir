@@ -160,6 +160,16 @@ in
               the security boundary.
             '';
           }
+          {
+            assertion = !cfg.public || (builtins.match ".*bind 127.0.0.1.*" config.services.caddy.virtualHosts."${cfg.domain}".extraConfig != null);
+            message = ''
+              cococoir.services.${args.name}: the public Caddy vhost must
+              `bind 127.0.0.1` (localhost). The client forwarder owns the
+              tunnel IP as the external ingress and forwards to Caddy; a
+              wildcard Caddy bind would collide with it (EADDRINUSE) and
+              silently kill remote access.
+            '';
+          }
         ]
 ++ lib.optional hasBucket {
           assertion = hasBucket -> config.cococoir.storage.enable;
@@ -186,7 +196,11 @@ in
               then "tls ${tls.certFile} ${tls.keyFile}\n"
               else "";
           in
-            tlsLine + (if cfg.public
+            # Bind Caddy to localhost only. The client forwarder owns the
+            # tunnel IP (10.10.0.<n>:80/443) as the external ingress and
+            # forwards to Caddy on 127.0.0.1; a wildcard Caddy bind would
+            # collide with it (EADDRINUSE) and silently kill remote access.
+            tlsLine + "bind 127.0.0.1 ::1\n" + (if cfg.public
               then "reverse_proxy 127.0.0.1:${toString cfg.port}"
               else ''respond "Forbidden" 403''));
       }
