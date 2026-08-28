@@ -752,6 +752,7 @@ pub async fn init_globals(
     redis_url: &str,
     subnet: Subnet64,
     wg_subnet: WgSubnet,
+    ipv6_iface: Option<String>,
 ) -> Result<(), ControlPlaneError> {
     // DNS config is process config: a missing zone/token is a boot
     // error, never a first-signup surprise. Forcing the `LazyLock`
@@ -760,8 +761,11 @@ pub async fn init_globals(
     let _ = get_dns_api();
     FORWARDER
         .get_or_try_init(|| async {
-            Forwarder::new_live(Config::default())
-                .map_err(|err| ControlPlaneError::Forward(format!("forwarder init: {err}")))
+            Forwarder::new_live(Config {
+                ipv6_iface,
+                ..Config::default()
+            })
+            .map_err(|err| ControlPlaneError::Forward(format!("forwarder init: {err}")))
         })
         .await?;
     CONTROL_PLANE

@@ -73,6 +73,13 @@ pub struct Config {
     pub bind_timeout: Duration,
     pub udp_flow_idle: Duration,
     pub component: String,
+    /// Interface holding the edge's routed IPv6 /64. Customer `/128`
+    /// listeners must be added as local addresses here before they are
+    /// reachable: `IPV6_FREEBIND` binds an unassigned in-subnet `/128`
+    /// socket, but the kernel only delivers packets to an address it
+    /// considers local. Without this, the `/128` is unreachable from the
+    /// internet (silent — bind succeeds, traffic never arrives).
+    pub ipv6_iface: Option<String>,
 }
 
 impl Default for Config {
@@ -83,6 +90,7 @@ impl Default for Config {
             bind_timeout: Duration::from_secs(30),
             udp_flow_idle: Duration::from_secs(300),
             component: "cococoir".to_string(),
+            ipv6_iface: None,
         }
     }
 }
@@ -285,6 +293,34 @@ pub struct Forwarder {
     started_at: DateTime<Utc>,
 }
 
+/// Best-effort: make the IPv6 `/128` in `listen_addr` a local address on
+/// `iface`. `IPV6_FREEBIND` binds an unassigned in-subnet `/128` socket,
+/// but the kernel only delivers packets to an address it treats as local —
+/// without this, the `/128` binds but is unreachable from the internet.
+/// Idempotent: re-adding an already-present address reports "already
+/// assigned", which we tolerate. Runs once per add; reconcile-on-boot
+/// re-adds forwards so a reboot re-installs the addresses too.
+fn ensure_ipv6_local(iface: &str, listen_addr: &str) {
+    let Ok(sa) = listen_addr.parse::<std::net::SocketAddr>() else {
+        return;
+    };
+    if !sa.is_ipv6() {
+        return;
+    }
+    let ip = sa.ip();
+    let out = std::process::Command::new("ip")
+        .args(["-6", "addr", "add", &format!("{ip}/128"), "dev", iface])
+        .output();
+    if let Ok(out) = out {
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.to_lowercase().contains("already assigned") {
+                tracing::warn!(iface, ip = %ip, err = %err.trim(), "ipv6 addr add failed");
+            }
+        }
+    }
+}
+
 impl Forwarder {
     /// Validates `cfg` and returns a ready `Forwarder`. Callers then
     /// drive it with `run()`.
@@ -418,6 +454,9 @@ impl Forwarder {
             // Already running; nothing to do.
             return Ok(());
         }
+        if let Some(iface) = &self.cfg.ipv6_iface {
+            ensure_ipv6_local(iface, &fwd.listen_addr);
+        }
         let tracker = TaskTracker::new();
         match fwd.proto {
             Proto::Tcp => {
@@ -510,6 +549,16 @@ fn forward_key(fwd: &Forward) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ensure_ipv6_local_is_best_effort_no_panic() {
+        // IPv4 listen: no-op (returns before invoking `ip`).
+        ensure_ipv6_local("eth0", "127.0.0.1:80");
+        // Invalid address: no-op.
+        ensure_ipv6_local("eth0", "not-an-address");
+        // IPv6: attempts `ip -6 addr add`; a non-root/offline CI runner
+        // fails the command but the helper must tolerate it silently.
+        ensure_ipv6_local("eth0", "[2a01:4f9:c014:2c44::3]:80");
+    }
     use super::*;
 
     #[test]

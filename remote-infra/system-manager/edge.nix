@@ -141,7 +141,7 @@
     path = [ pkgs.wireguard-tools ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${cococoirEdgePkg}/bin/cococoir-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
+      ExecStart = "${cococoirEdgePkg}/bin/cococoir-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --ipv6-iface eth0";
       # The edge secrets (DNS zone + token, root domain, admin key
       # hash) are resolved by the secretspec SDK from /etc/cococoir/
       # (secretspec.toml + edge.env, written by provision-edge.sh, mode

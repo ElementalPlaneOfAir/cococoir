@@ -26,6 +26,7 @@ async fn main() -> Result<(), std::io::Error> {
     let mut subnet = String::new();
     let mut wg_subnet = "10.10.0.0/24".to_string();
     let mut api_addr = "0.0.0.0:8081".to_string();
+    let mut ipv6_iface: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -37,10 +38,11 @@ async fn main() -> Result<(), std::io::Error> {
             "--subnet" => subnet = value,
             "--wg-subnet" => wg_subnet = value,
             "--api-addr" => api_addr = value,
+            "--ipv6-iface" => ipv6_iface = Some(value),
             other => {
                 eprintln!("unknown flag {other}");
                 return Err(std::io::Error::other(
-                    "usage: cocococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR]",
+                    "usage: cocococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR] [--ipv6-iface IFACE]",
                 ));
             }
         }
@@ -58,7 +60,7 @@ async fn main() -> Result<(), std::io::Error> {
     // hydrating the routing table + forwarder from Redis (and installing
     // the edge's WG identity into wg0) before serving, so durable state
     // and live state agree. Returns Err (not a crash) if Redis is down.
-    init_globals(&redis_url, subnet, wg_subnet)
+    init_globals(&redis_url, subnet, wg_subnet, ipv6_iface)
         .await
         .map_err(|err| std::io::Error::other(format!("control plane init: {err}")))?;
 
