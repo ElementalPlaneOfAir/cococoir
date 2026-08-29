@@ -257,30 +257,63 @@ left down:
 3. **DONE — dashboard-keygen: client owns wg0 + its key**
    (`.specify/specs/dashboard-keygen/`): `cococoir-client` generates +
    persists its own keypair (`/var/lib/cococoir/wg-private.key`, 0600) and
-   brings up wg0 itself. Deployed to amon-sul: **wg0 = 10.10.0.3/24 is UP**
-   and `cococoir-client` is active — the box-side network is done. Proof:
-   cargo + `nix flake check` 12/12 + live box (`ip addr show wg0`).
-4. **IN PROGRESS — Jellyfin on amon-sul** (NOT a network problem; the box
-   network is up). Root cause: the btrfs pool `/media` (`LABEL=tank`) is
-   not mounted — `/dev/sda1` is btrfs but unlabeled, so `media.mount` fails
-   → `cococoir-btrfs-subvolumes` fails → `jellyfin` "Dependency failed" →
-   `jellarr` polls `:8096` forever → `:8096` closed (local *and* remote).
-   The real media lives on the NVMe root (`/media/entertain`, `/dev/
-   nvme0n1p2`), not on the 14.6T pool. Plan (operator root on box):
-   label `/dev/sda1` tank, protect the NVMe media, mount the pool, migrate
-   the media into the pool subvolumes, start jellyfin. Also fixed
-   `storage/btrfs.nix` so the idempotent pool-create **ensures** the label
-   on an existing pool instead of exiting 0 unlabeled (this was the
-   silent-failure seam).
-5. **Remaining network gap: register the box's new key on the edge.** The
-   box generated a fresh keypair (`WWjmraMkC1K6quzoqwgRNpIjO6xxcTfOjVodz4BDxwQ=`);
-   the edge still holds fractal's old key, so no handshake yet. One operator
-   `/signup` rotation (admin key on the operator's machine, profile
-   `default` not `provisioning`) registers it — then remote routing works.
-   Blocked on the admin key store not being on this machine.
-6. Still broken on amon-sul (independent): `matrix-synapse` (crashes at
-   boot — needs journal), and `jellarr-api-key-bootstrap` (was cascading
-   off jellyfin being down). Revisit after Jellyfin is up.
+   brings up wg0 itself. Deployed to amon-sul.
+4. **DONE — Jellyfin on amon-sul is up and REMOTE access works.** Full path
+   live: idol → edge `2a01:4f9:c014:2c44::3:443` → WG → box `10.10.0.3:443`
+   → client forwarder → Caddy → Jellyfin; `curl https://jellyfin.fractal.
+   interdim.net` → HTTP 200 (Jellyfin web UI). Three bugs found + fixed this
+   arc:
+   - **Storage**: `/dev/sda1` (btrfs) was unlabeled so `LABEL=tank` (`/media`)
+     didn't mount → subvolumes → jellyfin dependency cascade. Fixed by
+     relabeling + migrating NVMe `/media/entertain` into the pool, and
+     patched `storage/btrfs.nix` to **ensure** the label on an existing pool
+     (was a silent-failure seam).
+   - **Client idempotency**: `addr_present` compared `10.10.0.3` against the
+     rendered `10.10.0.3/24`, so a restart re-added the address and crashed.
+     Fixed (strip prefix) + regression test. This is why the box crash-looped
+     after every rebuild/restart.
+   - **Caddy wildcard bind**: Caddy bound `*:80/443`, colliding with the
+     client forwarder's `10.10.0.3:80/443` (EADDRINUSE) → remote dead. Fixed
+     by binding every public vhost to `127.0.0.1 ::1` (factory in
+     `_contract.nix` + the custom matrix vhost) + an L1 assertion.
+5. **DONE — customer `/128` reachability (edge, deployed).** `IPV6_FREEBIND`
+   alone does NOT make an in-subnet `/128` deliverable: `2a01:...::3` was
+   unreachable from the internet (not a local address; forwarding off) while
+   the edge's own `::1` worked. Fixed in code: the forwarder adds each
+   customer `/128` as a local address on `--ipv6-iface eth0`
+   (`ensure_ipv6_local`), re-added on reconcile-on-boot so an edge reboot
+   re-installs it. Deployed via system-manager; confirmed the running binary
+   carries `--ipv6-iface eth0` and `::3` is in the local table.
+   Proof: `cargo test` (workspace green) + `nix flake check` 12/12 +
+   `curl https://jellyfin.fractal.interdim.net` = 200 (live, e2e).
+6. **DIAGNOSED + FIXED (pending live verify) — dex login "Failed to contact
+   identity provider" and cryptpad dead were ONE bug: missing TLS certs.**
+   The box Caddy had certs for jellyfin/matrix but not auth/cryptpad (the
+   latter two burned their ACME attempts while `::3` was unreachable and sat
+   in retry backoff). Dex itself is healthy — direct discovery works,
+   issuer = `https://auth…/dex` = the SSO plugin's Authority. Port 80 works
+   for every domain, so the challenge path is alive. Root-cause fix in the
+   repo: `caddy.service` now orders after `cococoir-client.service`
+   (`_contract.nix`) — on every fresh boot Caddy previously raced the
+   tunnel, failed its first ACME orders, and backoff left domains certless
+   for up to an hour. L1 tripwire added to `vmtest-wiring`. Apply with the
+   next box rebuild (the switch restarts Caddy → re-fires ACME). Verify:
+   `curl https://auth.fractal.interdim.net/dex/.well-known/openid-configuration`
+   and `curl https://cryptpad.fractal.interdim.net` return non-TLS errors.
+7. **DEBT — vmtest is not the customer-box composition.** vmtest never
+   enables `services.cococoir-client` (only `amon-sul.nix` does), so the
+   main e2e has no tunnel/forwarder and cannot catch forwarder/Caddy
+   collisions, ingress boot ordering, or ACME-over-tunnel failures — the
+   exact bug class of this whole arc. Fix: give vmtest an in-VM edge (like
+   `nix/tests/edge/`) or a tunnel-enabled composition, then extend
+   `vmtest-bootstrap.sh` to assert every customer vhost presents valid TLS.
+   Blocked on runner capacity → vermissian runner (64GB, ssh
+   `nicole@vermissian`; note: its tailscale node key is expired and its
+   checkout `~/cococoir` has diverged — reconcile before use).
+8. Still broken on amon-sul (independent): `matrix-synapse` (crashes at
+   boot; its vhost has a cert but 502s — needs journal), `jellarr-api-key-
+   bootstrap` (re-check now jellyfin is up), and the client dashboard
+   (EADDRINUSE on its own port — non-fatal). Revisit after 6 is verified.
 
 v2 gate: a clean `scripts/vmtest-e2e.sh` PASS — the last remaining
 failure is the jellarr P0.

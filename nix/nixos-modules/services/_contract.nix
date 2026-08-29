@@ -188,6 +188,17 @@ in
           '';
         }) requires;
 
+        # ACME for this vhost traverses the tunnel (edge /128 → client
+        # forwarder → localhost Caddy), so Caddy must not start before
+        # the tunnel: a boot race fails the first orders and ACME backoff
+        # leaves the domain certless for up to an hour after every boot
+        # (auth/cryptpad incident, 2026-08-28). Ordering against a unit
+        # that doesn't exist (compositions without the client) is a
+        # systemd no-op.
+        systemd.services.caddy = lib.mkIf config.services.caddy.enable {
+          after = ["cococoir-client.service"];
+        };
+
         services.caddy.virtualHosts."${cfg.domain}".extraConfig =
           lib.mkDefault (let
             tls = config.cococoir.tls;

@@ -43,6 +43,14 @@ let
   hasCryptpadSSOConfigEnv = lib.any (e: lib.hasPrefix "CRYPTPAD_SSO_CONFIG=" e) cryptpadSvcEnv;
   cryptpadPkg = vmtestConfig.services.cryptpad.package;
   cryptpadPkgHasSSO = lib.strings.hasInfix "-with-sso" (cryptpadPkg.name or "");
+
+  # ── ingress / ACME ordering ──────────────────────────────────
+  # Caddy terminates ACME for every customer domain and those
+  # challenges traverse the tunnel. If caddy.service doesn't order
+  # after the client, a fresh boot races the tunnel and ACME backoff
+  # leaves domains certless (auth/cryptpad incident, 2026-08-28).
+  caddyOrdersAfterClient = builtins.elem "cococoir-client.service"
+    (vmtestConfig.systemd.services.caddy.after or []);
 in
 # ── dashboard.nix assertions ──────────────────────────────────
 # Every service declared in the customer-edited dashboard.nix must
@@ -88,12 +96,17 @@ assert lib.assertMsg hasCryptpadSSOConfigEnv
   "vmtest-wiring: cryptpad.service has no CRYPTPAD_SSO_CONFIG env var — the SSO plugin config is not wired";
 assert lib.assertMsg cryptpadPkgHasSSO
   "vmtest-wiring: cryptpad package is the vanilla nixpkgs cryptpad (no -with-sso suffix) — the SSO plugin override was dropped";
+
+# ── ingress ordering assertion ────────────────────────────────
+assert lib.assertMsg caddyOrdersAfterClient
+  "vmtest-wiring: caddy.service does not order after cococoir-client.service — fresh boots race the tunnel and ACME backoff leaves customer domains certless";
 {
   vmtest-wiring = pkgs.runCommand "cococoir-vmtest-wiring" {} ''
     cat > $out <<EOF
     cococoir vmtest-wiring: PASS
       jellyfin: OIDC wired (plugins + branding), jellarr boot-activated
       cryptpad: OIDC wired (SSO enabled + enforced, dex client registered, secret oneshot boot-activated, CRYPTPAD_CONFIG env set, SSO plugin bundled in package)
+      ingress: caddy.service orders after cococoir-client.service (ACME over the tunnel)
     EOF
   '';
 }
