@@ -158,6 +158,8 @@ in {
     python3
     curl
     jq
+    # vmtest-bootstrap.sh verifies every vhost cert with s_client.
+    openssl
   ];
 
   programs.fish.enable = true;

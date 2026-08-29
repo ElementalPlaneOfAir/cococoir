@@ -110,6 +110,23 @@ fi
 
 echo ""
 echo "─── Health ───"
+# Ingress TLS: every vhost must present a cert that verifies against
+# the VM trust store, with the right hostname. A certless vhost serves
+# a TLS alert (curl exit 35) — the auth/cryptpad incident of 2026-08-28
+# was exactly this, invisible because no check distinguished "no cert"
+# from "backend down".
+for d in auth jellyfin cryptpad radarr sonarr lidarr prowlarr; do
+  host="$d.vmtest.local"
+  if echo | timeout 10 openssl s_client -connect 127.0.0.1:443 \
+      -servername "$host" -verify_hostname "$host" \
+      -CApath /etc/ssl/certs -verify_return_error 2>/dev/null \
+      | grep -q "Verify return code: 0"; then
+    pass "TLS $host" "verified"
+  else
+    fail "TLS $host" "no valid cert"
+  fi
+done
+
 # Dex OIDC discovery
 dx_code=$(curl -sk -o /dev/null -w '%{http_code}' \
   https://auth.vmtest.local/dex/.well-known/openid-configuration 2>/dev/null || echo 000)

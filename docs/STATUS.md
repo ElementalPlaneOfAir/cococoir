@@ -286,30 +286,34 @@ left down:
    carries `--ipv6-iface eth0` and `::3` is in the local table.
    Proof: `cargo test` (workspace green) + `nix flake check` 12/12 +
    `curl https://jellyfin.fractal.interdim.net` = 200 (live, e2e).
-6. **DIAGNOSED + FIXED (pending live verify) — dex login "Failed to contact
-   identity provider" and cryptpad dead were ONE bug: missing TLS certs.**
-   The box Caddy had certs for jellyfin/matrix but not auth/cryptpad (the
-   latter two burned their ACME attempts while `::3` was unreachable and sat
-   in retry backoff). Dex itself is healthy — direct discovery works,
-   issuer = `https://auth…/dex` = the SSO plugin's Authority. Port 80 works
-   for every domain, so the challenge path is alive. Root-cause fix in the
-   repo: `caddy.service` now orders after `cococoir-client.service`
-   (`_contract.nix`) — on every fresh boot Caddy previously raced the
-   tunnel, failed its first ACME orders, and backoff left domains certless
-   for up to an hour. L1 tripwire added to `vmtest-wiring`. Apply with the
-   next box rebuild (the switch restarts Caddy → re-fires ACME). Verify:
-   `curl https://auth.fractal.interdim.net/dex/.well-known/openid-configuration`
-   and `curl https://cryptpad.fractal.interdim.net` return non-TLS errors.
-7. **DEBT — vmtest is not the customer-box composition.** vmtest never
-   enables `services.cococoir-client` (only `amon-sul.nix` does), so the
-   main e2e has no tunnel/forwarder and cannot catch forwarder/Caddy
-   collisions, ingress boot ordering, or ACME-over-tunnel failures — the
-   exact bug class of this whole arc. Fix: give vmtest an in-VM edge (like
-   `nix/tests/edge/`) or a tunnel-enabled composition, then extend
-   `vmtest-bootstrap.sh` to assert every customer vhost presents valid TLS.
-   Blocked on runner capacity → vermissian runner (64GB, ssh
-   `nicole@vermissian`; note: its tailscale node key is expired and its
-   checkout `~/cococoir` has diverged — reconcile before use).
+6. **DONE + VERIFIED LIVE — dex login + cryptpad dead were ONE bug: missing
+   TLS certs** (fix deployed in commit `2b5d7d2`, applied to the box).
+   `caddy.service` now orders after `cococoir-client.service`
+   (`_contract.nix`); L1 tripwire in `vmtest-wiring`. Live proof: idol →
+   auth discovery 200, SSO `Start/dex` follows redirects to the dex login
+   page (final 200), cryptpad 200; user confirmed working SSO login.
+7. **IN PROGRESS — vmtest fidelity + vermissian runner.** The main e2e
+   still doesn't exercise the tunnel/forwarder/ACME bug class (vmtest never
+   enables `services.cococoir-client`; only `amon-sul.nix` does). Landed
+   this session:
+   - **Tripwire written, NOT yet executed**: `vmtest-bootstrap.sh` now
+     asserts every vhost (auth/jellyfin/cryptpad/radarr/sonarr/lidarr/
+     prowlarr) presents a cert that verifies against the VM trust store
+     (`openssl s_client -verify_hostname`, catches certless-vhost = the
+     incident-6 class); `openssl` added to vmtest packages. First real
+     execution = next e2e run — unverified until then.
+   - **vermissian runner ready**: reconciled `~/cococoir` to origin/main
+     (old commits preserved on local branch `backup-vermissian-wip`);
+     24c/61G/152G free; `nix flake check` run started (first closure,
+     warms the store).
+   - **Next**: single-VM edge+client in `vmtest.nix` — enable the real
+     client module + an in-VM edge unit (mirror the `nix/tests/edge/`
+     edge node: Redis, wg0, secrets env, admin key = sha256
+     "test-admin-key"); client forwards `10.10.0.x:80/443 →
+     127.0.0.1:80/443`; bootstrap does the `/signup` itself (reads the
+     client's persisted pubkey) then curls the customer `/128:443`
+     through the tunnel. Stretch: pebble as ACME CA for full ACME-mode
+     fidelity. Then `scripts/vmtest-e2e.sh` green on vermissian = v2 gate.
 8. Still broken on amon-sul (independent): `matrix-synapse` (crashes at
    boot; its vhost has a cert but 502s — needs journal), `jellarr-api-key-
    bootstrap` (re-check now jellyfin is up), and the client dashboard
