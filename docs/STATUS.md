@@ -306,6 +306,23 @@ left down:
      (old commits preserved on local branch `backup-vermissian-wip`);
      24c/61G/152G free; `nix flake check` run started (first closure,
      warms the store).
+   - **First vermissian e2e ran — FAIL(10), all ten = suite bugs, VM
+     healthy.** Decomposition: 7× TLS false-positive (`-CApath` vs
+     bundle — NixOS `security.pki` extras land only in the bundle file;
+     fixed to `-CAfile`); 1× jellarr timeout (check read
+     `ActiveEnterTimestampMonotonic`, which systemd zeroes on
+     deactivation — condition unsatisfiable for a completed oneshot;
+     fixed to `ExecMainExitTimestampMonotonic`); 2× services-list bugs
+     (`is-active || echo missing` corrupted the "activating" state;
+     late-starting oneshots raced the snapshot — list is now always-on
+     services only, pipeline loop owns the oneshots). Bonus find:
+     the OIDC-button check grepped `web/index.html`, but Jellyfin
+     10.11's SPA serves branding via `Branding/Configuration` — fixed
+     to assert that endpoint. Key positive: **the jellarr pipeline
+     works on fresh boot** (apply complete; the old jellarr P0 is gone
+     — the failure was the suite's own check). Fixed suite verified
+     all-green against the live VM. Official PASS stamp awaits a fresh
+     `vmtest-e2e.sh` run.
    - **Next**: single-VM edge+client in `vmtest.nix` — enable the real
      client module + an in-VM edge unit (mirror the `nix/tests/edge/`
      edge node: Redis, wg0, secrets env, admin key = sha256

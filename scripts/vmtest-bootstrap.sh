@@ -43,18 +43,23 @@ fail() { fails=$((fails + 1)); printf "  %-40s ${R}%s${N}\n" "$1" "$2"; }
 pass() { printf "  %-40s ${G}%s${N}\n" "$1" "$2"; }
 
 echo "─── Services ───"
+# Always-on services only. The jellarr pipeline oneshots
+# (jellarr-api-key-bootstrap, jellarr) start late in boot; a
+# snapshot check would race them, so the dedicated wait loop
+# below owns their verification.
 for svc in dex cococoir-jellyfin-oidc-secret jellyfin \
-  cococoir-jellarr-api-key jellarr-api-key-bootstrap jellarr \
-  cococoir-cryptpad-oidc-secret cryptpad; do
-  state=$(systemctl is-active $svc.service 2>/dev/null || echo missing)
+  cococoir-jellarr-api-key cococoir-cryptpad-oidc-secret cryptpad; do
+  state=$(systemctl is-active $svc.service 2>/dev/null || true)
+  [ -n "$state" ] || state=missing
   case "$state" in
     active|activating) pass "$svc" "$state" ;;
     inactive)
       # Oneshots (seed/secret/api-key units) are done when they
-      # ran and exited 0.
+      # ran and exited 0. systemd zeroes ActiveEnterTimestamp
+      # on deactivation; ExecMainExitTimestampMonotonic persists.
       rc=$(systemctl show $svc.service -p ExecMainStatus --value 2>/dev/null || echo 1)
-      entered=$(systemctl show $svc.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-      if [ "$entered" != "0" ] && [ "$rc" = "0" ]; then
+      exited=$(systemctl show $svc.service -p ExecMainExitTimestampMonotonic --value 2>/dev/null || echo 0)
+      if [ "$exited" != "0" ] && [ "$rc" = "0" ]; then
         pass "$svc" "done"
       else
         fail "$svc" "inactive (rc=$rc)"
@@ -65,9 +70,9 @@ for svc in dex cococoir-jellyfin-oidc-secret jellyfin \
 done
 
 # jellarr is a oneshot without RemainAfterExit: "inactive" is the
-# success state, so poll ExecMainStatus instead of is-active.
-# Boot path takes minutes: api-key oneshot → bootstrap (stops
-# jellyfin, sleeps 10, inserts key, restarts) → jellarr run.
+# success state, so poll exit timestamp + status instead of
+# is-active. Boot path takes minutes: api-key oneshot → bootstrap
+# (stops jellyfin, sleeps 10, inserts key, restarts) → jellarr run.
 echo ""
 echo "─── Jellarr (declarative config applied) ───"
 jellarr_ok=0
@@ -81,8 +86,8 @@ for i in $(seq 1 150); do
     break
   fi
   status=$(systemctl show jellarr.service -p ExecMainStatus --value 2>/dev/null || echo 1)
-  entered=$(systemctl show jellarr.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-  if [ "$entered" != "0" ] && [ "$status" = "0" ] \
+  exited=$(systemctl show jellarr.service -p ExecMainExitTimestampMonotonic --value 2>/dev/null || echo 0)
+  if [ "$exited" != "0" ] && [ "$status" = "0" ] \
     && [ "$(systemctl is-active jellarr.service)" = "inactive" ]; then
     jellarr_ok=1
     pass "jellarr pipeline" "applied"
@@ -94,11 +99,14 @@ done
 
 # The login page renders the branding jellarr pushed — the
 # end-to-end proof that declarative config (incl. the OIDC
-# integration) actually landed on the server.
+# integration) actually landed on the server. Jellyfin 10.11's
+# web client is an SPA: branding is served via the public
+# Branding/Configuration API (the same endpoint the login page
+# fetches), not injected into the static index.html.
 if [ "$jellarr_ok" = "1" ]; then
   oidc_ok=0
   for i in $(seq 1 30); do
-    if curl -sk https://jellyfin.vmtest.local/web/index.html | grep -q "Sign in with Dex"; then
+    if curl -sk https://jellyfin.vmtest.local/Branding/Configuration | grep -q "Sign in with Dex"; then
       oidc_ok=1
       pass "OIDC login button" "rendered"
       break
@@ -114,12 +122,14 @@ echo "─── Health ───"
 # the VM trust store, with the right hostname. A certless vhost serves
 # a TLS alert (curl exit 35) — the auth/cryptpad incident of 2026-08-28
 # was exactly this, invisible because no check distinguished "no cert"
-# from "backend down".
+# from "backend down". NixOS's security.pki extras land in the bundle
+# file only (the hashed /etc/ssl/certs dir stays the stock cacert set),
+# so verify against the bundle, not -CApath.
 for d in auth jellyfin cryptpad radarr sonarr lidarr prowlarr; do
   host="$d.vmtest.local"
   if echo | timeout 10 openssl s_client -connect 127.0.0.1:443 \
       -servername "$host" -verify_hostname "$host" \
-      -CApath /etc/ssl/certs -verify_return_error 2>/dev/null \
+      -CAfile /etc/ssl/certs/ca-certificates.crt -verify_return_error 2>/dev/null \
       | grep -q "Verify return code: 0"; then
     pass "TLS $host" "verified"
   else
