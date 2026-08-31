@@ -560,6 +560,7 @@ mod tests {
         ensure_ipv6_local("eth0", "[2a01:4f9:c014:2c44::3]:80");
     }
     use super::*;
+    use crate::testutil::lock_real_sockets;
 
     #[test]
     fn new_rejects_empty_forwards() {
@@ -842,6 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_tcp_forward() {
+        let _sockets = lock_real_sockets().await;
         let upstream_port = pick_free_tcp_port().await;
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
         tokio::spawn(echo_tcp(upstream));
@@ -865,6 +867,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_tcp_forward_ipv6_listen() {
+        let _sockets = lock_real_sockets().await;
         // The IPv6 edge vision binds per-customer [::/64 /128]:443 and
         // forwards to the customer's WG IP. This exercises that exact
         // path: an IPv6 loopback listen_addr through the forwarder to
@@ -895,6 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_udp_forward() {
+        let _sockets = lock_real_sockets().await;
         let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let upstream_port = upstream.local_addr().unwrap().port();
         let upstream = Arc::new(upstream);
@@ -920,6 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_graceful_shutdown_no_inflight() {
+        let _sockets = lock_real_sockets().await;
         let fwd_port = pick_free_tcp_port().await;
         let (tx, handle) = spawn_forwarder(Config {
             forwards: vec![forward(Proto::Tcp, fwd_port, "127.0.0.1:1")],
@@ -952,6 +957,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_records_bound_forward() {
+        let _sockets = lock_real_sockets().await;
         let fwd_port = pick_free_tcp_port().await;
         let cfg = Config {
             forwards: vec![forward(Proto::Tcp, fwd_port, "127.0.0.1:1")],
@@ -982,6 +988,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_records_bind_error() {
+        let _sockets = lock_real_sockets().await;
         // Non-transient bind error (port in use) surfaces immediately
         // as RunError and records last_error in stats.
         let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1004,6 +1011,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_tcp_connection_count() {
+        let _sockets = lock_real_sockets().await;
         let upstream_port = pick_free_tcp_port().await;
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
         tokio::spawn(echo_tcp(upstream));
@@ -1041,6 +1049,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_udp_flow_count() {
+        let _sockets = lock_real_sockets().await;
         let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let upstream_port = upstream.local_addr().unwrap().port();
         let upstream = Arc::new(upstream);
@@ -1079,6 +1088,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_forwards_slice_is_copy() {
+        let _sockets = lock_real_sockets().await;
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = upstream.local_addr().unwrap();
         let fwd_port = pick_free_tcp_port().await;
@@ -1133,6 +1143,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_forward_binds_and_serves() {
+        let _sockets = lock_real_sockets().await;
         let upstream_port = pick_free_tcp_port().await;
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
         tokio::spawn(echo_tcp(upstream));
@@ -1161,6 +1172,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_forward_stops_serving() {
+        let _sockets = lock_real_sockets().await;
         let upstream_port = pick_free_tcp_port().await;
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
         tokio::spawn(echo_tcp(upstream));
@@ -1212,6 +1224,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_forward_twice_is_noop() {
+        let _sockets = lock_real_sockets().await;
         let upstream_port = pick_free_tcp_port().await;
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
         tokio::spawn(echo_tcp(upstream));

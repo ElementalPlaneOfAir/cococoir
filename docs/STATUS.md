@@ -56,6 +56,16 @@ Regenerated: 2026-08-24T03:17:43Z — git e90a2e7
 - **Nix config parser** (2026-08-13) — lossless round-trip on rnix +
   rowan; schema layer decouples known attrpaths.
 
+## Fixed this session (2026-08-30)
+
+- **Flaky `add_forward_twice_is_noop` (AddrInUse)** — `pick_free_*`
+  probed a port via `bind(127.0.0.1:0)`, released it, then re-bound
+  later; a parallel cargo test could grab the port in between and the
+  re-bind died with `AddrInUse` (blocked `nixos-rebuild` on amon-sul).
+  New crate-wide test lock (`crates/core/src/testutil.rs`) serializes
+  every real-socket test for the whole test body. Proof: 15×
+  `cargo test -p cococoir-core -- --test-threads=32` all green.
+
 ## Fixed this session (2026-08-23)
 
 - **Dead `storageNeeded` tripwire** (`_contract.nix`): the storage
