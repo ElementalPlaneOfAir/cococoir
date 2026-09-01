@@ -193,13 +193,16 @@ impl State {
         self.shutdown_tx.subscribe()
     }
 
-    fn record_bound(&self, fwd: &Forward, at: DateTime<Utc>) {
+    /// Record a forward as bound, storing the address the socket is
+    /// actually listening on (not the requested one — a `:0` listen
+    /// only resolves to a real port once the kernel assigns it).
+    fn record_bound(&self, fwd: &Forward, actual_listen_addr: String, at: DateTime<Utc>) {
         let mut forwards = self.forwards.write().unwrap();
         forwards.insert(
             forward_key(fwd),
             ForwardStat {
                 proto: fwd.proto,
-                listen_addr: fwd.listen_addr.clone(),
+                listen_addr: actual_listen_addr,
                 dest_addr: fwd.dest_addr.clone(),
                 bound: true,
                 bound_at: Some(at),
@@ -380,7 +383,7 @@ impl Forwarder {
                                 source,
                             }
                         })?;
-                    self.state.record_bound(fwd, Utc::now());
+                    self.state.record_bound(fwd, ln.local_addr().unwrap().to_string(), Utc::now());
                     let state = self.state.clone();
                     let shutdown = shutdown.clone();
                     tracker.spawn(serve_tcp(
@@ -402,7 +405,7 @@ impl Forwarder {
                                 source,
                             }
                         })?;
-                    self.state.record_bound(fwd, Utc::now());
+                    self.state.record_bound(fwd, sock.local_addr().unwrap().to_string(), Utc::now());
                     let state = self.state.clone();
                     let shutdown = shutdown.clone();
                     tracker.spawn(serve_udp(
@@ -474,7 +477,7 @@ impl Forwarder {
                         source,
                     }
                 })?;
-                self.state.record_bound(fwd, Utc::now());
+                self.state.record_bound(fwd, ln.local_addr().unwrap().to_string(), Utc::now());
                 let state = self.state.clone();
                 let shutdown = self.shutdown_rx();
                 let handle = tokio::spawn(serve_tcp(
@@ -501,7 +504,7 @@ impl Forwarder {
                         source,
                     }
                 })?;
-                self.state.record_bound(fwd, Utc::now());
+                self.state.record_bound(fwd, sock.local_addr().unwrap().to_string(), Utc::now());
                 let state = self.state.clone();
                 let shutdown = self.shutdown_rx();
                 let handle = tokio::spawn(serve_udp(
@@ -560,7 +563,6 @@ mod tests {
         ensure_ipv6_local("eth0", "[2a01:4f9:c014:2c44::3]:80");
     }
     use super::*;
-    use crate::testutil::lock_real_sockets;
 
     #[test]
     fn new_rejects_empty_forwards() {
@@ -715,14 +717,25 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
     use tokio::sync::watch;
 
-    async fn pick_free_tcp_port() -> u16 {
-        let ln = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        ln.local_addr().unwrap().port()
-    }
-
-    async fn pick_free_udp_port() -> u16 {
-        let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        s.local_addr().unwrap().port()
+    /// The port a running forward actually listens on, read back from
+    /// the bound address stats record. Tests give the forwarder a `:0`
+    /// listen address and read the kernel-assigned port here — a test
+    /// never predicts or re-binds a port, so no process (sibling test
+    /// or host) can race it.
+    async fn bound_port(f: &Forwarder) -> u16 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let stats = f.stats();
+            if let Some(s) = stats.forwards.iter().find(|s| s.bound) {
+                return s.listen_addr.parse::<SocketAddr>().unwrap().port();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "forward never bound: {:?}",
+                f.stats()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     async fn echo_tcp(ln: TcpListener) {
@@ -819,23 +832,27 @@ mod tests {
         }
     }
 
-    /// Spawn a forwarder in the background; returns the shutdown
-    /// sender and the run task. Tests flip shutdown to stop it.
+    /// Spawn a forwarder in the background; returns the forwarder, the
+    /// shutdown sender, and the run task. Tests flip shutdown to stop it.
     fn spawn_forwarder(
         cfg: Config,
     ) -> (
+        Arc<Forwarder>,
         watch::Sender<bool>,
         tokio::task::JoinHandle<Result<(), RunError>>,
     ) {
         let f = Arc::new(Forwarder::new(cfg).unwrap());
         let (tx, rx) = watch::channel(false);
-        let handle = tokio::spawn(async move { f.run(rx).await });
-        (tx, handle)
+        let handle = tokio::spawn({
+            let f = f.clone();
+            async move { f.run(rx).await }
+        });
+        (f, tx, handle)
     }
 
-    fn forward(proto: Proto, listen_port: u16, dest: &str) -> Forward {
+    fn forward(proto: Proto, listen_addr: &str, dest: &str) -> Forward {
         Forward {
-            listen_addr: format!("127.0.0.1:{listen_port}"),
+            listen_addr: listen_addr.to_string(),
             proto,
             dest_addr: dest.to_string(),
         }
@@ -843,20 +860,19 @@ mod tests {
 
     #[tokio::test]
     async fn run_tcp_forward() {
-        let _sockets = lock_real_sockets().await;
-        let upstream_port = pick_free_tcp_port().await;
-        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
         tokio::spawn(echo_tcp(upstream));
 
-        let fwd_port = pick_free_tcp_port().await;
-        let (tx, handle) = spawn_forwarder(Config {
+        let (f, tx, handle) = spawn_forwarder(Config {
             forwards: vec![forward(
                 Proto::Tcp,
-                fwd_port,
+                "127.0.0.1:0",
                 &format!("127.0.0.1:{upstream_port}"),
             )],
             ..Config::default()
         });
+        let fwd_port = bound_port(&f).await;
 
         let got = round_trip_tcp(fwd_port, b"ping").await;
         assert_eq!(got, b"ping");
@@ -867,7 +883,6 @@ mod tests {
 
     #[tokio::test]
     async fn run_tcp_forward_ipv6_listen() {
-        let _sockets = lock_real_sockets().await;
         // The IPv6 edge vision binds per-customer [::/64 /128]:443 and
         // forwards to the customer's WG IP. This exercises that exact
         // path: an IPv6 loopback listen_addr through the forwarder to
@@ -875,19 +890,19 @@ mod tests {
         // real /128 from the routed /64 in listen_addr; this test
         // proves the bracket-notation IPv6 bind + forward cannot
         // silently regress.
-        let upstream_port = pick_free_tcp_port().await;
-        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
         tokio::spawn(echo_tcp(upstream));
 
-        let fwd_port = pick_free_tcp_port().await;
-        let (tx, handle) = spawn_forwarder(Config {
+        let (f, tx, handle) = spawn_forwarder(Config {
             forwards: vec![Forward {
-                listen_addr: format!("[::1]:{fwd_port}"),
+                listen_addr: "[::1]:0".to_string(),
                 proto: Proto::Tcp,
                 dest_addr: format!("127.0.0.1:{upstream_port}"),
             }],
             ..Config::default()
         });
+        let fwd_port = bound_port(&f).await;
 
         let got = round_trip_tcp_v6(fwd_port, b"ping").await;
         assert_eq!(got, b"ping");
@@ -898,22 +913,21 @@ mod tests {
 
     #[tokio::test]
     async fn run_udp_forward() {
-        let _sockets = lock_real_sockets().await;
         let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let upstream_port = upstream.local_addr().unwrap().port();
         let upstream = Arc::new(upstream);
         tokio::spawn(echo_udp(upstream.clone()));
 
-        let fwd_port = pick_free_udp_port().await;
-        let (tx, handle) = spawn_forwarder(Config {
+        let (f, tx, handle) = spawn_forwarder(Config {
             forwards: vec![forward(
                 Proto::Udp,
-                fwd_port,
+                "127.0.0.1:0",
                 &format!("127.0.0.1:{upstream_port}"),
             )],
             udp_flow_idle: std::time::Duration::from_secs(60),
             ..Config::default()
         });
+        let fwd_port = bound_port(&f).await;
 
         let got = round_trip_udp(fwd_port, b"ping").await;
         assert_eq!(got, b"ping");
@@ -924,10 +938,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_graceful_shutdown_no_inflight() {
-        let _sockets = lock_real_sockets().await;
-        let fwd_port = pick_free_tcp_port().await;
-        let (tx, handle) = spawn_forwarder(Config {
-            forwards: vec![forward(Proto::Tcp, fwd_port, "127.0.0.1:1")],
+        let (_f, tx, handle) = spawn_forwarder(Config {
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:0", "127.0.0.1:1")],
             shutdown_timeout: std::time::Duration::from_secs(2),
             ..Config::default()
         });
@@ -940,7 +952,7 @@ mod tests {
         // Bind to a non-routable TEST-NET address: the bind fails with
         // EADDRNOTAVAIL (transient) and retries until the shutdown
         // signal cancels it. Mirrors Go TestRun_RetryUntilContextCancel.
-        let (tx, handle) = spawn_forwarder(Config {
+        let (_f, tx, handle) = spawn_forwarder(Config {
             forwards: vec![Forward {
                 listen_addr: "192.0.2.1:80".to_string(),
                 proto: Proto::Tcp,
@@ -957,10 +969,8 @@ mod tests {
 
     #[tokio::test]
     async fn stats_records_bound_forward() {
-        let _sockets = lock_real_sockets().await;
-        let fwd_port = pick_free_tcp_port().await;
         let cfg = Config {
-            forwards: vec![forward(Proto::Tcp, fwd_port, "127.0.0.1:1")],
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:0", "127.0.0.1:1")],
             component: "cococoir-edge".to_string(),
             ..Config::default()
         };
@@ -969,36 +979,31 @@ mod tests {
         let run = f.clone();
         let handle = tokio::spawn(async move { run.run(rx).await });
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let stats = f.stats();
-            if stats.forwards.len() == 1 && stats.forwards[0].bound {
-                assert_eq!(stats.component, "cococoir-edge");
-                assert!(stats.forwards[0].bound_at.is_some());
-                assert!(stats.forwards[0].last_error.is_none());
-                assert_eq!(stats.forwards[0].listen_addr, format!("127.0.0.1:{fwd_port}"));
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "never recorded bound: {:?}", f.stats());
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let fwd_port = bound_port(&f).await;
+        let stats = f.stats();
+        assert_eq!(stats.component, "cococoir-edge");
+        assert_eq!(stats.forwards.len(), 1);
+        assert!(stats.forwards[0].bound);
+        assert!(stats.forwards[0].bound_at.is_some());
+        assert!(stats.forwards[0].last_error.is_none());
+        assert_eq!(stats.forwards[0].listen_addr, format!("127.0.0.1:{fwd_port}"));
         tx.send(true).unwrap();
         handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn stats_records_bind_error() {
-        let _sockets = lock_real_sockets().await;
         // Non-transient bind error (port in use) surfaces immediately
-        // as RunError and records last_error in stats.
+        // as RunError and records last_error in stats. The occupied
+        // listener stays bound for the whole test — no released port,
+        // so nothing can race it.
         let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = occupied.local_addr().unwrap();
-        let (tx, handle) = spawn_forwarder(Config {
-            forwards: vec![forward(Proto::Tcp, addr.port(), "127.0.0.1:80")],
+        let (_, _tx, handle) = spawn_forwarder(Config {
+            forwards: vec![forward(Proto::Tcp, &addr.to_string(), "127.0.0.1:80")],
             bind_timeout: std::time::Duration::from_millis(200),
             ..Config::default()
         });
-        let _ = tx;
         let err = handle.await.unwrap().unwrap_err();
         assert!(matches!(
             err,
@@ -1011,17 +1016,15 @@ mod tests {
 
     #[tokio::test]
     async fn stats_tcp_connection_count() {
-        let _sockets = lock_real_sockets().await;
-        let upstream_port = pick_free_tcp_port().await;
-        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
         tokio::spawn(echo_tcp(upstream));
 
-        let fwd_port = pick_free_tcp_port().await;
         let f = Arc::new(
             Forwarder::new(Config {
                 forwards: vec![forward(
                     Proto::Tcp,
-                    fwd_port,
+                    "127.0.0.1:0",
                     &format!("127.0.0.1:{upstream_port}"),
                 )],
                 ..Config::default()
@@ -1032,6 +1035,7 @@ mod tests {
         let run = f.clone();
         let handle = tokio::spawn(async move { run.run(rx).await });
 
+        let fwd_port = bound_port(&f).await;
         let _ = round_trip_tcp(fwd_port, b"ping").await;
         let _ = round_trip_tcp(fwd_port, b"ping").await;
 
@@ -1049,18 +1053,16 @@ mod tests {
 
     #[tokio::test]
     async fn stats_udp_flow_count() {
-        let _sockets = lock_real_sockets().await;
         let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let upstream_port = upstream.local_addr().unwrap().port();
         let upstream = Arc::new(upstream);
         tokio::spawn(echo_udp(upstream.clone()));
 
-        let fwd_port = pick_free_udp_port().await;
         let f = Arc::new(
             Forwarder::new(Config {
                 forwards: vec![forward(
                     Proto::Udp,
-                    fwd_port,
+                    "127.0.0.1:0",
                     &format!("127.0.0.1:{upstream_port}"),
                 )],
                 udp_flow_idle: std::time::Duration::from_millis(100),
@@ -1072,6 +1074,7 @@ mod tests {
         let run = f.clone();
         let handle = tokio::spawn(async move { run.run(rx).await });
 
+        let fwd_port = bound_port(&f).await;
         let _ = round_trip_udp(fwd_port, b"ping").await;
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1088,13 +1091,11 @@ mod tests {
 
     #[tokio::test]
     async fn stats_forwards_slice_is_copy() {
-        let _sockets = lock_real_sockets().await;
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = upstream.local_addr().unwrap();
-        let fwd_port = pick_free_tcp_port().await;
         let f = Arc::new(
             Forwarder::new(Config {
-                forwards: vec![forward(Proto::Tcp, fwd_port, &addr.to_string())],
+                forwards: vec![forward(Proto::Tcp, "127.0.0.1:0", &addr.to_string())],
                 ..Config::default()
             })
             .unwrap(),
@@ -1103,14 +1104,7 @@ mod tests {
         let run = f.clone();
         let handle = tokio::spawn(async move { run.run(rx).await });
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            if !f.stats().forwards.is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(!f.stats().forwards.is_empty(), "never bound");
+        let _ = bound_port(&f).await;
 
         let mut stats = f.stats();
         stats.forwards[0].bound = false;
@@ -1127,7 +1121,7 @@ mod tests {
     #[tokio::test]
     async fn stats_initial_state() {
         let f = Forwarder::new(Config {
-            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:1", "127.0.0.1:1")],
             ..Config::default()
         })
         .unwrap();
@@ -1143,53 +1137,52 @@ mod tests {
 
     #[tokio::test]
     async fn add_forward_binds_and_serves() {
-        let _sockets = lock_real_sockets().await;
-        let upstream_port = pick_free_tcp_port().await;
-        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
         tokio::spawn(echo_tcp(upstream));
 
-        let fwd_port = pick_free_tcp_port().await;
         let f = Arc::new(Forwarder::new(Config {
-            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")], // dummy, not run
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:1", "127.0.0.1:1")], // dummy, not run
             bind_timeout: std::time::Duration::from_secs(5),
             ..Config::default()
         })
         .unwrap());
 
         // The forwarder was never `run()` — add_forward must start a
-        // live listener on its own.
+        // live listener on its own. The `:0` listen lets the kernel
+        // pick the port; stats records the actual bound address.
         let fwd = Forward {
-            listen_addr: format!("127.0.0.1:{fwd_port}"),
+            listen_addr: "127.0.0.1:0".to_string(),
             proto: Proto::Tcp,
             dest_addr: format!("127.0.0.1:{upstream_port}"),
         };
         f.add_forward(&fwd).await.expect("add_forward");
+        let fwd_port = bound_port(&f).await;
 
         let got = round_trip_tcp(fwd_port, b"live-add").await;
         assert_eq!(got, b"live-add");
-        assert!(f.stats().forwards.iter().any(|s| s.bound && s.listen_addr == fwd.listen_addr));
+        assert!(f.stats().forwards.iter().any(|s| s.bound && s.listen_addr == format!("127.0.0.1:{fwd_port}")));
     }
 
     #[tokio::test]
     async fn remove_forward_stops_serving() {
-        let _sockets = lock_real_sockets().await;
-        let upstream_port = pick_free_tcp_port().await;
-        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
         tokio::spawn(echo_tcp(upstream));
 
-        let fwd_port = pick_free_tcp_port().await;
         let f = Arc::new(Forwarder::new(Config {
-            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:1", "127.0.0.1:1")],
             bind_timeout: std::time::Duration::from_secs(5),
             ..Config::default()
         })
         .unwrap());
         let fwd = Forward {
-            listen_addr: format!("127.0.0.1:{fwd_port}"),
+            listen_addr: "127.0.0.1:0".to_string(),
             proto: Proto::Tcp,
             dest_addr: format!("127.0.0.1:{upstream_port}"),
         };
         f.add_forward(&fwd).await.unwrap();
+        let fwd_port = bound_port(&f).await;
         let _ = round_trip_tcp(fwd_port, b"before").await;
 
         assert!(f.remove_forward(&fwd));
@@ -1204,13 +1197,13 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(refused, "listener still accepting after remove_forward");
-        assert!(!f.stats().forwards.iter().any(|s| s.listen_addr == fwd.listen_addr));
+        assert!(!f.stats().forwards.iter().any(|s| s.listen_addr == format!("127.0.0.1:{fwd_port}")));
     }
 
     #[tokio::test]
     async fn remove_forward_returns_false_for_unknown() {
         let f = Arc::new(Forwarder::new(Config {
-            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:1", "127.0.0.1:1")],
             ..Config::default()
         })
         .unwrap());
@@ -1224,25 +1217,24 @@ mod tests {
 
     #[tokio::test]
     async fn add_forward_twice_is_noop() {
-        let _sockets = lock_real_sockets().await;
-        let upstream_port = pick_free_tcp_port().await;
-        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await.unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
         tokio::spawn(echo_tcp(upstream));
 
-        let fwd_port = pick_free_tcp_port().await;
         let f = Arc::new(Forwarder::new(Config {
-            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:1", "127.0.0.1:1")],
             bind_timeout: std::time::Duration::from_secs(5),
             ..Config::default()
         })
         .unwrap());
         let fwd = Forward {
-            listen_addr: format!("127.0.0.1:{fwd_port}"),
+            listen_addr: "127.0.0.1:0".to_string(),
             proto: Proto::Tcp,
             dest_addr: format!("127.0.0.1:{upstream_port}"),
         };
         f.add_forward(&fwd).await.unwrap();
         f.add_forward(&fwd).await.unwrap(); // no-op, must not error
+        let fwd_port = bound_port(&f).await;
         let got = round_trip_tcp(fwd_port, b"twice").await;
         assert_eq!(got, b"twice");
     }
@@ -1256,7 +1248,7 @@ mod tests {
         // address the edge binds: a customer /128 inside the routed
         // /64 that is never added to an interface.
         let f = Arc::new(Forwarder::new(Config {
-            forwards: vec![forward(Proto::Tcp, 1, "127.0.0.1:1")],
+            forwards: vec![forward(Proto::Tcp, "127.0.0.1:1", "127.0.0.1:1")],
             bind_timeout: std::time::Duration::from_secs(5),
             ..Config::default()
         })

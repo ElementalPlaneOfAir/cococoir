@@ -211,7 +211,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::lock_real_sockets;
 
     fn errno(e: &io::Error) -> Option<i32> {
         e.raw_os_error()
@@ -245,7 +244,6 @@ mod tests {
 
     #[tokio::test]
     async fn bind_succeeds_immediately() {
-        let _sockets = lock_real_sockets().await;
         let (_tx, rx) = watch::channel(false);
         let ln = retry_bind_tcp("127.0.0.1:0", Duration::from_secs(1), rx)
             .await
@@ -255,7 +253,6 @@ mod tests {
 
     #[tokio::test]
     async fn bind_ipv6_loopback_works() {
-        let _sockets = lock_real_sockets().await;
         let (_tx, rx) = watch::channel(false);
         let ln = retry_bind_tcp("[::1]:0", Duration::from_secs(1), rx)
             .await
@@ -265,7 +262,6 @@ mod tests {
 
     #[tokio::test]
     async fn bind_succeeds_after_transient_failure() {
-        let _sockets = lock_real_sockets().await;
         let (_tx, rx) = watch::channel(false);
         // Bind twice to the same ephemeral-free address: the second
         // bind fails with AddrInUse (non-transient). Instead, claim a

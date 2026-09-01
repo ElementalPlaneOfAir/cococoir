@@ -11,7 +11,5 @@ pub mod health;
 pub mod logger;
 mod retry;
 mod tcp;
-#[cfg(test)]
-mod testutil;
 mod udp;
 pub mod wg;
