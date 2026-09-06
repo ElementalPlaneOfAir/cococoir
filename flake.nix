@@ -60,18 +60,6 @@
       ];
     };
 
-    # amon-sul — the first real customer box. Imports jellarr + sops-nix
-    # itself (in nixosConfigurations/amon-sul.nix), so only the module
-    # file is listed here.
-    amonSul = inputs.nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      pkgs = vmtestPkgs;
-      specialArgs = { inherit inputs; };
-      modules = [
-        ./nixosConfigurations/amon-sul.nix
-      ];
-    };
-
     # Customer box (home machine, full v2 stack) is rendered by
     # remote-infra/tofu from templates/example123.nix.tftpl — do not
     # hand-edit, and it is NOT exposed as a flake nixosConfiguration:
@@ -116,7 +104,6 @@
       #   # or headless: nix run .#vmtest -- -nographic
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
-      flake.nixosConfigurations.amon-sul = amonSul;
 
       perSystem = {pkgs, self', system, ...}: let
         # Real nixpkgs for dev tooling. flake-parts' perSystem `pkgs`
