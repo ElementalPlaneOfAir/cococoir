@@ -53,6 +53,12 @@ let
   requires = args.requires or [];
   baseDomain = config.cococoir.baseDomain;
   sub = args.conventionalSubdomain or args.name;
+  # Platform-owned bind list (cococoir.network.caddyBindAddresses):
+  # localhost, plus the LAN address when cococoir.network.lanAddress
+  # is set — so LAN devices that resolve a service domain via the
+  # box's dnsmasq (ADR-028) terminate TLS on the box directly. Never
+  # 0.0.0.0: the forwarder owns the tunnel IP.
+  bindAddrs = lib.concatStringsSep " " config.cococoir.network.caddyBindAddresses;
 in
 {
   options.cococoir.services.${args.name} =
@@ -207,11 +213,12 @@ in
               then "tls ${tls.certFile} ${tls.keyFile}\n"
               else "";
           in
-            # Bind Caddy to localhost only. The client forwarder owns the
+            # Bind to cococoir.network.caddyBindAddresses (localhost +
+            # LAN address when set). The client forwarder owns the
             # tunnel IP (10.10.0.<n>:80/443) as the external ingress and
             # forwards to Caddy on 127.0.0.1; a wildcard Caddy bind would
             # collide with it (EADDRINUSE) and silently kill remote access.
-            tlsLine + "bind 127.0.0.1 ::1\n" + (if cfg.public
+            tlsLine + "bind ${bindAddrs}\n" + (if cfg.public
               then "reverse_proxy 127.0.0.1:${toString cfg.port}"
               else ''respond "Forbidden" 403''));
       }

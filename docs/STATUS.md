@@ -143,8 +143,51 @@ The accounts + device pairing flow (proposal in
 verify + reset via transactional SMTP provider) → many devices; box
 shows a 5-word pairing code, owner claims it on `interdim.net`, box gets
 its route + device token (closes ADR-025's deferred gap); account
-deletion unwires, never wipes. Design settled; implementation not
-started.
+deletion unwires, never wipes.
+
+**In progress — T3 (web UI). Landed so far:**
+- **T1 done (Mailer + SMTP secrets):** `Mailer` trait (`send(to,
+  subject, body)` — the SMTP-submission self-host seam), `SmtpMailer`
+  (lettre, STARTTLS+AUTH), `ConsoleMailer` (no-SMTP fallback),
+  `MockMailer`; `SMTP_*`/`MAIL_FROM` optional secrets in
+  `secretspec.toml` (absent → console). Proof: controlplane tests
+  (mail + secret contract) + `nix flake check` all-pass.
+- **T2 done (Account model + sessions + auth + reset):** Redis keys
+  `cococoir:account:{email}` (AccountRecord JSON: username, status
+  pending→active, bcrypt password hash, plan), `cococoir:username:{u}`
+  (SETNX uniqueness), `cococoir:verify|reset:{token}` (24h, GETDEL
+  single-use), `cococoir:session:{token}` (7d). signup/verify/login/
+  logout/reset + no-account-enumeration on reset, rolled-back signup on
+  mail failure. Proof: 56 controlplane tests green against a live Redis
+  (incl. `redis_store_round_trip`, now idempotent across reruns via a
+  cleanup preamble); `nix flake check` all-pass.
+- **T3 done (web UI + the `/api` namespace split) — 2026-09-06.**
+  Pages (momenta+daisyUI: landing, register, login, forgot, reset,
+  verify, message) + handlers + session-cookie
+  (`cococoir_account_session`, HttpOnly+Lax) in
+  `crates/controlplane/src/controlplane/web.rs`. Verify-token GET page
+  deliberately does NOT consume the token (email-prefetch guard); POST
+  `/auth/verify` consumes. **The whole API moved under `/api/` as ONE
+  poem-openapi service** (`UsersApi` + `WireguardApi` + `HealthApi`
+  merged): swagger UI at `/api/docs`, spec at `/api/openapi.json`
+  (`.server("/api")`), grouped by resource —
+  `/api/users/{register,login,verify,reset_password,reset_password/confirm}`
+  (public, session token IS the auth), `/api/wireguard/{new,pubkey}` +
+  collection `/api/wireguard` list + `/api/wireguard/:username` delete
+  (AdminKey), health at `/api/healthz` `/api/readyz` `/api/status`
+  (health is NOT a separate service — two poem-openapi services collide
+  on an internal `/*--poem-rest` catch-all in one route tree, so one
+  service, one doc). Web owns the root (`/`, `/register`, `/login`,
+  `/verify`, `/reset`, `/auth/*`). Operator provisioning moved to
+  `POST /api/wireguard/new`; `edge-forward` L2, the spec-gate tests,
+  and the provision script echo updated. `AppState` (shared deps) moved
+  from web.rs to mod.rs; users-API handlers read it (with a fallback to
+  the process globals) so tests inject mocks without fighting the
+  singletons. Proof: 63 controlplane tests green incl. new
+  `api_users_round_trip` (register→verify→login→reset via the JSON API
+  with injected deps) + `spec_gates_protected_ops_and_leaves_public_ops_open`
+  (asserts the `/api` server base + AdminKey gating + unguarded
+  `/users/*`); full workspace 175 tests green.
 
 Fixed: the control plane's Hetzner DNS client used the deprecated DNS
 Console API (`dns.hetzner.com/api/v1`, `Auth-API-Token`), which Hetzner

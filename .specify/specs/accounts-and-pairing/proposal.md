@@ -107,10 +107,11 @@ against guessing given the 30-minute TTL + per-code single-use.
 - [ ] **L0** Email is behind a `Mailer` trait: `SmtpMailer` (lettre,
       STARTTLS + AUTH) and a `MockMailer` that asserts the message
       (recipient, magic link with the token) in tests. Maps to T1.
-- [ ] **L0** `POST /signup` (AdminKey) keeps working with the same wire
-      shape + hostname (`{username}.{domain}`) — it now creates an
-      owner-less device on the unified model, so the existing `edge-forward`
-      L2 test and the operator path do not break. Maps to T4.
+- [ ] **L0** `POST /signup` (AdminKey) keeps working with the same JSON
+      wire shape + hostname (`{username}.{domain}`), now served at
+      `/api/wireguard/new` — it creates an owner-less device on the
+      unified model, so the existing `edge-forward` L2 test and the
+      operator path do not break. Maps to T4.
 - [ ] **L1** `nix flake check` green: SMTP secrets added to
       `secretspec.toml`, `vmtest-wiring` unchanged, `edge-forward`
       passes. Maps to T1, T4.
@@ -217,6 +218,14 @@ SMTP honest (provider swappable by secret, mockable tests); unifying on
   prints the magic link when SMTP secrets are absent so the L2 test and
   local runs don't need a relay. Magic link =
   `https://{domain}/verify?token=<32-byte random>`, single-use, 24h TTL.
+  **The interface is the self-host seam (user requirement):** `Mailer`
+  is just SMTP submission (RFC 6409, port 587, STARTTLS + AUTH), which
+  is the same wire contract a future self-hosted MTA (postfix/exim)
+  presents — so "self-host later" is a secrets change
+  (SMTP_HOST/PORT/USER/PASS), not an interface change. Provider choice
+  stays a provisioning decision; `MAIL_FROM` and magic links derive from
+  the injected `root_domain`, never a hardcoded domain (so the planned
+  domain migration is config, not code).
 - **DNS moves to per-device.** New `upsert_device`/`remove_device` naming
   (`{device}.{username}.{domain}` + wildcard) alongside the existing
   per-username `upsert_customer`; the reconcile loop enumerates devices.
@@ -229,6 +238,35 @@ SMTP honest (provider swappable by secret, mockable tests); unifying on
   an owner-less device whose hostname is `{username}.{domain}` (wire
   shape unchanged) so the `edge-forward` L2 test and operator flow keep
   working. Pairing is the customer path.
+- **API namespace: all API under `/api/`, web at root (plan amendment,
+  2026-09-06, born from the T3 `/signup` collision, then refined to a
+  resource-grouped surface 2026-09-06).** The web signup page needed
+  `GET /signup`; poem's `Route` matches path-first and returns 405 on
+  method mismatch with no fallthrough, so a GET page and a POST API
+  cannot share a path. Resolution: exclusive namespaces.
+  - **One API service, ONE swagger doc.** The whole API is ONE
+    poem-openapi service — users + wireguard + health merged — mounted
+    under `/api/`, with the swagger UI at `/api/docs` and the spec at
+    `/api/openapi.json` (`.server("/api")` so try-it-out resolves).
+    This is deliberate: two poem-openapi services cannot coexist in one
+    route tree (each registers an internal `/*--poem-rest` catch-all
+    that collides), so health is NOT a separate service — it lives at
+    `/api/healthz` `/api/readyz` `/api/status` with everything else.
+    The web UI at the root (`/`, `/register`, `/login`, `/verify`,
+    `/reset`, `/auth/*`) is server-rendered forms over the same
+    `ControlPlane` account methods.
+  - **Grouped by resource:**
+    - `/api/users/{register,login,verify,reset_password,reset_password/confirm}`
+      — public account lifecycle (session token IS the auth).
+    - `/api/wireguard/{new, pubkey}` + collection `/api/wireguard`
+      (list, AdminKey) and `/api/wireguard/:username` (delete,
+      AdminKey). The operator provisioning path is `POST
+      /api/wireguard/new` (was `POST /signup`); T5 pairing lives at
+      `/api/pair*` and T7 at `/api/device/register`, all under `/api/`.
+  - **T4's "same wire shape"** now means "same JSON request/response at
+    `/api/wireguard/new`"; the `edge-forward` L2 test, the provision
+    script echo, and the mod.rs spec-gate tests moved with it. The web
+    signup page lives at `/register` (not `/signup`).
 - **Billing is out of scope** but the account record carries a
   `status`/`plan` field so Stripe can attach later (PLAN v3). Flagged,
   not built.
@@ -278,12 +316,13 @@ dashboard.
 
 ### T4: Device model + shared allocation + operator /signup compat
 **Depends on:** T2
-**Verification:** `edge-forward` L2 still passes (AdminKey /signup creates
-an owner-less device, same hostname shape); new L0 tests for
-`allocate_device` (route + forward + DNS), list/delete over devices;
-`Customer`→`Device` rename with `owner: Option<String>`.
+**Verification:** `edge-forward` L2 still passes (AdminKey `/signup`
+creates an owner-less device at `/api/wireguard/new`, same hostname shape);
+new L0 tests for `allocate_device` (route + forward + DNS), list/delete
+over devices; `Customer`→`Device` rename with `owner: Option<String>`.
 **Files:** `crates/controlplane/src/controlplane/mod.rs`,
-`crates/controlplane/src/controlplane/dns.rs`
+`crates/controlplane/src/controlplane/dns.rs`,
+`nix/tests/edge/default.nix`
 
 ### T5: Pairing lifecycle API (5-word codes) + device token + rotate
 **Depends on:** T4

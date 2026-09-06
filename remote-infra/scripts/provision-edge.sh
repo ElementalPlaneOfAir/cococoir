@@ -126,7 +126,8 @@ WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || e
 
 echo ""
 echo "==> Edge box up. Its WG public key is served by the control plane"
-echo "    at https://<edge-ip>:8081/pubkey (or returned in each signup)."
+echo "    at https://<edge-ip>:8081/api/wireguard/pubkey (or returned"
+echo "    in each /api/wireguard/new response)."
 echo "  DNS: point interdim.net NS records at:"
 "$TOFU" -chdir="$TOFU_DIR" output -json nameservers | jq -r '.[] | "    \(.)"'
 echo "  Admin key (for the control-plane API):"

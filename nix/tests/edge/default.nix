@@ -16,12 +16,13 @@
 #         -> cocococoir-client forwarder, 10.10.0.2:80 (wg0)
 #           -> 127.0.0.1:80 (python3 -m http.server, Caddy stand-in)
 #
-# The customer is created by a real `POST /signup` on the edge's control
-# plane (bearer admin key), which allocates the /128, adds the peer to the
-# edge's wg0, and binds the forwarder live. The customer box generates its
-# OWN WG keypair (ADR-025: the edge never holds a customer private key),
-# sends only the public key to /signup, and is wired *dynamically* in the
-# test with that key.
+# The customer is created by a real `POST /api/wireguard/new` on the
+# edge's control plane (bearer admin key), which allocates the /128, adds
+# the peer to the edge's wg0, and binds the forwarder live. The customer
+# box generates its OWN WG keypair (ADR-025: the edge never holds a
+# customer private key), sends only the public key to
+# /api/wireguard/new, and is wired *dynamically* in the test with that
+# key.
 #
 # Honest limits (documented, not hidden):
 #   - The curl originates inside the edge VM at a lo-routed /128, not
@@ -241,14 +242,15 @@ in {
       # only the public key to the edge (ADR-025).
       client_pub = client.succeed("wg pubkey < /var/lib/cococoir/wg-private.key").strip()
 
-      # Real signup via the control plane (bearer admin key) with the
-      # client's public key. Allocates the /128, adds the WG peer to wg0,
-      # binds the /128 forward. DNS fails (throwaway) — non-fatal.
+      # Real device-route creation via the control-plane API (bearer
+      # admin key) with the client's public key. Allocates the /128, adds
+      # the WG peer to wg0, binds the /128 forward. DNS fails
+      # (throwaway) — non-fatal.
       signup = edge.succeed(
           "curl -sf -H 'Authorization: Bearer test-admin-key' "
           "-H 'Content-Type: application/json' "
           "-d '{\"username\":\"alice\",\"public_key\":\"" + client_pub + "\"}' "
-          "http://127.0.0.1:8081/signup"
+          "http://127.0.0.1:8081/api/wireguard/new"
       )
       data = json.loads(signup)
       customer_ipv6 = data["customer"]["ipv6"]
@@ -257,12 +259,12 @@ in {
       assert data["customer"]["wg_public_key"] == client_pub, "edge stored the client's public key"
 
       # The edge forwarder must have bound the customer's /128 live
-      # (IPV6_FREEBIND). Prove it via the /status endpoint before we
+      # (IPV6_FREEBIND). Prove it via the /api/status endpoint before we
       # depend on it. (listen_addr is "[<ipv6>]:80" — grep the bracketed
-      # address, not "<ipv6>:80".) The edge serves /status on the same
-      # 8081 handler as the API.
+      # address, not "<ipv6>:80".) The edge serves /api/status on the
+      # same 8081 handler as the API.
       edge.wait_until_succeeds(
-          "curl -sf http://127.0.0.1:8081/status | grep -q '[{}]'".format(customer_ipv6)
+          "curl -sf http://127.0.0.1:8081/api/status | grep -q '[{}]'".format(customer_ipv6)
       )
 
       # The client's wg0 peer was configured from the config's throwaway
@@ -294,12 +296,12 @@ in {
       # handler; the client still has its own on 9090).
       edge.wait_for_open_port(8081)
       client.wait_for_open_port(9090)
-      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:8081/healthz"), "edge /healthz"
+      assert "ok" in edge.succeed("curl -sf http://127.0.0.1:8081/api/healthz"), "edge /api/healthz"
       assert "ok" in client.succeed("curl -sf http://127.0.0.1:9090/healthz"), "client /healthz"
 
-      # /status: the edge shows the bound /128 forward; the client shows
-      # its WG-side forward.
-      edge_status = edge.succeed("curl -sf http://127.0.0.1:8081/status")
+      # /api/status: the edge shows the bound /128 forward; the client
+      # shows its WG-side forward.
+      edge_status = edge.succeed("curl -sf http://127.0.0.1:8081/api/status")
       assert customer_ipv6 in edge_status, "edge status missing /128 forward"
       assert '"bound": true' in edge_status, "edge forward not bound"
       client_status = client.succeed("curl -sf http://127.0.0.1:9090/status")

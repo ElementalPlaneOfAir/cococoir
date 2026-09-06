@@ -51,6 +51,27 @@ let
   # leaves domains certless (auth/cryptpad incident, 2026-08-28).
   caddyOrdersAfterClient = builtins.elem "cococoir-client.service"
     (vmtestConfig.systemd.services.caddy.after or []);
+
+  # ── LAN access plane (ADR-028) ───────────────────────────────
+  # The silent seam: dnsmasq answers service domains with the LAN
+  # address, but if the factory's Caddy bind refactor regresses
+  # (hardcoded `bind 127.0.0.1 ::1` again), LAN traffic hits a
+  # closed port — correct DNS, dead ingress, invisible in DNS-only
+  # checks. Assert BOTH sides render, from the real composition.
+  lanAddress = vmtestConfig.cococoir.network.lanAddress;
+  lanDnsEnabled = vmtestConfig.cococoir.network.dns.enable;
+  dnsmasqAddresses = vmtestConfig.services.dnsmasq.settings.address or [];
+  enabledServiceCfgs = lib.filterAttrs (_: s: s.enable or false)
+    vmtestConfig.cococoir.services;
+  enabledDomains = lib.mapAttrsToList (_: s: s.domain) enabledServiceCfgs;
+  everyDomainAnswered = builtins.all
+    (d: builtins.elem "/${d}/${lanAddress}" dnsmasqAddresses)
+    enabledDomains;
+  canaryAnswered = builtins.elem "/use-application-dns.net/" dnsmasqAddresses;
+  everyVhostBindsLan = builtins.all (d:
+    lib.hasInfix "bind 127.0.0.1 ::1 ${lanAddress}"
+      vmtestConfig.services.caddy.virtualHosts."${d}".extraConfig)
+    enabledDomains;
 in
 # ── dashboard.nix assertions ──────────────────────────────────
 # Every service declared in the customer-edited dashboard.nix must
@@ -100,6 +121,18 @@ assert lib.assertMsg cryptpadPkgHasSSO
 # ── ingress ordering assertion ────────────────────────────────
 assert lib.assertMsg caddyOrdersAfterClient
   "vmtest-wiring: caddy.service does not order after cococoir-client.service — fresh boots race the tunnel and ACME backoff leaves customer domains certless";
+
+# ── LAN access plane assertions (ADR-028) ─────────────────────
+assert lib.assertMsg (lanAddress == "10.0.2.15" && lanDnsEnabled)
+  "vmtest-wiring: vmtest does not set cococoir.network.lanAddress — the LAN DNS plane is not exercised by the suite";
+assert lib.assertMsg everyDomainAnswered
+  "vmtest-wiring: dnsmasq does not answer every enabled service domain with the LAN address (got: ${builtins.toJSON dnsmasqAddresses}) — the LAN DNS enumeration dropped a service";
+assert lib.assertMsg canaryAnswered
+  "vmtest-wiring: dnsmasq does not NXDOMAIN the Firefox DoH canary (use-application-dns.net) — secure-DNS browsers bypass the split-horizon";
+assert lib.assertMsg (vmtestConfig.services.dnsmasq.resolveLocalQueries == false)
+  "vmtest-wiring: dnsmasq resolveLocalQueries is on — the box's own resolver would be hijacked by its LAN DNS layer";
+assert lib.assertMsg everyVhostBindsLan
+  "vmtest-wiring: an enabled vhost does not bind the LAN address — dnsmasq answers with a closed port (correct DNS, dead ingress)";
 {
   vmtest-wiring = pkgs.runCommand "cococoir-vmtest-wiring" {} ''
     cat > $out <<EOF
@@ -107,6 +140,7 @@ assert lib.assertMsg caddyOrdersAfterClient
       jellyfin: OIDC wired (plugins + branding), jellarr boot-activated
       cryptpad: OIDC wired (SSO enabled + enforced, dex client registered, secret oneshot boot-activated, CRYPTPAD_CONFIG env set, SSO plugin bundled in package)
       ingress: caddy.service orders after cococoir-client.service (ACME over the tunnel)
+      LAN DNS: dnsmasq answers every enabled service domain with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
     EOF
   '';
 }

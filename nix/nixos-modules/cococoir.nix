@@ -10,6 +10,8 @@
 #     read by the service contract factory's Caddy vhost builder
 #   - cococoir.baseDomain — apex domain; service domains derive
 #     from it so customer configs stay small
+#   - cococoir.network — LAN access plane: lanAddress + dnsmasq +
+#     the Caddy bind address list (ADR-028)
 #   - cococoir.secrets — sops-nix secret inventory (Phase 2)
 #   - cococoir.storage.* — btrfs pool + subvolumes (ADR-023)
 #   - cococoir.services.<name> — 4-option (or 3-option for
@@ -20,6 +22,7 @@
   imports = [
     ./tls.nix
     ./base-domain.nix
+    ./network.nix
     ./secrets.nix
     ./storage/btrfs.nix
     ./client.nix

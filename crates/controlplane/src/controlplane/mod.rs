@@ -5,21 +5,33 @@
 //! dashboard. The dashboard manages household users on one server
 //! (sqlite); this service manages *customers* on the edge (Redis).
 //!
-//! What it does (demo slice):
-//!   - `POST /signup` — allocate the next `/128` from the box's
-//!     routed subnet, store the customer in Redis, add the customer's
-//!     WG peer + live forwards, and return the route + the edge's public
-//!     key. The customer's box dials out to the edge with that key.
-//!     The client supplies its own WG public key (ADR-025: the edge
-//!     never holds a customer private key); the call is idempotent and
-//!     rotates the peer key on an existing route.
-//!   - `GET /customers` — list.
-//!   - `DELETE /customers/:id` — remove (disruption-free: the control
-//!     plane drops the WG peer via `wg set`, no restart).
-//!   - `GET /pubkey` — the edge's own WG public key (self-generated +
-//!     persisted in Redis on first boot, so it is stable across
-//!     restarts). Customer configs pull this instead of baking a
-//!     static key.
+//! HTTP surface — one binary, three namespaces:
+//!   - **The API at `/api/`** (ONE swagger doc at `/api/docs`, spec at
+//!     `/api/openapi.json`, server base `/api`):
+//!     - `POST /api/wireguard/new` — allocate the next `/128` from the
+//!       box's routed subnet, store the customer in Redis, add the
+//!       customer's WG peer + live forwards, and return the route + the
+//!       edge's public key. The customer's box dials out to the edge
+//!       with that key. The client supplies its own WG public key
+//!       (ADR-025: the edge never holds a customer private key); the
+//!       call is idempotent and rotates the peer key on an existing
+//!       route.
+//!     - `GET /api/wireguard` / `DELETE /api/wireguard/:username` —
+//!       list / remove (disruption-free: the control plane drops the WG
+//!       peer via `wg set`, no restart).
+//!     - `GET /api/wireguard/pubkey` — the edge's own WG public key
+//!       (self-generated + persisted in Redis on first boot, so it is
+//!       stable across restarts). Customer configs pull this instead of
+//!       baking a static key.
+//!     - `POST /api/users/{register,login,verify,reset_password,reset_password/confirm}`
+//!       — the account lifecycle (T2/T3): email signup + magic-link
+//!       verify, session login, password reset.
+//!     - `GET /api/healthz` `/api/readyz` `/api/status` — the forwarder
+//!       health endpoints, part of the same service (see [`app`] for why
+//!       health is not a second service).
+//!   - **The web UI at the root** (`/`, `/register`, `/login`, `/verify`,
+//!     `/reset`, `/auth/*`) — server-rendered forms driving the same
+//!     `ControlPlane` account methods as the `/api/users` endpoints.
 //!
 //! Storage is Redis. The state (customers, allocations, keys) is
 //! recoverable — a lost allocation is rebuilt from the edge's WG
@@ -31,10 +43,14 @@
 //! Lua-free single key — INCR is atomic in Redis). Host 1 is the
 //! edge's own primary `/128`; customers start at host 2.
 
+pub mod account;
 pub mod auth;
 pub mod dns;
+pub mod mail;
 pub mod secret;
+pub mod web;
 pub mod wg;
+pub use account::{AccountError, AccountRecord, AccountStatus};
 pub use auth::{verify_token, AdminKey};
 pub use dns::{
     customer_hostname, get_dns_api, reconcile_pass, remove_customer, resolve_aaaa,
@@ -48,7 +64,8 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use cococoir_core::health::{HealthApi, StatusFunc};
-use poem::Route;
+use poem::web::Data;
+use poem::{Endpoint, EndpointExt, Response, Route};
 use poem_openapi::param::Path;
 use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, Object, OpenApi, OpenApiService};
@@ -274,6 +291,8 @@ pub enum ControlPlaneError {
     InvalidPubkey(String),
     #[error("username already taken: {0}")]
     Duplicate(String),
+    #[error("account: {0}")]
+    Account(#[from] AccountError),
 }
 
 /// The control plane. Holds the Redis connection, the subnets (edge
@@ -285,13 +304,13 @@ pub enum ControlPlaneError {
 /// only as `&'static ControlPlane` — `Copy`, not cloned. See
 /// `writing/human/lifetimes_in_rust.md`.
 pub struct ControlPlane {
-    client: redis::Client,
+    pub(crate) client: redis::Client,
     subnet: Subnet64,
     wg_subnet: WgSubnet,
     /// The domain customer hostnames live under. Injected (not read
     /// from the global [`secret::SECRETS`]) so tests can pass any
     /// domain without touching the boot-only secrets LazyLock.
-    root_domain: &'static str,
+    pub(crate) root_domain: &'static str,
     wg: &'static dyn WgClient,
     dns: &'static dyn DnsApiClient,
 }
@@ -340,7 +359,7 @@ impl ControlPlane {
         })
     }
 
-    async fn conn(&self) -> Result<redis::aio::Connection, ControlPlaneError> {
+    pub(crate) async fn conn(&self) -> Result<redis::aio::Connection, ControlPlaneError> {
         Ok(self.client.get_async_connection().await?)
     }
 
@@ -759,6 +778,9 @@ pub async fn init_globals(
     // resolves the secrets + builds the DNS client now.
     let _ = secret::root_domain();
     let _ = get_dns_api();
+    // The mailer is process config too: a configured-but-broken SMTP
+    // relay fails boot, never a silent fallback to the console.
+    mail::init_mailer().expect("mailer init: configured SMTP relay must build");
     FORWARDER
         .get_or_try_init(|| async {
             Forwarder::new_live(Config {
@@ -786,35 +808,278 @@ pub async fn init_globals(
 
 /// The HTTP API is a poem-openapi service (see `health.rs` for the
 /// pattern): operations are `#[oai]` methods, so the OpenAPI v3 spec is
-/// derived from the code ("compiles ⟹ spec-correct"). The handlers read
-/// the process singletons directly — no `AppState`, they are `'static`.
-/// Every operation except `/pubkey` takes an [`AdminKey`] arg, so the
-/// spec declares the bearer scheme and the Authorize button in swagger
-/// works.
+/// derived from the code ("compiles ⟹ spec-correct"). The whole API is
+/// mounted under `/api/` — ONE service (users + wireguard merged), ONE
+/// swagger doc at `/api/docs`, the spec at `/api/openapi.json` with the
+/// server base `/api` — so the API namespace is entirely separate from
+/// the web UI at the root. The wireguard handlers read the process
+/// singletons directly (they only run with the globals set, i.e.
+/// production). The users handlers read the injected [`AppState`]
+/// (falling back to the process globals) so tests can run the full
+/// account round trip without fighting the singletons. Every wireguard
+/// operation except `/wireguard/pubkey` takes an [`AdminKey`] arg, so
+/// the spec declares the bearer scheme and the Authorize button in
+/// swagger works.
 
-/// The signup request body: the username that becomes the customer's
-/// DNS hostname, plus the customer's WireGuard public key (the client
-/// generates + holds the private key; the edge stores only the public
-/// key — ADR-025).
+/// The injected dependencies shared by the web UI (root) and the users
+/// API handlers (`/api/users/*`). `ControlPlane` is deliberately not
+/// `Clone` (it's a process-lifetime singleton), so the state carries
+/// `&'static` references instead of the value. `None` only when the
+/// globals aren't initialized — the handlers fail loudly (500) rather
+/// than silently if such a route is ever hit.
+#[derive(Clone, Copy)]
+pub struct AppState {
+    pub cp: Option<&'static ControlPlane>,
+    pub mailer: Option<&'static dyn mail::Mailer>,
+}
+
+/// The API's control plane: the injected one, else the process global.
+fn api_cp(state: &AppState) -> Option<&'static ControlPlane> {
+    state.cp.or_else(|| CONTROL_PLANE.get())
+}
+
+/// The API's mailer: the injected one, else the process mailer.
+fn api_mailer(state: &AppState) -> Option<&'static dyn mail::Mailer> {
+    state.mailer.or_else(mail::mailer_opt)
+}
+
+// ── /api/users/* — shared bodies + error mapping ────────────────
+
+/// A human-readable status message (the users endpoints respond with
+/// these).
+#[derive(Debug, Serialize, Deserialize, Object)]
+pub struct MessageBody {
+    pub message: String,
+}
+
+/// A session token, returned by `POST /api/users/login`.
+#[derive(Debug, Serialize, Deserialize, Object)]
+pub struct SessionToken {
+    pub token: String,
+}
+
+/// Status + body for the `/api/users/*` endpoints.
+#[derive(ApiResponse)]
+enum UsersApiResponse {
+    #[oai(status = "200")]
+    Ok(Json<MessageBody>),
+    #[oai(status = "201")]
+    Created(Json<MessageBody>),
+    #[oai(status = "200")]
+    Session(Json<SessionToken>),
+    #[oai(status = "400")]
+    BadRequest(Json<String>),
+    #[oai(status = "401")]
+    Unauthorized(Json<String>),
+    #[oai(status = "403")]
+    Forbidden(Json<String>),
+    #[oai(status = "404")]
+    NotFound(Json<String>),
+    #[oai(status = "409")]
+    Conflict(Json<String>),
+    #[oai(status = "500")]
+    Internal(Json<String>),
+}
+
+/// Map an account error to its users-API response. Login failures stay
+/// generic (no account enumeration), matching the web layer's
+/// `account_error_message`.
+fn users_api_error(err: AccountError) -> UsersApiResponse {
+    use crate::controlplane::web::account_error_message;
+    match err {
+        AccountError::InvalidEmail(_)
+        | AccountError::InvalidUsername(_)
+        | AccountError::InvalidPassword(_) => {
+            UsersApiResponse::BadRequest(Json(account_error_message(&err)))
+        }
+        AccountError::DuplicateEmail(_) | AccountError::DuplicateUsername(_) => {
+            UsersApiResponse::Conflict(Json(account_error_message(&err)))
+        }
+        AccountError::NotFound => {
+            UsersApiResponse::NotFound(Json("account not found".to_string()))
+        }
+        AccountError::InvalidCredentials => {
+            UsersApiResponse::Unauthorized(Json("invalid email or password".to_string()))
+        }
+        AccountError::NotVerified(_) => {
+            UsersApiResponse::Forbidden(Json(account_error_message(&err)))
+        }
+        AccountError::InvalidToken => {
+            UsersApiResponse::BadRequest(Json("invalid or expired token".to_string()))
+        }
+        AccountError::Corrupt(_) | AccountError::Redis(_) => {
+            UsersApiResponse::Internal(Json("internal error".to_string()))
+        }
+        AccountError::Mail(_) => {
+            UsersApiResponse::Internal(Json("we couldn't send that email right now".to_string()))
+        }
+    }
+}
+
+// ── /api/users/* — the account lifecycle ─────────────────────────
+
+#[derive(Debug, Deserialize, Object)]
+pub struct RegisterRequest {
+    pub email: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize, Object)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize, Object)]
+pub struct VerifyRequest {
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize, Object)]
+pub struct ResetPasswordRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize, Object)]
+pub struct ResetPasswordConfirmRequest {
+    pub token: String,
+    pub password: String,
+}
+
+/// The account lifecycle API. Public — no bearer auth, the session token
+/// IS the auth. Thin JSON wrappers over the `ControlPlane` account
+/// methods (T2); the web UI forms at the root drive the same methods.
+struct UsersApi;
+
+#[OpenApi]
+impl UsersApi {
+    /// Create an account (pending) and email a single-use verification
+    /// link. Same semantics as the web `/register` form.
+    #[oai(path = "/users/register", method = "post")]
+    async fn register(
+        &self,
+        Data(state): Data<&AppState>,
+        Json(req): Json<RegisterRequest>,
+    ) -> UsersApiResponse {
+        let Some(cp) = api_cp(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        let Some(mailer) = api_mailer(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        match cp
+            .account_signup(&req.email, &req.username, &req.password, mailer)
+            .await
+        {
+            Ok(()) => UsersApiResponse::Created(Json(MessageBody {
+                message: format!("a verification link was sent to {}", req.email),
+            })),
+            Err(err) => users_api_error(err),
+        }
+    }
+
+    /// Log in with email + password. Returns the session token (the web
+    /// UI sets the same token as an HttpOnly cookie instead).
+    #[oai(path = "/users/login", method = "post")]
+    async fn login(
+        &self,
+        Data(state): Data<&AppState>,
+        Json(req): Json<LoginRequest>,
+    ) -> UsersApiResponse {
+        let Some(cp) = api_cp(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        match cp.account_login(&req.email, &req.password).await {
+            Ok(token) => UsersApiResponse::Session(Json(SessionToken { token })),
+            Err(err) => users_api_error(err),
+        }
+    }
+
+    /// Confirm the email with the single-use magic-link token. The web
+    /// UI renders the link's confirm form and consumes the token the
+    /// same way.
+    #[oai(path = "/users/verify", method = "post")]
+    async fn verify(
+        &self,
+        Data(state): Data<&AppState>,
+        Json(req): Json<VerifyRequest>,
+    ) -> UsersApiResponse {
+        let Some(cp) = api_cp(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        match cp.account_verify(&req.token).await {
+            Ok(()) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "email verified".to_string(),
+            })),
+            Err(err) => users_api_error(err),
+        }
+    }
+
+    /// Request a password-reset link. Always succeeds for a well-formed
+    /// email — no account enumeration — matching the web `/forgot` form.
+    #[oai(path = "/users/reset_password", method = "post")]
+    async fn reset_password(
+        &self,
+        Data(state): Data<&AppState>,
+        Json(req): Json<ResetPasswordRequest>,
+    ) -> UsersApiResponse {
+        let Some(cp) = api_cp(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        let Some(mailer) = api_mailer(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        let _ = cp.request_password_reset(&req.email, mailer).await;
+        UsersApiResponse::Ok(Json(MessageBody {
+            message: "if that email has an account, a reset link is on its way".to_string(),
+        }))
+    }
+
+    /// Apply a new password with the single-use reset token.
+    #[oai(path = "/users/reset_password/confirm", method = "post")]
+    async fn reset_password_confirm(
+        &self,
+        Data(state): Data<&AppState>,
+        Json(req): Json<ResetPasswordConfirmRequest>,
+    ) -> UsersApiResponse {
+        let Some(cp) = api_cp(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        match cp.reset_password(&req.token, &req.password).await {
+            Ok(()) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "password updated".to_string(),
+            })),
+            Err(err) => users_api_error(err),
+        }
+    }
+}
+
+// ── /api/wireguard/* — device routes + the edge's WG identity ─────
+
+/// The device-route request body: the username that becomes the
+/// customer's DNS hostname, plus the customer's WireGuard public key
+/// (the client generates + holds the private key; the edge stores only
+/// the public key — ADR-025).
 #[derive(Debug, Deserialize, Object)]
 pub struct SignupRequest {
     pub username: String,
     pub public_key: String,
 }
 
-/// `/pubkey` response: the edge's own WG public key.
+/// `/api/wireguard/pubkey` response: the edge's own WG public key.
 #[derive(Debug, Serialize, Deserialize, Object)]
 pub struct PubkeyResponse {
     pub public_key: String,
 }
 
-/// Status + body for `POST /signup`.
+/// Status + body for `POST /api/wireguard/new`.
 #[derive(ApiResponse)]
 enum SignupApiResponse {
-    /// Customer created.
+    /// Device route created.
     #[oai(status = "201")]
     Created(Json<SignupResponse>),
-    /// Customer already existed (idempotent no-op or key rotation).
+    /// Device route already existed (idempotent no-op or key rotation).
     #[oai(status = "200")]
     Ok(Json<SignupResponse>),
     /// Invalid username or public key.
@@ -828,7 +1093,7 @@ enum SignupApiResponse {
     Internal(Json<String>),
 }
 
-/// Status + body for `GET /customers`.
+/// Status + body for `GET /api/wireguard`.
 #[derive(ApiResponse)]
 enum ListApiResponse {
     #[oai(status = "200")]
@@ -837,7 +1102,7 @@ enum ListApiResponse {
     Internal(Json<String>),
 }
 
-/// Status + body for `DELETE /customers/:username`.
+/// Status + body for `DELETE /api/wireguard/:username`.
 #[derive(ApiResponse)]
 enum DeleteApiResponse {
     #[oai(status = "204")]
@@ -848,7 +1113,7 @@ enum DeleteApiResponse {
     Internal(Json<String>),
 }
 
-/// Status + body for `GET /pubkey`.
+/// Status + body for `GET /api/wireguard/pubkey`.
 #[derive(ApiResponse)]
 enum PubkeyApiResponse {
     #[oai(status = "200")]
@@ -857,16 +1122,17 @@ enum PubkeyApiResponse {
     Internal(Json<String>),
 }
 
-/// The control-plane API. Unit struct — reads the process globals.
-struct ControlPlaneApi;
+/// The wireguard API — device routes + the edge's own WG identity. Unit
+/// struct — reads the process globals.
+struct WireguardApi;
 
 #[OpenApi]
-impl ControlPlaneApi {
-    /// Create a customer (allocate a /128, forwards, DNS) or, if the
+impl WireguardApi {
+    /// Create a device route (allocate a /128, forwards, DNS) or, if the
     /// username already exists, re-ensure / rotate the WG peer on the
     /// existing route. The client supplies its own WG public key; the
     /// edge never sees the private key.
-    #[oai(path = "/signup", method = "post")]
+    #[oai(path = "/wireguard/new", method = "post")]
     async fn signup(
         &self,
         _auth: AdminKey,
@@ -879,38 +1145,39 @@ impl ControlPlaneApi {
             Ok(SignupOutcome::Created(resp)) => SignupApiResponse::Created(Json(resp)),
             Ok(SignupOutcome::Existing(resp)) => SignupApiResponse::Ok(Json(resp)),
             Err(ControlPlaneError::InvalidUsername(username)) => {
-                tracing::warn!(username = %username, "signup: invalid username");
+                tracing::warn!(username = %username, "wireguard/new: invalid username");
                 SignupApiResponse::BadRequest(Json("invalid username".to_string()))
             }
             Err(ControlPlaneError::InvalidPubkey(_)) => {
-                tracing::warn!("signup: invalid wireguard public key");
+                tracing::warn!("wireguard/new: invalid wireguard public key");
                 SignupApiResponse::BadRequest(Json("invalid wireguard public key".to_string()))
             }
             Err(ControlPlaneError::Duplicate(username)) => {
-                tracing::warn!(username = %username, "signup: username taken");
+                tracing::warn!(username = %username, "wireguard/new: username taken");
                 SignupApiResponse::Conflict(Json("username already taken".to_string()))
             }
             Err(err) => {
-                tracing::error!(error = %err, "signup failed");
+                tracing::error!(error = %err, "wireguard/new failed");
                 SignupApiResponse::Internal(Json("internal error".to_string()))
             }
         }
     }
 
-    /// List customers in allocation order.
-    #[oai(path = "/customers", method = "get")]
+    /// List device routes in allocation order.
+    #[oai(path = "/wireguard", method = "get")]
     async fn list_customers(&self, _auth: AdminKey) -> ListApiResponse {
         match control_plane().list().await {
             Ok(customers) => ListApiResponse::Ok(Json(customers)),
             Err(err) => {
-                tracing::error!(error = %err, "list customers failed");
+                tracing::error!(error = %err, "list device routes failed");
                 ListApiResponse::Internal(Json("internal error".to_string()))
             }
         }
     }
 
-    /// Delete a customer (disruption-free: drops the WG peer via wg set).
-    #[oai(path = "/customers/:username", method = "delete")]
+    /// Delete a device route (disruption-free: drops the WG peer via wg
+    /// set).
+    #[oai(path = "/wireguard/:username", method = "delete")]
     async fn delete_customer(
         &self,
         _auth: AdminKey,
@@ -922,7 +1189,7 @@ impl ControlPlaneApi {
                 DeleteApiResponse::NotFound(Json("customer not found".to_string()))
             }
             Err(err) => {
-                tracing::error!(error = %err, username = %username, "delete customer failed");
+                tracing::error!(error = %err, username = %username, "delete device route failed");
                 DeleteApiResponse::Internal(Json("internal error".to_string()))
             }
         }
@@ -930,7 +1197,7 @@ impl ControlPlaneApi {
 
     /// The edge's own WG public key. Open (no auth) — it is a public
     /// key, and a convenient debug check.
-    #[oai(path = "/pubkey", method = "get")]
+    #[oai(path = "/wireguard/pubkey", method = "get")]
     async fn edge_pubkey(&self) -> PubkeyApiResponse {
         match control_plane().edge_public_key().await {
             Ok(pubkey) => PubkeyApiResponse::Ok(Json(PubkeyResponse { public_key: pubkey })),
@@ -942,28 +1209,53 @@ impl ControlPlaneApi {
     }
 }
 
-/// Build the control-plane HTTP app: the OpenAPI service (the control
-/// plane API merged with the health endpoints `/healthz` `/readyz`
-/// `/status`), its bundled swagger UI at `/docs`, and the spec at
-/// `/openapi.json`. The edge serves this one handler on its API port —
-/// health and API checks come from the same listener. Stateless —
-/// handlers read the process globals (the status func reads the
-/// forwarder's live state lazily, per request).
-pub fn app() -> Route {
+/// Build the control-plane HTTP app: the API under `/api/` (the users +
+/// wireguard + health operations merged into ONE OpenAPI service,
+/// swagger UI at `/api/docs`, spec at `/api/openapi.json`, server base
+/// `/api`) and the customer-facing web UI at the root (`/`, `/register`,
+/// `/login`, `/verify`, …). The edge serves this one handler on its API
+/// port. Stateless — handlers read the process globals lazily, per
+/// request.
+///
+/// Health is part of the API service, not a separate one: two
+/// poem-openapi services cannot coexist in one route tree (each
+/// registers an internal `/*--poem-rest` catch-all that collides), so
+/// `/healthz` `/readyz` `/status` live at `/api/*` with everything else
+/// — one listener, one swagger doc.
+pub fn app() -> impl Endpoint<Output = Response> {
     let status_func: StatusFunc = Arc::new(move || {
         serde_json::to_value(forwarder().stats()).unwrap_or(serde_json::Value::Null)
     });
+    let cp = CONTROL_PLANE.get();
+    let mailer = mail::mailer_opt();
+    app_with(status_func, cp, mailer)
+}
+
+/// Like [`app`] but with injectable deps — used by the web + API tests,
+/// which must not fight `redis_store_round_trip` over the process
+/// singletons. The web + users-api handlers mount with `None` deps when
+/// the process globals aren't initialized; they then fail loudly (500)
+/// if hit, which only happens when a test touches such a route without
+/// injecting deps.
+pub fn app_with(
+    status_func: StatusFunc,
+    cp: Option<&'static ControlPlane>,
+    mailer: Option<&'static dyn mail::Mailer>,
+) -> impl Endpoint<Output = Response> {
     let service = OpenApiService::new(
-        (ControlPlaneApi, HealthApi::new(status_func)),
-        "cococoir edge",
+        (UsersApi, WireguardApi, HealthApi::new(status_func)),
+        "cococoir edge API",
         "0.1.0",
-    );
+    )
+    .server("/api");
     let ui = service.swagger_ui();
     let spec = service.spec_endpoint();
     Route::new()
-        .nest("/", service)
-        .nest("/docs", ui)
-        .nest("/openapi.json", spec)
+        .nest("/api", service)
+        .nest("/api/docs", ui)
+        .nest("/api/openapi.json", spec)
+        .nest("/", web::web_routes())
+        .data(AppState { cp, mailer })
 }
 
 #[cfg(test)]
@@ -1085,6 +1377,24 @@ mod tests {
         cp.install_edge_identity()
             .await
             .expect("install edge identity");
+
+        // Robustness against a reused Redis: a previous run (or aborted
+        // one) leaves customers + allocation counters behind, which
+        // breaks the "fresh store" assertions below. Clean the keys this
+        // test owns so it passes on every run, not just a pristine store.
+        for leftover in ["alice", "bob", "carol"] {
+            let _ = cp.delete(leftover).await;
+        }
+        let mut conn = cp.conn().await.unwrap();
+        let _: () = conn.del(ALLOC_COUNTER).await.unwrap();
+        let _: () = conn.del(WG_ALLOC_COUNTER).await.unwrap();
+        let _: () = conn.del(CUST_INDEX).await.unwrap();
+        // The cleanup above recorded mock WG/DNS calls; reset the
+        // counters so the assertions below count only this test's
+        // activity, not the leftover teardown.
+        wg.removed.lock().unwrap().clear();
+        dns.removes.lock().unwrap().clear();
+        dns.upserts.lock().unwrap().clear();
 
         let first_pub = generate_wg_keypair().0;
         let second_pub = generate_wg_keypair().0;
@@ -1219,19 +1529,22 @@ mod tests {
     // the process globals: auth fails during request extraction (before
     // the handler body runs), and the spec is derived from the code. So
     // these run against the real `app()` in any environment. The
-    // /pubkey *handler* needs the control-plane global + a live store
-    // (covered by `redis_store_round_trip`), so here we assert only the
-    // spec-level fact that /pubkey is unguarded.
+    // /wireguard/* *handlers* need the control-plane global + a live
+    // store (covered by `redis_store_round_trip`), so here we assert
+    // only the spec-level facts about them. The /api/users/* handlers
+    // read the injected `AppState` (not the globals), so their full
+    // round trip is covered by `api_users_round_trip` when REDIS_URL is
+    // set.
 
     use poem::http::StatusCode;
     use poem::test::TestClient;
 
-    /// POST a signup without a bearer header → 401 (auth fails at
+    /// POST a device route without a bearer header → 401 (auth fails at
     /// extraction, before the handler reads any global).
     #[tokio::test]
-    async fn signup_requires_auth() {
+    async fn wireguard_new_requires_auth() {
         let resp = TestClient::new(app())
-            .post("/signup")
+            .post("/api/wireguard/new")
             .body_json(&serde_json::json!({ "username": "carol" }))
             .send()
             .await;
@@ -1239,15 +1552,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_customers_requires_auth() {
-        let resp = TestClient::new(app()).get("/customers").send().await;
+    async fn wireguard_list_requires_auth() {
+        let resp = TestClient::new(app())
+            .get("/api/wireguard")
+            .send()
+            .await;
         assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn delete_customer_requires_auth() {
+    async fn wireguard_delete_requires_auth() {
         let resp = TestClient::new(app())
-            .delete("/customers/carol")
+            .delete("/api/wireguard/carol")
             .send()
             .await;
         assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
@@ -1264,9 +1580,9 @@ mod tests {
     /// end-to-end "right key → 200, wrong key → 401" is proven by the
     /// L2 live test once the box holds edge.env.
     #[tokio::test]
-    async fn signup_rejects_missing_scheme() {
+    async fn wireguard_new_rejects_missing_scheme() {
         let resp = TestClient::new(app())
-            .post("/signup")
+            .post("/api/wireguard/new")
             .body_json(&serde_json::json!({ "username": "carol" }))
             .header("Authorization", "carol")
             .send()
@@ -1277,14 +1593,18 @@ mod tests {
     }
 
     /// The OpenAPI spec is derived from the code: every protected
-    /// operation must carry the bearer security requirement, and
-    /// /pubkey must be unguarded (its operation declares no security).
+    /// wireguard operation must carry the bearer security requirement,
+    /// `/wireguard/pubkey` and the `/users/*` ops must be unguarded, and
+    /// the spec declares the `/api` server base so try-it-out resolves.
     /// This is the tripwire that keeps the auth gate wired — a future
     /// edit that drops `_auth: AdminKey` from a handler silently opens
     /// that operation, and this test catches it.
     #[tokio::test]
-    async fn spec_gates_protected_ops_and_leaves_pubkey_open() {
-        let resp = TestClient::new(app()).get("/openapi.json").send().await;
+    async fn spec_gates_protected_ops_and_leaves_public_ops_open() {
+        let resp = TestClient::new(app())
+            .get("/api/openapi.json")
+            .send()
+            .await;
         assert_eq!(resp.0.status(), StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
         let spec: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -1300,11 +1620,11 @@ mod tests {
             "spec declares the AdminKey security scheme"
         );
 
-        // signup/list/delete require the scheme.
+        // wireguard new/list/delete require the scheme.
         for (path, methods) in [
-            ("/signup", &["post"][..]),
-            ("/customers", &["get"][..]),
-            ("/customers/{username}", &["delete"][..]),
+            ("/wireguard/new", &["post"][..]),
+            ("/wireguard", &["get"][..]),
+            ("/wireguard/{username}", &["delete"][..]),
         ] {
             let method = methods[0];
             let op = paths
@@ -1318,36 +1638,186 @@ mod tests {
             );
         }
 
-        // /pubkey is unguarded (no security requirement).
-        let pubkey = paths
-            .get("/pubkey")
-            .expect("/pubkey in spec")
-            .get("get")
-            .expect("get op in /pubkey");
-        assert!(
-            pubkey.get("security").is_none(),
-            "/pubkey declares NO security requirement"
-        );
+        // /wireguard/pubkey and the /users/* ops are unguarded (no
+        // security requirement — pubkey is a public key, users are the
+        // public account lifecycle whose session token IS the auth).
+        for (path, method) in [
+            ("/wireguard/pubkey", "get"),
+            ("/users/register", "post"),
+            ("/users/login", "post"),
+            ("/users/verify", "post"),
+            ("/users/reset_password", "post"),
+            ("/users/reset_password/confirm", "post"),
+        ] {
+            let op = paths
+                .get(path)
+                .unwrap_or_else(|| panic!("{path} in spec"))
+                .get(method)
+                .unwrap_or_else(|| panic!("{method} op in {path}"));
+            assert!(
+                op.get("security").is_none(),
+                "{path} {method} declares NO security requirement"
+            );
+        }
+
+        // The spec declares the /api server base (poem-openapi's
+        // `.server("/api")`), so swagger try-it-out hits the real paths.
+        let servers = spec.get("servers").expect("servers present");
+        let urls: Vec<&str> = servers
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.get("url").and_then(|u| u.as_str()))
+            .collect();
+        assert!(urls.contains(&"/api"), "spec server base is /api (got {urls:?})");
     }
 
-    /// The swagger UI is served at /docs (mirroring health.rs).
+    /// The swagger UI is served at /api/docs (one doc for the whole API).
     #[tokio::test]
-    async fn swagger_ui_served_at_docs() {
-        let resp = TestClient::new(app()).get("/docs").send().await;
+    async fn swagger_ui_served_at_api_docs() {
+        let resp = TestClient::new(app())
+            .get("/api/docs")
+            .send()
+            .await;
         assert_eq!(resp.0.status(), StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("swagger"), "swagger UI served at /docs");
+        assert!(body.contains("swagger"), "swagger UI served at /api/docs");
     }
 
-    /// The edge serves health from the same handler as the API: /healthz
-    /// is reachable on app() (no separate health listener). /healthz
+    /// The edge serves health from the same handler as the API: /api/healthz
+    /// is reachable on app() (no separate health listener). /api/healthz
     /// always returns ok\n without touching the status func, so it works
     /// even when the process globals aren't initialized.
     #[tokio::test]
     async fn health_merged_into_api_handler() {
-        let resp = TestClient::new(app()).get("/healthz").send().await;
+        let resp = TestClient::new(app())
+            .get("/api/healthz")
+            .send()
+            .await;
         assert_eq!(resp.0.status(), StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
         assert_eq!(body, "ok\n");
+    }
+
+    /// Full `/api/users/*` round trip against a real Redis with injected
+    /// deps (no process globals — the users handlers read the injected
+    /// `AppState`): register → the mock mailer captures the magic link →
+    /// login refused pre-verify (403) → verify → login issues a session
+    /// token → wrong password 401 → reset + confirm → new password logs
+    /// in. Skipped unless REDIS_URL is set.
+    #[tokio::test]
+    async fn api_users_round_trip() {
+        use crate::controlplane::dns::MockDnsApiClient;
+        use crate::controlplane::mail::MockMailer;
+        use crate::controlplane::wg::MockWgClient;
+
+        let url = match std::env::var("REDIS_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("skipping: REDIS_URL not set");
+                return;
+            }
+        };
+        let wg: &'static MockWgClient = Box::leak(Box::new(MockWgClient::new()));
+        let dns: &'static MockDnsApiClient = Box::leak(Box::new(MockDnsApiClient::new()));
+        let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
+        let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
+        let cp = Box::leak(Box::new(
+            ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", wg, dns)
+                .expect("control plane connects"),
+        ));
+        let mailer: &'static MockMailer = Box::leak(Box::new(MockMailer::new()));
+        let status_func: StatusFunc = Arc::new(|| serde_json::Value::Null);
+        let client = TestClient::new(app_with(status_func, Some(cp), Some(mailer)));
+
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let email = format!(
+            "api-{}-{}@example.com",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let username = email.split('@').next().unwrap().to_string();
+
+        // Register → 201 + the mailer captured the magic link.
+        let resp = client
+            .post("/api/users/register")
+            .body_json(&serde_json::json!({ "email": email, "username": username, "password": "hunter2" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::CREATED);
+        let sent = mailer.sent();
+        assert_eq!(sent.len(), 1);
+        let verify_token = extract_api_token(&sent[0].body);
+
+        // Login is refused before verification (403, not "no such user").
+        let resp = client
+            .post("/api/users/login")
+            .body_json(&serde_json::json!({ "email": email, "password": "hunter2" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::FORBIDDEN);
+
+        // Verify → 200.
+        let resp = client
+            .post("/api/users/verify")
+            .body_json(&serde_json::json!({ "token": verify_token }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+
+        // Login → 200 + session token.
+        let resp = client
+            .post("/api/users/login")
+            .body_json(&serde_json::json!({ "email": email, "password": "hunter2" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.0.into_body().into_json().await.unwrap();
+        assert!(body.get("token").is_some(), "login returns a session token");
+
+        // Wrong password → 401 (generic, no enumeration).
+        let resp = client
+            .post("/api/users/login")
+            .body_json(&serde_json::json!({ "email": email, "password": "nope" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
+
+        // Reset: request (always 200) → confirm with the link token →
+        // the new password logs in, the old one doesn't.
+        let resp = client
+            .post("/api/users/reset_password")
+            .body_json(&serde_json::json!({ "email": email }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+        let reset_token = extract_api_token(&mailer.sent()[1].body);
+        let resp = client
+            .post("/api/users/reset_password/confirm")
+            .body_json(&serde_json::json!({ "token": reset_token, "password": "new-password" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+        let resp = client
+            .post("/api/users/login")
+            .body_json(&serde_json::json!({ "email": email, "password": "old-password" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
+        let resp = client
+            .post("/api/users/login")
+            .body_json(&serde_json::json!({ "email": email, "password": "new-password" }))
+            .send()
+            .await;
+        assert_eq!(resp.0.status(), StatusCode::OK);
+    }
+
+    /// The magic-link bodies are `…token=<hex>…`; pull the token out.
+    fn extract_api_token(body: &str) -> String {
+        let start = body.find("token=").expect("link present") + "token=".len();
+        body[start..].lines().next().unwrap().trim().to_string()
     }
 }

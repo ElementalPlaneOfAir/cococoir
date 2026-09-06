@@ -585,6 +585,27 @@ revisited.
   `cococoir.integrations.X.enable` escape hatch (violates "no separate
   toggle", ADR-020).
 
+- **ADR-028: LAN access is customer-redirected DNS + dnsmasq; RA/RDNSS
+  auto-capture is rejected.** The reality that ~90% of target homes
+  have no IPv6 kills the RA/RDNSS resolver-capture channel before it
+  exists (RAs are IPv6-only): on a v4-only LAN there is no joinable
+  channel to a client's resolver list other than the DHCP server.
+  So the mechanism is explicit: the customer sets **one** option
+  (`cococoir.network.lanAddress` = the box's DHCP-reserved LAN IPv4)
+  plus one router change (DHCP-DNS → box). `cococoir.network.dns`
+  defaults on when the address is set; dnsmasq (DNS only, router keeps
+  DHCP) answers every enabled service's domain with the LAN address
+  (enumerated from `cococoir.services`, never configured per-service)
+  and NXDOMAINs the Firefox DoH canary (`use-application-dns.net`) by
+  default; the service factory's Caddy vhosts bind
+  `cococoir.network.caddyBindAddresses` (localhost + LAN address) so
+  LAN TLS terminates on the box. Split-horizon stays safe: the global
+  answer (edge /128 → tunnel) still works, so the local override is
+  an optimization with a working fallback. Rejected: radvd/RDNSS
+  (dead for v4-only homes), runtime-derived addresses (nothing to
+  bind at render time), dnsmasq-as-DHCP (conflicts with the router's
+  DHCP we just asked the customer to configure).
+
 ## Implementation backlog
 
 Build order. No dates. Each item: what it produces, what test

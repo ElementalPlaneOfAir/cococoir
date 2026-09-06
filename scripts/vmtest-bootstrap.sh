@@ -137,6 +137,50 @@ for d in auth jellyfin cryptpad radarr sonarr lidarr prowlarr; do
   fi
 done
 
+# ── LAN DNS plane (ADR-028) ───
+# The customer path: resolve a service domain via the box's dnsmasq
+# (what the router's DHCP-DNS redirect hands out), connect to the LAN
+# address, verify the TLS cert. dnsmasq answering while Caddy doesn't
+# listen = correct DNS, dead ingress — hence the --resolve curl, not
+# just dig.
+echo ""
+echo "─── LAN DNS (dnsmasq @ 10.0.2.15) ───"
+LAN=10.0.2.15
+dnsmasq_state=$(systemctl is-active dnsmasq.service 2>/dev/null || true)
+case "$dnsmasq_state" in
+  active) pass "dnsmasq" "active" ;;
+  *) fail "dnsmasq" "${dnsmasq_state:-missing}" ;;
+esac
+
+for d in auth jellyfin cryptpad radarr sonarr lidarr prowlarr; do
+  host="$d.vmtest.local"
+  ans=$(dig @"$LAN" +short "$host" A 2>/dev/null | head -1)
+  if [ "$ans" = "$LAN" ]; then
+    pass "dns $host" "$ans"
+  else
+    fail "dns $host" "${ans:-no answer}"
+  fi
+done
+
+# Firefox DoH canary must NXDOMAIN so secure-DNS browsers drop DoH
+# on this network instead of bypassing the split-horizon.
+if dig @"$LAN" use-application-dns.net 2>/dev/null | grep -q "status: NXDOMAIN"; then
+  pass "DoH canary" "NXDOMAIN"
+else
+  fail "DoH canary" "not NXDOMAIN"
+fi
+
+# The full LAN ingress: resolve → connect to the LAN IP → cert
+# verifies against the VM trust store → HTTP 200.
+lan_code=$(curl --cacert /etc/ssl/certs/ca-certificates.crt \
+  --resolve "jellyfin.vmtest.local:443:$LAN" \
+  -o /dev/null -w '%{http_code}' \
+  https://jellyfin.vmtest.local/health 2>/dev/null || echo 000)
+case "$lan_code" in
+  200) pass "LAN ingress (resolve+TLS)" "200" ;;
+  *)   fail "LAN ingress (resolve+TLS)" "$lan_code" ;;
+esac
+
 # Dex OIDC discovery
 dx_code=$(curl -sk -o /dev/null -w '%{http_code}' \
   https://auth.vmtest.local/dex/.well-known/openid-configuration 2>/dev/null || echo 000)

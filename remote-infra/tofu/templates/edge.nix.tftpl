@@ -48,7 +48,7 @@
     # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
     # handler on 0.0.0.0:8081 — the control-plane API plus the /healthz
     # /readyz /status endpoints (the edge serves both from one poem app),
-    # incl. the swagger UI at /docs and spec at /openapi.json — so a
+    # incl. the swagger UI at /api/docs and spec at /api/openapi.json — so a
     # booting customer box's dashboard and an operator reach the join
     # surface, health, and the swagger UI over TLS. Caddy binds ONLY the
     # edge's own addresses (IPv4 + ::1) so it never shadows the

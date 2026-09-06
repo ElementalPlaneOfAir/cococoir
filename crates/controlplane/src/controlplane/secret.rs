@@ -55,6 +55,40 @@ pub fn admin_key_hash() -> &'static [u8; 32] {
     &HASH
 }
 
+/// The SMTP submission relay host, when configured. Absent → the
+/// console mailer is used (dev/test); present → the SmtpMailer is used
+/// and a broken config is a boot error, never a silent fallback.
+pub fn smtp_host() -> Option<&'static str> {
+    SECRETS.secrets.smtp_host.as_deref()
+}
+
+/// The SMTP submission port (STARTTLS). Defaults to 587 in the mailer.
+pub fn smtp_port() -> Option<&'static str> {
+    SECRETS.secrets.smtp_port.as_deref()
+}
+
+/// The SMTP submission auth user (may be absent for relays that need
+/// no auth).
+pub fn smtp_user() -> Option<&'static str> {
+    SECRETS.secrets.smtp_user.as_deref()
+}
+
+/// The SMTP submission auth password.
+pub fn smtp_pass() -> Option<&'static str> {
+    SECRETS.secrets.smtp_pass.as_deref()
+}
+
+/// The envelope From for outbound mail. Defaults to
+/// `accounts@{root_domain}` when MAIL_FROM is absent, so a domain
+/// migration is a `ROOT_DOMAIN` change, not a code change.
+pub fn mail_from() -> String {
+    SECRETS
+        .secrets
+        .mail_from
+        .clone()
+        .unwrap_or_else(|| format!("accounts@{}", root_domain()))
+}
+
 /// Decode a lowercase hex SHA-256 into a `[u8; 32]`. `None` on malformed
 /// hex or a length that isn't exactly 64 chars — the two ways the
 /// operator-supplied hash can be wrong. Pure + total, so it is unit
@@ -71,9 +105,10 @@ mod tests {
     use super::*;
 
     /// The value-free contract mirrors the committed `secretspec.toml`:
-    /// five required secrets under the default profile. Kept in lockstep
-    /// with the real file by convention — a drift here is caught when
-    /// the real file's `declare_secrets!` no longer matches.
+    /// five required secrets + five optional SMTP secrets under the
+    /// default profile. Kept in lockstep with the real file by
+    /// convention — a drift here is caught when the real file's
+    /// `declare_secrets!` no longer matches.
     const CONTRACT: &str = r#"
 [project]
 name = "cococoir-edge"
@@ -85,6 +120,11 @@ DNS_ZONE_NAME = { description = "Hetzner DNS zone apex", required = true }
 DNS_TOKEN = { description = "Hetzner DNS API token", required = true }
 ROOT_DOMAIN = { description = "Root domain", required = true }
 ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
+SMTP_HOST = { description = "SMTP submission relay host", required = false }
+SMTP_PORT = { description = "SMTP submission port", required = false }
+SMTP_USER = { description = "SMTP submission auth user", required = false }
+SMTP_PASS = { description = "SMTP submission auth password", required = false }
+MAIL_FROM = { description = "Envelope From", required = false }
 "#;
 
     /// Write a temp `secretspec.toml` + dotenv and resolve via the
@@ -155,6 +195,41 @@ ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = 
         // And the fail-fast invariant: no secret carries a value when a
         // required one is missing.
         assert!(resp.secrets.is_empty());
+    }
+
+    #[test]
+    fn optional_smtp_secrets_resolve_when_present() {
+        let dotenv = format!(
+            "{}\nSMTP_HOST=smtp.example.com\nSMTP_PORT=587\nSMTP_USER=bob\nSMTP_PASS=sekrit\nMAIL_FROM=accounts@example.com",
+            env_with_all_values()
+        );
+        let resp = resolve_contract(&dotenv);
+        assert!(resp.missing_required.is_empty(), "no missing required");
+        assert_eq!(resolved_value(&resp, "SMTP_HOST"), "smtp.example.com");
+        assert_eq!(resolved_value(&resp, "SMTP_PORT"), "587");
+        assert_eq!(resolved_value(&resp, "SMTP_USER"), "bob");
+        assert_eq!(resolved_value(&resp, "SMTP_PASS"), "sekrit");
+        assert_eq!(resolved_value(&resp, "MAIL_FROM"), "accounts@example.com");
+    }
+
+    #[test]
+    fn absent_smtp_secrets_still_resolve_and_are_nullable() {
+        // The dev/L2 case: no SMTP_* in edge.env, no MAIL_FROM. The
+        // required five still resolve; the optional fields are reported
+        // as missing-optional (no value, no error) so the mailer falls
+        // back to the console.
+        let resp = resolve_contract(&env_with_all_values());
+        assert!(resp.missing_required.is_empty(), "no missing required");
+        for name in ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_FROM"] {
+            assert!(
+                resp.missing_optional.contains(&name.to_string()),
+                "{name} reported missing-optional"
+            );
+            assert!(
+                resp.secrets.get(name).is_none(),
+                "{name} carries no value when absent"
+            );
+        }
     }
 
     #[test]

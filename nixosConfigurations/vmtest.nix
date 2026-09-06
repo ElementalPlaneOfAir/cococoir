@@ -123,6 +123,14 @@ in {
       certFile = "/etc/vmtest-tls/cert.pem";
       keyFile = "/etc/vmtest-tls/key.pem";
     };
+
+    # LAN access plane (ADR-028): QEMU user-mode networking assigns
+    # the guest 10.0.2.15 deterministically, so vmtest exercises the
+    # real customer path — dnsmasq answers the service domains with
+    # the LAN address, Caddy binds it, and vmtest-bootstrap.sh
+    # resolves + connects + verifies the cert exactly as a LAN device
+    # would. Production sets the box's DHCP-reserved address here.
+    network.lanAddress = "10.0.2.15";
   };
 
   # Build-time secrets mounted at well-known paths.
@@ -160,6 +168,9 @@ in {
     jq
     # vmtest-bootstrap.sh verifies every vhost cert with s_client.
     openssl
+    # vmtest-bootstrap.sh asserts the LAN DNS plane (dig against the
+    # box's dnsmasq).
+    dnsutils
   ];
 
   programs.fish.enable = true;
