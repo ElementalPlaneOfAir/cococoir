@@ -686,7 +686,7 @@ mod tests {
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
         let cp = Box::leak(Box::new(
-            ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", wg, dns)
+            ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=", wg, dns)
                 .expect("control plane connects"),
         ));
         let mailer: &'static MockMailer = Box::leak(Box::new(MockMailer::new()));

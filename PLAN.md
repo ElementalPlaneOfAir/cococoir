@@ -606,6 +606,55 @@ revisited.
   bind at render time), dnsmasq-as-DHCP (conflicts with the router's
   DHCP we just asked the customer to configure).
 
+- **ADR-029: Per-customer addresses are movable Hetzner Floating IPs; the
+  edge is a hot-hot pair coordinated by a Redis lease (extends
+  ADR-025/028).** Remote access rode one box: a node death meant every
+  customer lost the `/128`s carved from that box's `/64`, and recovery
+  was a manual re-provision with address churn + DNS rewrite. The
+  redesign makes the *address* the movable unit, not the box:
+  - **Customer `/128`s live on a cluster-owned Hetzner Floating IPv6
+    `/64`** (€1/mo), not per-node auto `/64`s. A floating `/64` is a
+    routed prefix reassignable between servers in the same network zone
+    (the Terraform provider returns `ip_network` = "IPv6 subnet"), so the
+    whole customer pool moves with one API call. Subdivision is the
+    existing `cidrhost` carve (ADR-025); the tofu `edge_ipv6_subnet`
+    slice concept becomes "the cluster's floating `/64`".
+  - **One shared Floating IPv4 `/32` (€3/mo)** carries the WG dial-out
+    endpoint (must be v4: ~90% of homes are v4-only, ADR-028) and the
+    control-plane Caddy. Per-customer IPv4 add-ons (the paid SKU;
+    BUISNESS-PLAN remote-access line) are additional floating `/32`s —
+    the float driver built here is their foundation.
+  - **Failover = reassign floats, never DNS.** On node death the active
+    node's floats are reassigned to the standby via the Hetzner API; the
+    standby is already hot (all wg peers, forwards, local binds from the
+    replicated store), so customers reconnect at the SAME addresses
+    within seconds, DNS untouched. No cache-staleness class. In-flight
+    TCP blips once (stateless forwarder, ADR-014) — accepted by design.
+  - **Coordination = Redis leader lease** (`cococoir:edge:lease`), not
+    keepalived/VRRP: the lease holder is Redis primary + active; the
+    standby reconciles to replica + ready. Redis is the single
+    coordination point, so there is no VRRP split-brain class; detection
+    (5–10s heartbeat) is inside the RTO budget. keepalived is a deferred
+    sub-second upgrade, not the shipped driver.
+  - **The edge `wg0` private key becomes a store-held shared secret**
+    rendered to both nodes (replaces per-node self-generation) so a
+    re-handshake to the survivor works with the same peer identity.
+  - **Substrate: raw cloud VMs + systemd/system-manager; no
+    orchestrator.** The unit of failover is the node, not the process
+    (hot-hot needs no scheduling); the forwarder binds host-local `/128`s
+    and holds long-lived raw sockets; WG is kernel. k8s (pod networking
+    fights every component; Redis becomes a StatefulSet), Nomad (a
+    scheduler for a "run everything on both" rule), and WASM/Spin (wrong
+    execution model for long-lived sockets + kernel WG) all rejected.
+    Shared-IP/L7 demux (SNI, NAT64, managed anycast fronts) violates
+    zero-knowledge + TLS-on-device (ADR-006); mesh control planes
+    (Tailscale et al.) are a different product model. Rejected.
+  - **Live proof is the gate**: `scripts/edge-ha-failover-test.sh`
+    hard-kills node A and asserts floats move, a customer `/128` returns
+    200, and DNS is byte-identical, under the RTO budget. Untested
+    failover is fiction. Design + task DAG:
+    `.specify/specs/edge-ha/proposal.md`.
+
 ## Implementation backlog
 
 Build order. No dates. Each item: what it produces, what test

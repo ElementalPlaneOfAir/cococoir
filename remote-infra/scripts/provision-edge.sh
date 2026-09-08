@@ -13,7 +13,8 @@
 # repo flake (`nix run .#secretspec`) — the devshell's `secretspec`
 # comes from devenv's own nixpkgs and lacks the file provider backend.
 # The provisioning profile is the single store at remote-infra/.secrets
-# (gitignored); scopes carve it per consumer: `token` for tofu
+# (gitignored), an age-encrypted SOPS file since the 2026-09-07
+# migration; scopes carve it per consumer: `token` for tofu
 # (HCLOUD_TOKEN), `provision` for edge.env (token + admin key).
 #
 # Prereqs:
@@ -80,10 +81,11 @@ echo "==> [4/6] system-manager switch (applies the edge config)"
 echo "==> [5/6] write edge secrets (edge.env + secretspec.toml)"
 # The edge secrets resolve through the secretspec SDK: a value-free
 # secretspec.toml contract (deployed here) + a dotenv edge.env holding
-# the values (zone + token + root domain + admin key hash). The SDK
-# reads secretspec.toml via a CWD walk from /etc/cococoir
-# (WorkingDirectory on the unit) and the values from edge.env (0600,
-# never in the repo). `-S provision` = token + generated admin key.
+# the values (zone + token + root domain + admin key hash + the shared
+# WG_PRIVATE_KEY). The SDK reads secretspec.toml via a CWD walk from
+# /etc/cococoir (WorkingDirectory on the unit) and the values from
+# edge.env (0600, never in the repo). `-S provision` = token + generated
+# admin key + the shared wg0 identity (ADR-029: ONE key for both nodes).
 eval "$(nix run "$REPO_ROOT#secretspec" -- export -P provisioning -S provision \
   -f "$TOML" --format shell --reason "provision-edge: write edge.env")"
 DNS_ZONE_ID=$("$TOFU" -chdir="$TOFU_DIR" output -raw dns_zone_id)
@@ -96,23 +98,24 @@ DNS_TOKEN="$HETZNER_TOKEN"
 ADMIN_KEY_HASH=$(printf '%s' "$ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 
 # Deploy the committed contract + the values file. The plaintext admin
-# key never reaches the box — it lives in the operator's secretspec
-# store, retrievable with `nix run .#secretspec -- export`.
+# key and WG private key never reach the box as files the operator
+# juggles — they resolve through the secretspec SDK from edge.env.
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "mkdir -p /etc/cococoir && \
    cat > /etc/cococoir/secretspec.toml && \
-   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\n' \
-     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' > /etc/cococoir/edge.env && \
+   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nWG_PRIVATE_KEY=%s\n' \
+     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' '$WG_PRIVATE_KEY' > /etc/cococoir/edge.env && \
    chmod 0600 /etc/cococoir/edge.env && chmod 0644 /etc/cococoir/secretspec.toml" \
   < "$REPO_ROOT/crates/controlplane/secretspec.toml"
 
 echo "==> [6/6] wire the WG tunnel interface"
-# The edge box owns its WireGuard identity at runtime: cococoir-edge
-# generates + persists a keypair in Redis on first boot and installs it
-# into wg0 (see ControlPlane::edge_public_key). wg0.conf only needs *a*
-# key for `wg-quick up` to bring the interface up; the edge overrides it
-# on boot, so we generate a throwaway here. Address + listen port come
-# from tofu's single source of truth.
+# The edge's WG identity is the shared store-held key (ADR-029): both
+# nodes read the same WG_PRIVATE_KEY from edge.env and cocococoir-edge
+# installs it into wg0 on boot (install_edge_identity), so a re-handshake
+# to the survivor just works. wg0.conf only needs *a* key for `wg-quick
+# up` to bring the interface up; the edge overrides it on boot, so we
+# generate a throwaway here. Address + listen port come from tofu's
+# single source of truth.
 WG_IP=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_wg_ip)         # 10.10.0.1
 WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || echo "51820")
   ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \

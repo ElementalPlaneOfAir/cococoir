@@ -42,7 +42,7 @@ async fn main() -> Result<(), std::io::Error> {
             other => {
                 eprintln!("unknown flag {other}");
                 return Err(std::io::Error::other(
-                    "usage: cocococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR] [--ipv6-iface IFACE]",
+                    "usage: cococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR] [--ipv6-iface IFACE]",
                 ));
             }
         }
@@ -130,7 +130,11 @@ async fn main() -> Result<(), std::io::Error> {
         let _ = shutdown_tx.send(true);
     });
 
-    let _ = tokio::try_join!(api_task, reconcile_task, signal_task);
+    // All three tasks must run to completion: a panic in any of them
+    // is a process error (exit nonzero, systemd restarts loudly), never
+    // a silently half-alive edge.
+    tokio::try_join!(api_task, reconcile_task, signal_task)
+        .map_err(|err| std::io::Error::other(format!("edge task failed: {err}")))?;
     Ok(())
 }
 

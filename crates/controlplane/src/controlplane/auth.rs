@@ -23,9 +23,13 @@ use crate::controlplane::secret::admin_key_hash;
 /// The admin key, extracted from `Authorization: Bearer <key>`. Takes
 /// `AdminKey` as a handler arg to require auth on an operation; omit it
 /// to leave an operation open (like `/pubkey`).
+///
+/// The inner `Bearer` is load-bearing for the derive (it carries the
+/// verified token through extraction) but no handler reads it — the
+/// checker already ran, and the arg's presence is the gate.
 #[derive(SecurityScheme)]
 #[oai(ty = "bearer", checker = "check_admin_key")]
-pub struct AdminKey(Bearer);
+pub struct AdminKey(#[allow(dead_code)] Bearer);
 
 /// Check the presented bearer token against the admin key hash.
 ///

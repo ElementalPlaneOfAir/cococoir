@@ -55,6 +55,14 @@ pub fn admin_key_hash() -> &'static [u8; 32] {
     &HASH
 }
 
+/// The shared WireGuard private key for the edge's `wg0` interface
+/// (ADR-029 / edge-ha T3). One keypair for both nodes — the survivor
+/// presents the same peer identity, so a re-handshake just works.
+/// `&'static` because `SECRETS` is process-lifetime.
+pub fn wg_private_key() -> &'static str {
+    &SECRETS.secrets.wg_private_key
+}
+
 /// The SMTP submission relay host, when configured. Absent → the
 /// console mailer is used (dev/test); present → the SmtpMailer is used
 /// and a broken config is a boot error, never a silent fallback.
@@ -105,7 +113,7 @@ mod tests {
     use super::*;
 
     /// The value-free contract mirrors the committed `secretspec.toml`:
-    /// five required secrets + five optional SMTP secrets under the
+    /// six required secrets + five optional SMTP secrets under the
     /// default profile. Kept in lockstep with the real file by
     /// convention — a drift here is caught when the real file's
     /// `declare_secrets!` no longer matches.
@@ -120,6 +128,7 @@ DNS_ZONE_NAME = { description = "Hetzner DNS zone apex", required = true }
 DNS_TOKEN = { description = "Hetzner DNS API token", required = true }
 ROOT_DOMAIN = { description = "Root domain", required = true }
 ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
+WG_PRIVATE_KEY = { description = "Shared edge wg0 private key", required = true }
 SMTP_HOST = { description = "SMTP submission relay host", required = false }
 SMTP_PORT = { description = "SMTP submission port", required = false }
 SMTP_USER = { description = "SMTP submission auth user", required = false }
@@ -159,6 +168,7 @@ MAIL_FROM = { description = "Envelope From", required = false }
             "DNS_TOKEN=sekrit-token",
             "ROOT_DOMAIN=example.net",
             "ADMIN_KEY_HASH=0000000000000000000000000000000000000000000000000000000000000000",
+            "WG_PRIVATE_KEY=KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=",
         ]
         .join("\n")
     }
@@ -171,7 +181,7 @@ MAIL_FROM = { description = "Envelope From", required = false }
     }
 
     #[test]
-    fn resolves_all_five_required_secrets_from_dotenv() {
+    fn resolves_all_six_required_secrets_from_dotenv() {
         let resp = resolve_contract(&env_with_all_values());
         assert!(resp.missing_required.is_empty(), "no missing required");
         assert_eq!(resolved_value(&resp, "DNS_ZONE_ID"), "zone123");
@@ -181,6 +191,9 @@ MAIL_FROM = { description = "Envelope From", required = false }
         // The declared hash round-trips through the hex decoder.
         let hash = resolved_value(&resp, "ADMIN_KEY_HASH");
         assert!(decode_hash_hex(hash).is_some());
+        // The shared wg0 key round-trips as a WireGuard private key.
+        let wg_key = resolved_value(&resp, "WG_PRIVATE_KEY");
+        assert_eq!(wg_key.len(), 44); // base64, 32 bytes
     }
 
     #[test]

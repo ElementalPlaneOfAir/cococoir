@@ -290,20 +290,27 @@ impl DnsApiClient for MockDnsApiClient {
     }
 }
 
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+
+/// The process's verification resolver, pointed at 1.1.1.1. Immutable
+/// process-lifetime config (the same shape as [`DNS_CLIENT`]): built
+/// once, never rebuilt per lookup — the reconcile loop resolves every
+/// customer's records, so per-call construction would be churn.
+/// Building is infallible for a static config, so a failure here is a
+/// programmer error and panics.
+static RESOLVER: LazyLock<hickory_resolver::Resolver<TokioRuntimeProvider>> = LazyLock::new(|| {
+    use hickory_resolver::config::ResolverConfig;
+    let config = ResolverConfig::udp_and_tcp(&hickory_resolver::config::CLOUDFLARE);
+    hickory_resolver::Resolver::builder_with_config(config, TokioRuntimeProvider::default())
+        .build()
+        .expect("a static Cloudflare resolver config builds")
+});
+
 /// Query a public resolver (1.1.1.1) for the AAAA records at `name`.
 /// Independent of provisioning — the reconcile loop uses it to verify
 /// that provisioned records are actually published.
 pub async fn resolve_aaaa(name: &str) -> Result<Vec<Ipv6Addr>, DnsError> {
-    use hickory_resolver::config::ResolverConfig;
-    use hickory_resolver::net::runtime::TokioRuntimeProvider;
-    let config = ResolverConfig::udp_and_tcp(&hickory_resolver::config::CLOUDFLARE);
-    let resolver = hickory_resolver::Resolver::builder_with_config(
-        config,
-        TokioRuntimeProvider::default(),
-    )
-    .build()
-    .map_err(|err| DnsError::Resolve(err.to_string()))?;
-    let lookup = resolver
+    let lookup = RESOLVER
         .lookup_ip(name)
         .await
         .map_err(|err| DnsError::Resolve(err.to_string()))?;
@@ -528,7 +535,6 @@ mod tests {
     async fn reconcile_reapplies_mismatch() {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        let wrong: Ipv6Addr = "2a01:4f8:c17:1::9".parse().unwrap();
         // Fake resolver: both records resolve to the WRONG address.
         // Non-capturing (the addr is in a `static`) so it coerces to
         // the `AaaaResolver` fn pointer.

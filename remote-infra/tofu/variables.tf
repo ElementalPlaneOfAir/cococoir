@@ -65,7 +65,7 @@ variable "wg_listen_port" {
 }
 
 variable "edge_ipv6_subnet" {
-  description = "The edge box's routed IPv6 subnet (CIDR). Default: Hetzner's per-server /64. Set this when the operator manages one shared /64 and hands this box a /72 or /96 slice of it (e.g. 2a01:4f8:c17:1:ab00::/72). Must be byte-aligned /64..=/112."
+  description = "The subnet customers carve /128s from. Default: the cluster's Floating IPv6 /64 (ADR-029). Set this when the operator manages one shared /64 and hands this cluster a /72 or /96 slice of it (e.g. 2a01:4f8:c17:1:ab00::/72). Must be byte-aligned /64..=/112. Never a node's auto /64."
   type        = string
   default     = ""
 }

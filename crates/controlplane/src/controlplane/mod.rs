@@ -46,6 +46,7 @@
 pub mod account;
 pub mod auth;
 pub mod dns;
+pub mod float;
 pub mod mail;
 pub mod secret;
 pub mod web;
@@ -55,6 +56,9 @@ pub use auth::{verify_token, AdminKey};
 pub use dns::{
     customer_hostname, get_dns_api, reconcile_pass, remove_customer, resolve_aaaa,
     resolve_aaaa_boxed, upsert_customer, DnsApiClient, DnsError, HetznerDns, MockDnsApiClient,
+};
+pub use float::{
+    get_float_api, FloatApiClient, FloatError, HetznerFloat, HetznerFloatingIp, MockFloatApiClient,
 };
 pub use secret::{admin_key_hash, root_domain};
 pub use wg::{RealWgClient, WgClient, WgError};
@@ -79,14 +83,8 @@ use cococoir_core::forwarder::{Config, Forward, Forwarder, Proto};
 const CUST_KEY: &str = "cococoir:customer:";
 /// Redis key holding the next free host index within the box subnet.
 const ALLOC_COUNTER: &str = "cococoir:alloc:next";
-/// Redis key holding the next free WG tunnel address index.
-const WG_ALLOC_COUNTER: &str = "cococoir:wg:next";
 /// Redis key holding the list of customer ids.
 const CUST_INDEX: &str = "cococoir:customers";
-/// Redis key holding the edge's own WG private key. Generated once on
-/// first boot and persisted (AOF + appendfsync always), so the edge's
-/// identity survives restarts and customer configs keep working.
-const EDGE_PRIV_KEY: &str = "cococoir:edge:private-key";
 
 /// The process's two singletons: the control plane (Redis-backed) and
 /// the live forwarder. Both are process-lifetime — built once at boot,
@@ -100,23 +98,62 @@ const EDGE_PRIV_KEY: &str = "cococoir:edge:private-key";
 static CONTROL_PLANE: tokio::sync::OnceCell<ControlPlane> = tokio::sync::OnceCell::const_new();
 static FORWARDER: tokio::sync::OnceCell<Forwarder> = tokio::sync::OnceCell::const_new();
 
-/// The edge's routed IPv6 subnet, e.g. `2a01:4f8:c17:1::/64`.
-///
-/// The prefix length is NOT assumed to be `/64`: an operator who
-/// manages one shared `/64` may hand each edge box a `/72` or `/96`
-/// slice of it. `prefix` holds only the network bits (the host bits
-/// are always zero); `host(index)` places the host index into the
-/// trailing `128 - prefix_len` bits.
+/// Byte-level addressing for [`Subnet`]: N octets, parseable from a
+/// string, with the subnet's byte-aligned prefix range. `Ipv6Addr`
+/// carries the routed subnet (/64..=/112), `Ipv4Addr` the WireGuard
+/// tunnel net (/8..=/30).
+pub trait AddrBytes: Copy + std::fmt::Display + std::str::FromStr<Err = std::net::AddrParseError> {
+    const LEN: usize;
+    const MIN_PREFIX: u8;
+    const MAX_PREFIX: u8;
+    fn octets(self) -> Vec<u8>;
+    fn from_octets(octets: &[u8]) -> Self;
+}
+
+impl AddrBytes for std::net::Ipv6Addr {
+    const LEN: usize = 16;
+    const MIN_PREFIX: u8 = 64;
+    const MAX_PREFIX: u8 = 112;
+    fn octets(self) -> Vec<u8> {
+        std::net::Ipv6Addr::octets(&self).to_vec()
+    }
+    fn from_octets(octets: &[u8]) -> Self {
+        let octets: [u8; 16] = octets.try_into().expect("IPv6 octets are 16 bytes");
+        std::net::Ipv6Addr::from(octets)
+    }
+}
+
+impl AddrBytes for std::net::Ipv4Addr {
+    const LEN: usize = 4;
+    const MIN_PREFIX: u8 = 8;
+    const MAX_PREFIX: u8 = 30;
+    fn octets(self) -> Vec<u8> {
+        std::net::Ipv4Addr::octets(&self).to_vec()
+    }
+    fn from_octets(octets: &[u8]) -> Self {
+        let octets: [u8; 4] = octets.try_into().expect("IPv4 octets are 4 bytes");
+        std::net::Ipv4Addr::from(octets)
+    }
+}
+
+/// A byte-aligned subnet whose host indices fill the trailing
+/// `LEN*8 - prefix_len` bits. The edge's routed IPv6 subnet and the
+/// WireGuard tunnel net are the same shape (a prefix + a host index),
+/// so the byte math lives here once, not in two copies. Customers use
+/// the [`Subnet64`] / [`WgSubnet`] aliases.
 #[derive(Debug, Clone)]
-pub struct Subnet64 {
-    /// The `prefix_len` network bits as bytes (everything up to the
-    /// prefix boundary).
+pub struct Subnet<A: AddrBytes> {
+    /// The prefix bytes (everything up to the byte-aligned prefix
+    /// boundary; the host bits are always zero).
     prefix: Vec<u8>,
     /// Prefix length in bits.
     prefix_len: u8,
+    _addr: std::marker::PhantomData<A>,
 }
 
-impl Subnet64 {
+impl<A: AddrBytes> Subnet<A> {
+    /// Parse `addr/len`, rejecting unaligned or out-of-range prefix
+    /// lengths and prefixes with host bits set.
     pub fn from_str(s: &str) -> Result<Self, String> {
         let (addr_str, len_str) = s
             .rsplit_once('/')
@@ -124,15 +161,14 @@ impl Subnet64 {
         let prefix_len: u8 = len_str
             .parse()
             .map_err(|_| format!("invalid prefix length in {s}"))?;
-        // Prefixes of interest are /64 and finer (a /64, or a /72//96
-        // slice of a shared /64). Accept any byte-aligned /64..=/112:
-        // finer than that and you cannot fit a host index safely.
-        if prefix_len < 64 || prefix_len > 112 || prefix_len % 8 != 0 {
+        if prefix_len < A::MIN_PREFIX || prefix_len > A::MAX_PREFIX || prefix_len % 8 != 0 {
             return Err(format!(
-                "{s}: prefix length must be byte-aligned and between /64 and /112 (was /{prefix_len})"
+                "{s}: prefix length must be byte-aligned and between /{} and /{} (was /{prefix_len})",
+                A::MIN_PREFIX,
+                A::MAX_PREFIX
             ));
         }
-        let addr: Ipv6Addr = addr_str
+        let addr: A = addr_str
             .parse()
             .map_err(|err| format!("invalid subnet {addr_str}: {err}"))?;
         let octets = addr.octets();
@@ -145,96 +181,48 @@ impl Subnet64 {
         Ok(Self {
             prefix: octets[..prefix_bytes].to_vec(),
             prefix_len,
+            _addr: std::marker::PhantomData,
         })
     }
 
-    /// The `/128` for a host index (host 1 = the edge's primary
-    /// address, host 2+ = customers). Index fills the trailing
-    /// `128 - prefix_len` bits.
-    fn host(&self, index: u64) -> Ipv6Addr {
-        let host_bits = 128 - self.prefix_len as u64;
-        let max_host = if host_bits >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << host_bits) - 1
-        };
-        if index > max_host {
+    /// The address for a host index: host 1 is the edge's own primary
+    /// address, host 2+ are customers. The index fills the trailing
+    /// `LEN*8 - prefix_len` bits.
+    fn host(&self, index: u64) -> A {
+        let host_bits = A::LEN * 8 - self.prefix_len as usize;
+        let max_host = ((1u128 << host_bits) - 1).min(u64::MAX as u128);
+        if index as u128 > max_host {
             panic!("host index {index} exceeds /{} capacity", self.prefix_len);
         }
+        // The index, right-aligned in a 16-byte buffer: the trailing
+        // `host_bytes` are its low bits, byte-aligned by construction.
         let mut octets = [0u8; 16];
-        octets[..self.prefix.len()].copy_from_slice(&self.prefix);
-        let idx_bytes = index.to_be_bytes();
-        let prefix_bytes = self.prefix.len();
-        let host_bytes = (host_bits as usize) / 8;
-        let src_start = 8 - host_bytes;
-        octets[prefix_bytes..].copy_from_slice(&idx_bytes[src_start..]);
-        Ipv6Addr::from(octets)
+        octets[8..].copy_from_slice(&index.to_be_bytes());
+        let host_bytes = host_bits / 8;
+        let mut out = vec![0u8; A::LEN];
+        out[..self.prefix.len()].copy_from_slice(&self.prefix);
+        out[self.prefix.len()..].copy_from_slice(&octets[16 - host_bytes..]);
+        A::from_octets(&out)
     }
 
-    /// Human-readable `/128` for `index`.
+    /// Human-readable address for `index`.
     pub fn host_string(&self, index: u64) -> String {
         self.host(index).to_string()
     }
 }
 
+/// The edge's routed IPv6 subnet, e.g. `2a01:4f8:c17:1::/64`.
+///
+/// The prefix length is NOT assumed to be `/64`: an operator who
+/// manages one shared `/64` may hand each edge box a `/72` or `/96`
+/// slice of it — any byte-aligned `/64..=/112` is accepted (finer and
+/// a host index cannot fit safely).
+pub type Subnet64 = Subnet<std::net::Ipv6Addr>;
+
 /// The WireGuard tunnel network the edge and customers share, e.g.
-/// `10.10.0.0/24`. Host 1 is the edge itself; customers get hosts
-/// 2+ (same index as their `/128`).
-#[derive(Debug, Clone)]
-pub struct WgSubnet {
-    /// The network prefix bytes (leading `(32 - prefix_len) / 8`
-    /// bytes; host bits zero).
-    prefix: Vec<u8>,
-    prefix_len: u8,
-}
-
-impl WgSubnet {
-    pub fn from_str(s: &str) -> Result<Self, String> {
-        let (addr_str, len_str) = s
-            .rsplit_once('/')
-            .ok_or_else(|| format!("invalid wg subnet {s}: missing /len"))?;
-        let prefix_len: u8 = len_str
-            .parse()
-            .map_err(|_| format!("invalid prefix length in {s}"))?;
-        if prefix_len < 8 || prefix_len > 30 || prefix_len % 8 != 0 {
-            return Err(format!(
-                "{s}: wg prefix must be byte-aligned and between /8 and /30 (was /{prefix_len})"
-            ));
-        }
-        let addr: std::net::Ipv4Addr = addr_str
-            .parse()
-            .map_err(|err| format!("invalid wg subnet {addr_str}: {err}"))?;
-        let octets = addr.octets();
-        let prefix_bytes = (prefix_len / 8) as usize;
-        if octets[prefix_bytes..].iter().any(|&b| b != 0) {
-            return Err(format!("{s} is not a /{prefix_len} (host bits set)"));
-        }
-        Ok(Self {
-            prefix: octets[..prefix_bytes].to_vec(),
-            prefix_len,
-        })
-    }
-
-    /// The tunnel address for a host index (1 = edge, 2+ = customers).
-    pub fn host_string(&self, index: u64) -> String {
-        let host_bytes = 4 - self.prefix.len();
-        let max_host = if host_bytes >= 4 {
-            u32::MAX as u64
-        } else {
-            (1u64 << (host_bytes * 8)) - 1
-        };
-        assert!(
-            index <= max_host,
-            "wg host index {index} exceeds /{} capacity",
-            self.prefix_len
-        );
-        let mut octets = [0u8; 4];
-        octets[..self.prefix.len()].copy_from_slice(&self.prefix);
-        let idx_bytes = (index as u32).to_be_bytes();
-        octets[self.prefix.len()..].copy_from_slice(&idx_bytes[4 - host_bytes..]);
-        std::net::Ipv4Addr::from(octets).to_string()
-    }
-}
+/// `10.10.0.0/24` (byte-aligned `/8..=/30`). Host 1 is the edge
+/// itself; customers get hosts 2+ — the same index as their `/128`.
+pub type WgSubnet = Subnet<std::net::Ipv4Addr>;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Object)]
 pub struct Customer {
@@ -304,13 +292,23 @@ pub enum ControlPlaneError {
 /// only as `&'static ControlPlane` — `Copy`, not cloned. See
 /// `writing/human/lifetimes_in_rust.md`.
 pub struct ControlPlane {
-    pub(crate) client: redis::Client,
+    client: redis::Client,
+    /// The process's one Redis connection, created lazily on first
+    /// use and shared by every operation. The manager auto-reconnects
+    /// after a Redis restart, so a lost connection self-heals instead
+    /// of failing every request until a process restart. Cloning the
+    /// handle is cheap (it multiplexes over one TCP connection).
+    conn: tokio::sync::OnceCell<redis::aio::ConnectionManager>,
     subnet: Subnet64,
     wg_subnet: WgSubnet,
     /// The domain customer hostnames live under. Injected (not read
     /// from the global [`secret::SECRETS`]) so tests can pass any
     /// domain without touching the boot-only secrets LazyLock.
     pub(crate) root_domain: &'static str,
+    /// The shared `wg0` identity (ADR-029): one private key for both
+    /// nodes, from the secret store. `&'static` for the same reason as
+    /// `root_domain` — it lives in the process-lifetime `SECRETS`.
+    edge_wg_private_key: &'static str,
     wg: &'static dyn WgClient,
     dns: &'static dyn DnsApiClient,
 }
@@ -326,9 +324,11 @@ impl ControlPlane {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
             client,
+            conn: tokio::sync::OnceCell::const_new(),
             subnet,
             wg_subnet,
             root_domain: secret::root_domain(),
+            edge_wg_private_key: secret::wg_private_key(),
             wg: &*wg::REAL_WG_CLIENT,
             dns: get_dns_api(),
         })
@@ -345,55 +345,49 @@ impl ControlPlane {
         subnet: Subnet64,
         wg_subnet: WgSubnet,
         root_domain: &'static str,
+        wg_private_key: &'static str,
         wg: &'static dyn WgClient,
         dns: &'static dyn DnsApiClient,
     ) -> Result<Self, ControlPlaneError> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
             client,
+            conn: tokio::sync::OnceCell::const_new(),
             subnet,
             wg_subnet,
             root_domain,
+            edge_wg_private_key: wg_private_key,
             wg,
             dns,
         })
     }
 
-    pub(crate) async fn conn(&self) -> Result<redis::aio::Connection, ControlPlaneError> {
-        Ok(self.client.get_async_connection().await?)
+    /// A handle on the control plane's one Redis connection: created
+    /// lazily on first use, then cloned per operation (multiplexed
+    /// over one TCP connection, auto-reconnecting after a Redis
+    /// restart). The old per-call `aio::Connection` opened a fresh
+    /// TCP connection for every command.
+    pub(crate) async fn conn(&self) -> Result<redis::aio::ConnectionManager, ControlPlaneError> {
+        Ok(self
+            .conn
+            .get_or_try_init(|| async {
+                let manager = redis::aio::ConnectionManager::new(self.client.clone()).await?;
+                Ok::<_, ControlPlaneError>(manager)
+            })
+            .await?
+            .clone())
     }
 
-    /// Ensure the edge's WG private key exists in Redis (generate +
-    /// persist on first call via SETNX, so concurrent first-boots agree
-    /// on one winner) and return the stored key. Pure storage access —
-    /// no kernel side-effect.
-    async fn ensure_edge_key(&self) -> Result<String, ControlPlaneError> {
-        let mut conn = self.conn().await?;
-        if let Some(key) = conn.get(EDGE_PRIV_KEY).await? {
-            return Ok(key);
-        }
-        let (_public, private) = generate_wg_keypair();
-        let _: bool = conn.set_nx(EDGE_PRIV_KEY, &private).await?;
-        let stored: Option<String> = conn.get(EDGE_PRIV_KEY).await?;
-        stored.ok_or_else(|| {
-            ControlPlaneError::Redis(redis::RedisError::from((
-                redis::ErrorKind::ResponseError,
-                "edge key missing after ensure",
-                "SETNX reported success but read-back was empty".to_string(),
-            )))
-        })
-    }
-
-    /// The edge's own WireGuard public key, derived from the persisted
-    /// private key. Pure getter — does not touch the kernel — so it is
-    /// safe to call per-signup and from `GET /pubkey`. The edge's
-    /// identity is stable across restarts because the private key is
-    /// durable in Redis.
-    pub async fn edge_public_key(&self) -> Result<String, ControlPlaneError> {
-        let private_key = self.ensure_edge_key().await?;
+    /// The edge's own WireGuard public key, derived from the shared
+    /// private key (ADR-029). Pure getter — does not touch the kernel —
+    /// so it is safe to call per-signup and from `GET /pubkey`. The
+    /// edge's identity is stable across restarts *and across nodes*
+    /// because both read the same `WG_PRIVATE_KEY` from the store.
+    pub fn edge_public_key(&self) -> Result<String, ControlPlaneError> {
+        let private_key = self.edge_wg_private_key;
         let priv_bytes: [u8; 32] = B64
-            .decode(&private_key)
-            .expect("persisted edge key is base64")
+            .decode(private_key)
+            .expect("store-held edge key is base64")
             .try_into()
             .map_err(|_| {
                 ControlPlaneError::Wg(WgError::Io(std::io::Error::other(
@@ -404,17 +398,14 @@ impl ControlPlane {
         Ok(B64.encode(PublicKey::from(&secret).as_bytes()))
     }
 
-    /// Boot-time: ensure the edge identity exists and install its
-    /// private key into the running `wg0` interface, so the edge answers
-    /// customer handshakes and any throwaway key `wg-quick up` left
-    /// there is replaced. Called once by [`init_globals`], not
-    /// per-signup.
-    pub async fn install_edge_identity(&self) -> Result<(), ControlPlaneError> {
-        let private_key = self.ensure_edge_key().await?;
+    /// Boot-time: install the shared edge identity's private key into
+    /// the running `wg0` interface, so the edge answers customer
+    /// handshakes and any throwaway key `wg-quick up` left there is
+    /// replaced. Called once by [`init_globals`], not per-signup.
+    pub fn install_edge_identity(&self) -> Result<(), ControlPlaneError> {
         self.wg
-            .set_private_key(&private_key)
-            .map_err(ControlPlaneError::Wg)?;
-        Ok(())
+            .set_private_key(self.edge_wg_private_key)
+            .map_err(ControlPlaneError::Wg)
     }
 
     /// Allocate the next `/128` + WG tunnel address, create a
@@ -438,7 +429,7 @@ impl ControlPlane {
         let mut conn = self.conn().await?;
         let key = format!("{CUST_KEY}{username}");
         let existing: Option<String> = conn.get(&key).await?;
-        let edge_public_key = self.edge_public_key().await?;
+        let edge_public_key = self.edge_public_key()?;
 
         // Idempotent / rotate path: the route already exists.
         if let Some(json) = existing {
@@ -502,6 +493,9 @@ impl ControlPlane {
         // concurrent signup for the same username collides here.
         let set: bool = conn.set_nx(&key, json).await?;
         if !set {
+            // The race loser gives its freshly-allocated index back, so
+            // no /128 is burned even under concurrency.
+            let _: i64 = conn.decr(ALLOC_COUNTER, 1).await?;
             return Err(ControlPlaneError::Duplicate(username.to_string()));
         }
         let _: i64 = conn.rpush(CUST_INDEX, username).await?;
@@ -513,7 +507,7 @@ impl ControlPlane {
         // must not stay burned when the peer/forward could not be
         // created.
         if let Err(err) = self.wg.add_peer(&wg_ip, public_key) {
-            self.rollback_signup(&mut conn, forwarder, username, &customer).await;
+            self.rollback_signup(forwarder, username, &customer).await;
             return Err(ControlPlaneError::Wg(err));
         }
         for port in [80u16, 443] {
@@ -523,7 +517,7 @@ impl ControlPlane {
                 dest_addr: format!("{wg_ip}:{port}"),
             };
             if let Err(err) = forwarder.add_forward(&fwd).await {
-                self.rollback_signup(&mut conn, forwarder, username, &customer).await;
+                self.rollback_signup(forwarder, username, &customer).await;
                 let addr = &fwd.listen_addr;
                 return Err(ControlPlaneError::Forward(format!("add forward {addr}: {err}")));
             }
@@ -664,13 +658,11 @@ impl ControlPlane {
     /// the username + /128 are freed and `rehydrate` cannot resurrect a
     /// zombie (whose private key would be unrecoverable). Never fails the
     /// original error; logs any cleanup failure.
-    async fn rollback_signup(
-        &self,
-        conn: &mut redis::aio::Connection,
-        forwarder: &Forwarder,
-        username: &str,
-        customer: &Customer,
-    ) {
+    async fn rollback_signup(&self, forwarder: &Forwarder, username: &str, customer: &Customer) {
+        let Ok(mut conn) = self.conn().await else {
+            tracing::error!(username = %username, "signup rollback: redis unreachable; zombie record may persist");
+            return;
+        };
         let _: i64 = match conn.del(format!("{CUST_KEY}{username}")).await {
             Ok(n) => n,
             Err(err) => {
@@ -793,7 +785,7 @@ pub async fn init_globals(
     CONTROL_PLANE
         .get_or_try_init(|| async {
             let cp = ControlPlane::new(redis_url, subnet, wg_subnet)?;
-            cp.install_edge_identity().await?;
+            cp.install_edge_identity()?;
             Ok::<ControlPlane, ControlPlaneError>(cp)
         })
         .await?;
@@ -1199,7 +1191,7 @@ impl WireguardApi {
     /// key, and a convenient debug check.
     #[oai(path = "/wireguard/pubkey", method = "get")]
     async fn edge_pubkey(&self) -> PubkeyApiResponse {
-        match control_plane().edge_public_key().await {
+        match control_plane().edge_public_key() {
             Ok(pubkey) => PubkeyApiResponse::Ok(Json(PubkeyResponse { public_key: pubkey })),
             Err(err) => {
                 tracing::error!(error = %err, "edge pubkey failed");
@@ -1261,6 +1253,12 @@ pub fn app_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-only fixture for the shared `wg0` identity (ADR-029). A real
+    /// WireGuard private key (base64, 32 bytes); the store holds the
+    /// production one, tests inject this literal so they never force the
+    /// boot-only `SECRETS` LazyLock.
+    const TEST_EDGE_WG_PRIV: &str = "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=";
 
     #[test]
     fn subnet64_parses_and_hosts() {
@@ -1355,7 +1353,7 @@ mod tests {
         let dns: &'static crate::controlplane::dns::MockDnsApiClient =
             Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
         let cp_owned =
-            ControlPlane::with_deps(&url, subnet, wg_subnet, "interdim.net", wg, dns).unwrap();
+            ControlPlane::with_deps(&url, subnet, wg_subnet, "interdim.net", TEST_EDGE_WG_PRIV, wg, dns).unwrap();
         let forwarder_owned = Forwarder::new_live(Config::default()).unwrap();
 
         // Pre-seed the process globals (the test seam: set() bypasses
@@ -1375,7 +1373,6 @@ mod tests {
         // test's set() seam bypasses init_globals, so do the boot
         // install explicitly to mirror production.
         cp.install_edge_identity()
-            .await
             .expect("install edge identity");
 
         // Robustness against a reused Redis: a previous run (or aborted
@@ -1387,7 +1384,6 @@ mod tests {
         }
         let mut conn = cp.conn().await.unwrap();
         let _: () = conn.del(ALLOC_COUNTER).await.unwrap();
-        let _: () = conn.del(WG_ALLOC_COUNTER).await.unwrap();
         let _: () = conn.del(CUST_INDEX).await.unwrap();
         // The cleanup above recorded mock WG/DNS calls; reset the
         // counters so the assertions below count only this test's
@@ -1418,16 +1414,21 @@ mod tests {
         assert_eq!(first.customer.hostname, "alice.interdim.net");
         assert_eq!(dns.upserts.lock().unwrap().len(), 4); // 2 customers × 2 records
 
-        // The edge's public key is stable across signups (persisted,
-        // not regenerated) and matches GET /pubkey — the customer can
-        // configure its WG peer for the edge from the response.
+        // The edge's public key is stable across signups (from the shared
+        // store-held key, never regenerated) and matches GET /pubkey —
+        // the customer can configure its WG peer for the edge from the
+        // response.
         assert!(!first.edge_public_key.is_empty());
         assert_eq!(first.edge_public_key, second.edge_public_key);
-        let pubkey = cp.edge_public_key().await.expect("edge pubkey");
+        let pubkey = cp.edge_public_key().expect("edge pubkey");
         assert_eq!(pubkey, first.edge_public_key);
-        // The edge private key was installed into the interface once
-        // (on first generation), not per-signup.
+        // The shared private key was installed into the interface once
+        // (on boot), not per-signup.
         assert_eq!(wg.private_keys.lock().unwrap().len(), 1);
+        // The shared-identity property (ADR-029): the installed private
+        // key IS the store-held one, so both nodes answer as the same
+        // peer.
+        assert_eq!(wg.private_keys.lock().unwrap()[0], TEST_EDGE_WG_PRIV);
 
         // The forwarder bound 4 live listeners (2 customers × 2 ports); the
         // WG client added both peers to the kernel interface.
@@ -1723,7 +1724,7 @@ mod tests {
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
         let cp = Box::leak(Box::new(
-            ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", wg, dns)
+            ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", TEST_EDGE_WG_PRIV, wg, dns)
                 .expect("control plane connects"),
         ));
         let mailer: &'static MockMailer = Box::leak(Box::new(MockMailer::new()));

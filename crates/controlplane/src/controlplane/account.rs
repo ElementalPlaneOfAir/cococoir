@@ -8,11 +8,11 @@
 //! Passwords are bcrypt-hashed, never plaintext (T2 acceptance).
 //!
 //! Redis keys (all live in the same Redis as the customers/devices):
-//!   cocococoir:account:{email}     → AccountRecord JSON (permanent)
-//!   cocococoir:username:{username} → email (SETNX: username uniqueness)
-//!   cocococoir:verify:{token}      → email (24h TTL, GETDEL single-use)
-//!   cocococoir:reset:{token}       → email (24h TTL, GETDEL single-use)
-//!   cocococoir:session:{token}     → email (7d TTL)
+//!   cococoir:account:{email}     → AccountRecord JSON (permanent)
+//!   cococoir:username:{username} → email (SETNX: username uniqueness)
+//!   cococoir:verify:{token}      → email (24h TTL, GETDEL single-use)
+//!   cococoir:reset:{token}       → email (24h TTL, GETDEL single-use)
+//!   cococoir:session:{token}     → email (7d TTL)
 //!
 //! The methods live on `impl ControlPlane` so they share the process's
 //! Redis client + `root_domain`; the mailer is injected (`&dyn Mailer`)
@@ -191,8 +191,11 @@ impl ControlPlane {
             return Err(AccountError::DuplicateUsername(username.to_string()));
         }
 
+        // validate_password guarantees non-empty ≤72 bytes, the only
+        // ways bcrypt::hash can fail — so a failure here is a
+        // programmer error, not a password problem.
         let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
-            .map_err(|e| AccountError::InvalidPassword(e.to_string()))?;
+            .expect("bcrypt cannot fail: password is non-empty and ≤72 bytes");
         let account = AccountRecord {
             username: username.to_string(),
             status: AccountStatus::Pending,
@@ -208,16 +211,19 @@ impl ControlPlane {
             .set_ex(verify_key(&token), &email, VERIFY_TOKEN_TTL_SECS)
             .await?;
 
+        // A failed send is a failed signup — never a zombie account the
+        // customer can't activate. The email + username become
+        // reusable, and the verify token is destroyed with them: it is
+        // a single-use capability for an account that no longer
+        // exists, and leaving it would dangle for 24h.
         let link = verify_link(self.root_domain, &token);
         if let Err(err) = mailer
             .send(&email, "Verify your cococoir account", &verify_body(&link))
             .await
         {
-            // Roll back the account: a failed send is a failed signup,
-            // never a zombie account the customer can't activate. The
-            // email + username become reusable.
             let _: Result<(), redis::RedisError> = conn.del(account_key(&email)).await;
             let _: Result<(), redis::RedisError> = conn.del(username_key(username)).await;
+            let _: Result<(), redis::RedisError> = conn.del(verify_key(&token)).await;
             return Err(AccountError::Mail(err));
         }
         Ok(())
@@ -328,7 +334,7 @@ impl ControlPlane {
         };
         let mut account = account_from_json(json)?;
         account.password_hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST)
-            .map_err(|e| AccountError::InvalidPassword(e.to_string()))?;
+            .expect("bcrypt cannot fail: password is non-empty and ≤72 bytes");
         let _: () = conn
             .set(&key, serde_json::to_string(&account).unwrap())
             .await?;
@@ -356,7 +362,7 @@ mod tests {
         let dns: &'static MockDnsApiClient = Box::leak(Box::new(MockDnsApiClient::new()));
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
-        ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", wg, dns).ok()
+        ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=", wg, dns).ok()
     }
 
     /// Skip the store-backed tests when no Redis is available (the nix
@@ -528,5 +534,45 @@ mod tests {
             cp.account_login(&email, "hunter2").await,
             Err(AccountError::NotVerified(_))
         ));
+    }
+
+    /// Tripwire for the send-failure rollback: a failed verify-email
+    /// send must undo the whole signup — the account record, the
+    /// username claim, AND the verify token (a single-use capability
+    /// for an account that no longer exists must not dangle for 24h).
+    #[tokio::test]
+    async fn signup_mail_failure_rolls_back_everything() {
+        let Some(cp) = skip_without_redis() else { return; };
+        let mailer = MockMailer::new();
+        mailer.fail_sends();
+        let email = unique_email("mailfail");
+        let username = username_for(&email);
+        assert!(matches!(
+            cp.account_signup(&email, &username, "pw", &mailer).await,
+            Err(AccountError::Mail(_))
+        ));
+        // No verify token survived pointing at the dead account. (Checked
+        // before the re-signup below, which legitimately stores a new
+        // pending token for the email.)
+        let mut conn = cp.conn().await.unwrap();
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg("cococoir:verify:*")
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let values: Vec<Option<String>> = redis::cmd("MGET")
+            .arg(&keys)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert!(
+            !values.into_iter().flatten().any(|v| v == email),
+            "a dangling verify token survived the signup rollback"
+        );
+        // The email + username are reusable: the rollback removed the
+        // account and the username claim.
+        cp.account_signup(&email, &username, "pw", &MockMailer::new())
+            .await
+            .expect("re-signup after mail failure");
     }
 }

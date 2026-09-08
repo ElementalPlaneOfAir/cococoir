@@ -9,7 +9,8 @@
 //! without a real kernel interface: `RealWgClient` shells out to the
 //! `wg` binary, `MockWgClient` (test-only) records calls.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
 
 use thiserror::Error;
 
@@ -68,19 +69,25 @@ impl RealWgClient {
     }
 
     fn run(&self, args: &[&str]) -> Result<(), WgError> {
-        let output = Command::new("wg")
-            .arg("set")
-            .arg(WG_IFACE)
-            .args(args)
-            .output()?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(WgError::Command {
-                code: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            })
-        }
+        checked(
+            Command::new("wg")
+                .arg("set")
+                .arg(WG_IFACE)
+                .args(args)
+                .output()?,
+        )
+    }
+}
+
+/// Translate a finished `wg` invocation into a `WgError` on failure.
+fn checked(output: Output) -> Result<(), WgError> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(WgError::Command {
+            code: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 }
 
@@ -94,14 +101,23 @@ impl WgClient for RealWgClient {
     }
 
     fn set_private_key(&self, private_key: &str) -> Result<(), WgError> {
-        // `wg set` reads the private key from a file (it won't take it
-        // as an argv to avoid leaking it into process listings). Write
-        // it to a temp file, set, and remove.
-        let path = std::env::temp_dir().join("cococoir-edge-private.key");
-        std::fs::write(&path, format!("{private_key}\n"))?;
-        let result = self.run(&["private-key", path.to_str().expect("temp path is utf8")]);
-        let _ = std::fs::remove_file(&path);
-        result
+        // `wg set` reads the private key from a file path and won't
+        // take it as argv (it would leak into process listings). Hand
+        // it `/dev/stdin` and pipe the key, so the edge's identity
+        // never touches the filesystem — a temp file would briefly
+        // carry the key at a predictable path, world-readable and
+        // symlinkable.
+        let mut child = Command::new("wg")
+            .args(["set", WG_IFACE, "private-key", "/dev/stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        stdin.write_all(private_key.as_bytes())?;
+        stdin.write_all(b"\n")?;
+        drop(stdin);
+        checked(child.wait_with_output()?)
     }
 }
 

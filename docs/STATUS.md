@@ -138,9 +138,56 @@ moot.
 
 ## Current focus
 
-The accounts + device pairing flow (proposal in
-`.specify/specs/accounts-and-pairing/`): email account (magic-link
-verify + reset via transactional SMTP provider) → many devices; box
+**Edge HA — hot-hot pair + floating-IP mobility** (proposal
+`.specify/specs/edge-ha/`, ADR-029). Remote access currently rides one
+Hetzner box (`edge`, hel1); a node death kills every customer's
+addresses and recovery churns addresses + DNS. Design: customer `/128`s
+move onto a cluster-owned Hetzner Floating IPv6 `/64` (movable, €1/mo) +
+a shared floating IPv4 `/32` (WG dial-out endpoint + control-plane
+Caddy); 2-node hot-hot pair, raw VMs + system-manager, **Redis leader
+lease** failover (no keepalived, no orchestrator); failover = reassign
+floats via the Hetzner API, DNS never changes. The float driver is also
+the foundation for the paid IPv4 SKU. T1 (float driver) + T2 (addressing
+on floats) landed — proof bar for the rest = the proposal's ACs; gate =
+`edge-ha-failover-test.sh`.
+**Decisions (2026-09-07):** pair lives in **`hil`** (born where it stays —
+floats can't cross DCs); the **per-customer floating `/32` IPv4 SKU is
+in-scope** (new T6: create + assign + wholesale `wg0` route + wildcard
+`A`); the old `hel1` `edge` box is **disposable** (rebuilt fresh, retired
+in T5). Proposal amended to 7 tasks.
+**Landed (2026-09-07):**
+- **T1** float driver (`crates/controlplane/src/controlplane/float.rs` —
+  `FloatApiClient` trait incl. `create` (create/assign/move/release),
+  `HetznerFloat` impl reusing `DNS_TOKEN` (same Cloud API Bearer),
+  `MockFloatApiClient`, Cloud-API tripwires; re-exported from `mod.rs`).
+  Proof: 8 float tests + `cargo test --workspace` 183 green. Also removed
+  a pre-existing dead `let wrong` in `dns.rs:538` (zero-debt).
+- **T2** addressing moves to the floats (`remote-infra/tofu/main.tf`,
+  `dns.tf`, `variables.tf`): `hcloud_floating_ip` cluster `/64` + shared
+  `/32` created **UNASSIGNED** (placement runtime-owned by T4);
+  `local.edge_ipv6_subnet` now defaults to the float `/64`, so the
+  `hcloud_server.*.ipv6_network` path for customers is structurally gone
+  (dropped float = loud plan-time failure, no silent fallback); apex `A`
+  → shared `/32`, `AAAA`/wildcard → carved `/128`s. Proof: `tofu
+  validate` green. **Do NOT apply against live hel1** — first apply is
+  the T5 `hil` rebuild.
+- **Prereq: operator store → SOPS** (`secretspec.toml`): the operator
+  provisioning store moved from plaintext `file:./remote-infra/.secrets`
+  to the age-encrypted sops provider
+  (`sops://remote-infra/.secrets/secrets.enc.yaml`); both values
+  re-seeded + hash-verified against the originals, `provision-edge.sh`
+  untouched. Proof: `secretspec export -P provisioning -S provision`
+  round-trips (flakes-pinned 0.19 + local both have the `sops` feature).
+Next: T3 shared `wg0` key, T4 Redis lease + float-move. **T8 added**
+(store backup → S3-compatible object storage, RPO 10 min, replica-side
+`BGSAVE` + rclone, client-side encrypted; off the gate's critical path).
+Redis today is already durable locally (AOF + `appendfsync always`); the
+backup covers pair/DC loss and the config-blast-radius case hot-hot
+doesn't.
+
+accounts-and-pairing (`.specify/specs/accounts-and-pairing/`) — **T3
+done (web UI + `/api` namespace split, 2026-09-06)**, T4–T11 pending.
+Email account (magic-link verify + reset via SMTP) → many devices; box
 shows a 5-word pairing code, owner claims it on `interdim.net`, box gets
 its route + device token (closes ADR-025's deferred gap); account
 deletion unwires, never wipes.

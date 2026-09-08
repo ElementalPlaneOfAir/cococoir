@@ -40,16 +40,20 @@
 {pkgs, cococoirPkg, ...}:
 let
   fixtures = ./fixtures;
-  # Throwaway edge wg0 key (the edge overwrites it at boot via
-  # install_edge_identity). Inline so it lands in the store path the VM
-  # sees. The real WG identity is generated + persisted in Redis.
+  # The edge's wg0 identity: the shared store-held key (ADR-029), the
+  # same shape as production's WG_PRIVATE_KEY (one key, both nodes).
+  # wg0.conf carries it so the interface comes up; the edge re-installs
+  # the same key at boot from edge.env via install_edge_identity — the
+  # identity comes from the store, never generated in Redis.
   edgePublic = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/edge-public"));
   edgePrivate = pkgs.lib.strings.trim (builtins.readFile (fixtures + "/edge-private"));
 
-  # The five boot secrets the edge requires (secret.rs panics if any is
+  # The six boot secrets the edge requires (secret.rs panics if any is
   # absent). DNS_* are throwaway — DNS is non-fatal here. ROOT_DOMAIN is
   # the customer hostname suffix. ADMIN_KEY_HASH is sha256("test-admin-key")
   # = 944650a7...; the testScript signs up with `Bearer test-admin-key`.
+  # WG_PRIVATE_KEY is the shared identity, so the edge's public key is
+  # deterministic (= edgePublic) and the client config can trust it.
   edgeSecretspec = ''
     [project]
     name = "cococoir-edge"
@@ -61,6 +65,7 @@ let
     DNS_TOKEN = { description = "Hetzner DNS API token", required = true }
     ROOT_DOMAIN = { description = "Root domain", required = true }
     ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
+    WG_PRIVATE_KEY = { description = "Shared edge wg0 private key", required = true }
   '';
   edgeEnv = ''
     DNS_ZONE_ID=test-zone
@@ -68,6 +73,7 @@ let
     DNS_TOKEN=test-token
     ROOT_DOMAIN=edge-test.local
     ADMIN_KEY_HASH=944650a7cd0f9e14d5c4fb15edbffb7fa45fb9ed36a4fa9be3d7e5476ae51bd9
+    WG_PRIVATE_KEY=${edgePrivate}
   '';
 
   # The edge box's routed subnet. 2001:db8::/32 is the documentation
@@ -97,8 +103,8 @@ in {
         # 127.0.0.1:6379, matching the edge's default --redis-url.
         services.redis.servers."".enable = true;
 
-        # wg0 up at boot with a throwaway key; the edge overwrites the
-        # key via install_edge_identity once it starts.
+        # wg0 up at boot with the shared identity; the edge re-installs
+        # the same key from edge.env via install_edge_identity.
         networking.wireguard.interfaces.wg0 = {
           privateKey = edgePrivate;
           listenPort = 51820;
@@ -155,9 +161,8 @@ in {
         networking.firewall.allowedTCPPorts = [80];
 
         # Client config: the tunnel section drives the client-owned wg0.
-        # edge_pubkey is the throwaway fixture peer for now — the test
-        # swaps it for the edge's real boot-generated pubkey after signup
-        # (the edge generates a fresh key each test boot).
+        # edge_pubkey is the shared identity's public key — deterministic
+        # because WG_PRIVATE_KEY in edge.env pins it (ADR-029).
         environment.etc."cococoir-client.json".text = builtins.toJSON {
           tunnel = {
             ip = "10.10.0.2";
@@ -257,6 +262,11 @@ in {
       customer_wgip = data["customer"]["wg_ip"]
       edge_public_key = data["edge_public_key"]
       assert data["customer"]["wg_public_key"] == client_pub, "edge stored the client's public key"
+      # The shared-identity property (ADR-029): the edge answers as the
+      # deterministic key from WG_PRIVATE_KEY in edge.env — which is the
+      # pubkey the client config already points at, so no peer swap is
+      # needed (the edge no longer generates a fresh key per boot).
+      assert edge_public_key == "${edgePublic}", "edge served the shared pubkey, got {!r}".format(edge_public_key)
 
       # The edge forwarder must have bound the customer's /128 live
       # (IPV6_FREEBIND). Prove it via the /api/status endpoint before we
@@ -267,16 +277,9 @@ in {
           "curl -sf http://127.0.0.1:8081/api/status | grep -q '[{}]'".format(customer_ipv6)
       )
 
-      # The client's wg0 peer was configured from the config's throwaway
-      # edgePub key; point it at the edge's real boot-generated pubkey
-      # (the edge generates a fresh key each test boot, so the config
-      # can't know it ahead of time). The client's OWN private key is
-      # already on the interface — nothing to swap. The forwarder has
-      # been bound since boot and keeps running.
-      client.succeed(
-          "wg set wg0 peer {} remove\n".format("${edgePublic}")
-          + "wg set wg0 peer {} allowed-ips 10.10.0.0/24 endpoint edge:51820 persistent-keepalive 25\n".format(edge_public_key)
-      )
+      # The client's wg0 peer already points at the shared pubkey
+      # (edge_pubkey = edgePublic in the config, and the edge answers as
+      # that exact key). Nothing to swap — verify the tunnel peer is up.
       client.wait_until_succeeds(
           "curl -sf http://127.0.0.1:9090/status | grep -q '" + customer_wgip + ":80'"
       )
@@ -285,6 +288,13 @@ in {
       # socket is reachable from inside the edge VM (no IPv6 transit
       # between nixosTest VMs).
       edge.succeed("ip -6 route add {} dev lo".format(customer_ipv6))
+
+      # DEBUG: dump both wg0 interfaces before the data-path curl.
+      print("=== DEBUG edge wg0 ===\n" + edge.succeed("wg show wg0"))
+      print("=== DEBUG client wg0 ===\n" + client.succeed("wg show wg0"))
+      print("=== DEBUG client resolve edge ===\n" + client.succeed("getent ahosts edge"))
+      print("=== DEBUG edge addr ===\n" + edge.succeed("ip -6 addr show && ip addr show eth1"))
+      print("=== DEBUG client addr ===\n" + client.succeed("ip -6 addr show && ip addr show eth1"))
 
       # THE TEST: from the edge, hit the customer /128 -> edge forwarder
       # -> WireGuard tunnel -> customer box forwarder -> local http. The

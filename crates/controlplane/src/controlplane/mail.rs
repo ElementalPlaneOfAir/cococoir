@@ -34,6 +34,10 @@ pub enum MailerError {
     Build(#[from] lettre::error::Error),
     #[error("smtp: {0}")]
     Smtp(#[from] lettre::transport::smtp::Error),
+    /// Injected by the [`MockMailer`] test double (lettre's own error
+    /// types cannot be constructed outside its crate).
+    #[error("mock mailer: injected send failure")]
+    MockFailure,
 }
 
 /// Outbound email. Implementations translate to SMTP submission, the
@@ -140,10 +144,13 @@ pub struct SentMail {
 }
 
 /// Test capture: records every send so tests assert recipient + the
-/// magic-link token. No I/O, never fails.
+/// magic-link token. No I/O, never fails — unless [`fail_sends`] was
+/// set, which simulates a relay outage so tests exercise the
+/// send-failure rollback path.
 #[derive(Debug, Default)]
 pub struct MockMailer {
     sent: Mutex<Vec<SentMail>>,
+    fail: std::sync::atomic::AtomicBool,
 }
 
 impl MockMailer {
@@ -155,32 +162,26 @@ impl MockMailer {
     pub fn sent(&self) -> Vec<SentMail> {
         self.sent.lock().expect("mock mailer lock").clone()
     }
+
+    /// Make subsequent `send` calls return `MockFailure` (relay outage).
+    pub fn fail_sends(&self) {
+        self.fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[async_trait]
 impl Mailer for MockMailer {
     async fn send(&self, to: &str, subject: &str, body: &str) -> Result<(), MailerError> {
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(MailerError::MockFailure);
+        }
         self.sent.lock().expect("mock mailer lock").push(SentMail {
             to: to.to_string(),
             subject: subject.to_string(),
             body: body.to_string(),
         });
         Ok(())
-    }
-}
-
-/// Which mailer implementation a config selects. Pure + total, so the
-/// SMTP-vs-console decision is unit-testable without touching secrets or
-/// a relay.
-pub enum MailerKind {
-    Smtp,
-    Console,
-}
-
-pub fn mailer_kind(config: Option<&SmtpConfig>) -> MailerKind {
-    match config {
-        Some(_) => MailerKind::Smtp,
-        None => MailerKind::Console,
     }
 }
 
@@ -280,15 +281,6 @@ mod tests {
         assert_eq!(sent[0].subject, "Verify");
         assert!(sent[0].body.contains("token-0"));
         assert!(sent[2].body.contains("token-2"));
-    }
-
-    #[test]
-    fn mailer_kind_switches_on_config_presence() {
-        assert!(matches!(mailer_kind(None), MailerKind::Console));
-        assert!(matches!(
-            mailer_kind(Some(&smtp_config())),
-            MailerKind::Smtp
-        ));
     }
 
     #[test]

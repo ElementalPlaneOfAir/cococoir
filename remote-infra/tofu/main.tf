@@ -1,13 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir remote infra — the edge box.
+# Cococoir remote infra — the edge's addressing.
 #
-# One VPS with a single public IPv4 and a routed IPv6 subnet. By
-# default that is Hetzner's free per-server /64 (the 64-256 address
-# pool from the vision doc); set edge_ipv6_subnet to a /72 or /96
-# slice when the operator shares one /64 across boxes. The customer's
-# /128 is derived from the box subnet via cidrhost so DNS and the
-# system-manager config cannot drift.
+# Per-customer addresses live on a cluster-owned Hetzner Floating IPv6
+# /64 (ADR-029): customer /128s carve from it, and a shared Floating
+# IPv4 /32 carries the WG dial-out endpoint + the control-plane website.
+# Both floats are *movable* between the pair's nodes, so failover is a
+# float reassignment, never a DNS rewrite.
+#
+# Addressing has exactly one source of truth: this tofu. The rendered
+# edge config and every DNS record derive from the floats here, so they
+# cannot drift. The customer's /128 is <float /64>::2, the apex AAAA is
+# <float /64>::1.
+#
+# Float placement is runtime-owned: tofu creates them UNASSIGNED and the
+# edge's reconcile loop assigns them to the active node at boot and
+# moves them on failover. Tofu never pins a float to a server — that
+# would fight the reconcile loop and go stale the first time it moves.
 #
 # The box runs a stock Debian image managed by system-manager (see
 # remote-infra/system-manager/edge.nix); the customer box (example123)
@@ -18,13 +27,17 @@
 # GET /pubkey) — no key material is provisioned or stored here.
 
 locals {
-  # The box's routed subnet. Hetzner hands out a /64 per server, but
-  # an operator who manages one shared /64 may instead give the box a
-  # /72 or /96 slice via edge_ipv6_subnet. Default to Hetzner's /64.
-  edge_ipv6_subnet = var.edge_ipv6_subnet != "" ? var.edge_ipv6_subnet : hcloud_server.edge.ipv6_network
+  # Customer addresses carve from the cluster's floating /64 — never a
+  # node's auto /64 (ADR-029). `var.edge_ipv6_subnet` still overrides
+  # for an operator who slices one /64 across several boxes. Defaulting
+  # straight to the float resource means a dropped or renamed float
+  # fails loudly at plan time; there is no silent fallback to a server
+  # /64 for customers to get carved from.
+  edge_ipv6_subnet = var.edge_ipv6_subnet != "" ? var.edge_ipv6_subnet : hcloud_floating_ip.cluster_v6.ip_network
 
   customer_ipv6   = cidrhost(local.edge_ipv6_subnet, 2) # <subnet>::2
   edge_primary_v6 = cidrhost(local.edge_ipv6_subnet, 1) # <subnet>::1
+  shared_v4       = hcloud_floating_ip.shared_v4.ip_address
   edge_wg_ip      = cidrhost(var.wg_subnet, 1)          # 10.10.0.1
   customer_wg_ip  = cidrhost(var.wg_subnet, 2)          # 10.10.0.2
 }
@@ -32,6 +45,23 @@ locals {
 resource "hcloud_ssh_key" "operator" {
   name       = "cococoir-operator"
   public_key = var.ssh_public_key
+}
+
+# The cluster's movable address pool (ADR-029). Both floats are created
+# UNASSIGNED: the reconcile loop assigns them to the active node at boot
+# and moves them on failover, so tofu never goes stale. The IPv6 float
+# hands out a routed /64 (customers carve /128s from it); the IPv4 float
+# is the one universal address (WG dial-out + control-plane website).
+resource "hcloud_floating_ip" "cluster_v6" {
+  name          = "cococoir-cluster-v6"
+  type          = "ipv6"
+  home_location = var.location
+}
+
+resource "hcloud_floating_ip" "shared_v4" {
+  name          = "cococoir-shared-v4"
+  type          = "ipv4"
+  home_location = var.location
 }
 
 resource "hcloud_firewall" "edge" {
