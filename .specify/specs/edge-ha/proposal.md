@@ -217,12 +217,33 @@ the T5 `hil` rebuild.
 
 ### T3: Shared wg0 identity
 **Depends on:** none
-**Verification:** edge `wg0` key is a store-held secret rendered to both
-nodes; L1 tripwire asserts both rendered configs carry the same key (a
-divergence fails `nix flake check`); the per-node self-generated path is
-removed.
-**Files:** `remote-infra/tofu/render.tf`,
-`remote-infra/system-manager/edge.nix`, `remote-infra/tofu/main.tf`
+**Verification:** the edge `wg0` key is a store-held secret, identical on
+both nodes. It flows via `edge.env` (runtime secret), not the rendered
+config, so the shared-identity property is (a) structural — one operator
+store + one provision script ⇒ both nodes get the same value — and
+(b) asserted at L0 (the boot test asserts the installed private key IS the
+store-held one and the served pubkey derives from it) and L2 (the vmtest
+edge answers as the fixture pubkey, proving `WG_PRIVATE_KEY` in `edge.env`
+drives the identity). The per-node self-generation path (Redis
+`EDGE_PRIV_KEY`) is removed. The operator key is generated once via
+`secretspec`'s `type = "command", generate = { command = "wg genkey" }`
+into the sops store (verified stable + valid WG format).
+**Also fixed (pre-existing, unrelated to the key change):** the
+`edge-forward` L2 test was silently red — nixosTest now assigns
+`2001:db8:1::/64` to the VMs' eth1 (edge `::2`, client `::1`), so
+(a) the WG endpoint hostname resolved to the edge's IPv6 where the
+handshake never got through (endpoint now pinned to the edge's IPv4) and
+(b) the client's boot-time handshake was dropped (edge had not yet added
+the peer at signup) and WireGuard never re-fired it (the test now
+remove+re-adds the peer — a key no-op under the shared identity — to
+force a fresh handshake). Proof: `nix flake check` green.
+**Files:** `crates/controlplane/secretspec.toml` (`WG_PRIVATE_KEY` contract),
+`crates/controlplane/src/controlplane/secret.rs` (`wg_private_key()`),
+`crates/controlplane/src/controlplane/mod.rs` (identity from store, no
+Redis generation), `secretspec.toml` (operator: `wg genkey` generator),
+`remote-infra/scripts/provision-edge.sh` (writes `WG_PRIVATE_KEY` into
+`edge.env`), `remote-infra/tofu/templates/edge.nix.tftpl` (comment),
+`nix/tests/edge/default.nix` (shared identity + endpoint/handshake fix)
 
 ### T4: Redis primary/replica + leader lease + promote + float-move
 **Depends on:** T1

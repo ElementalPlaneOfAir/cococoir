@@ -35,9 +35,19 @@ Regenerated: 2026-09-06T00:41:44Z — git 790abb5
   allocates `/128`, WG keypair, live forwards, DNS), `GET /customers`,
   `DELETE /customers/:username`, `GET /pubkey`; bearer admin auth.
   **DNS-on-signup** (Hetzner client, reconcile loop every 2h); **edge
-  runtime wiring** (live `wg set`, identity self-generated + persisted);
-  **edge process globals** (`'static` OnceCells, no AppState).
+  runtime wiring** (live `wg set`); **edge process globals** (`'static`
+  OnceCells, no AppState).
   Proof: `cargo test` + live Valkey round trip.
+- **Edge-HA foundations (2026-09-07)** — floating-IP driver
+  (`float.rs`: create/assign/move/release via the Hetzner Cloud API,
+  reusing `DNS_TOKEN`); tofu addressing moved onto a cluster Floating
+  IPv6 `/64` + shared `/32` (the node-auto-`/64` path for customers is
+  structurally gone); shared `wg0` identity from the store
+  (`WG_PRIVATE_KEY`, generated once via `wg genkey` into an
+  age-encrypted sops store — operator store migrated off plaintext
+  files). Proof: `cargo test --workspace` 183 green + `nix flake check`
+  green on vermissian (incl. `edge-forward` L2, which was pre-existing
+  red and is now fixed).
 - **Health server on poem + poem-openapi** — `/healthz` `/readyz`
   `/status` byte-exact + `/openapi.json` + `/docs`. Proof: L2
   `edge-forward` PASS.
@@ -148,13 +158,13 @@ Caddy); 2-node hot-hot pair, raw VMs + system-manager, **Redis leader
 lease** failover (no keepalived, no orchestrator); failover = reassign
 floats via the Hetzner API, DNS never changes. The float driver is also
 the foundation for the paid IPv4 SKU. T1 (float driver) + T2 (addressing
-on floats) landed — proof bar for the rest = the proposal's ACs; gate =
-`edge-ha-failover-test.sh`.
+on floats) + T3 (shared `wg0` identity) landed — proof bar for the rest =
+the proposal's ACs; gate = `edge-ha-failover-test.sh`.
 **Decisions (2026-09-07):** pair lives in **`hil`** (born where it stays —
 floats can't cross DCs); the **per-customer floating `/32` IPv4 SKU is
 in-scope** (new T6: create + assign + wholesale `wg0` route + wildcard
 `A`); the old `hel1` `edge` box is **disposable** (rebuilt fresh, retired
-in T5). Proposal amended to 7 tasks.
+in T5). Proposal amended to 8 tasks (T1–T8).
 **Landed (2026-09-07):**
 - **T1** float driver (`crates/controlplane/src/controlplane/float.rs` —
   `FloatApiClient` trait incl. `create` (create/assign/move/release),
@@ -178,7 +188,22 @@ in T5). Proposal amended to 7 tasks.
   re-seeded + hash-verified against the originals, `provision-edge.sh`
   untouched. Proof: `secretspec export -P provisioning -S provision`
   round-trips (flakes-pinned 0.19 + local both have the `sops` feature).
-Next: T3 shared `wg0` key, T4 Redis lease + float-move. **T8 added**
+- **T3 shared `wg0` identity (landed 2026-09-07):** edge `wg0` key now
+  comes from the store (`WG_PRIVATE_KEY`), identical on both nodes —
+  generated once via secretspec `wg genkey` into the sops store; the
+  Redis `EDGE_PRIV_KEY` self-generation path is gone. The Rust side:
+  `secret::wg_private_key()`, `install_edge_identity`/`edge_public_key`
+  now sync + read the injected key, `with_deps` takes the key param
+  (tests inject a fixture). Proof: L0 (boot test asserts installed key ==
+  store key; pubkey derives from it) + `nix flake check` **green on
+  vermissian** (L0/L1/L2 all pass). **Also fixed a pre-existing broken
+  L2 test** (`edge-forward` was silently red): nixosTest assigns
+  `2001:db8:1::/64` to the VMs' eth1 (edge `::2`, client `::1`) — the WG
+  endpoint hostname resolved to the edge's IPv6 (handshake never got
+  through; now pinned to the edge's IPv4) and the client's boot handshake
+  was dropped before signup added the peer (test now remove+re-adds the
+  peer — a no-op under the shared identity — to force a fresh handshake).
+Next: T4 Redis lease + float-move (the runtime core). **T8 added**
 (store backup → S3-compatible object storage, RPO 10 min, replica-side
 `BGSAVE` + rclone, client-side encrypted; off the gate's critical path).
 Redis today is already durable locally (AOF + `appendfsync always`); the

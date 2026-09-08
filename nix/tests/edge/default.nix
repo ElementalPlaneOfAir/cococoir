@@ -79,7 +79,11 @@ let
   # The edge box's routed subnet. 2001:db8::/32 is the documentation
   # range; customer 1 is host 2 -> 2001:db8:1::2. The /64 is never added
   # to an interface — the forwarder binds each customer /128 via
-  # IPV6_FREEBIND, and the test routes it to loopback to reach it.
+  # IPV6_FREEBIND, and the test routes it to loopback to reach it. NOTE:
+  # 2001:db8:1::2 intentionally equals the edge's OWN eth1 IPv6 in the
+  # nixosTest network (edge = 192.168.1.2 / 2001:db8:1::2) — that is what
+  # makes the FREEBIND-bound /128 receive connections in the VM; a truly
+  # non-local /128 gets RST (connection refused).
   subnet = "2001:db8:1::/64";
 in {
   edge-forward = pkgs.testers.nixosTest {
@@ -163,12 +167,17 @@ in {
         # Client config: the tunnel section drives the client-owned wg0.
         # edge_pubkey is the shared identity's public key — deterministic
         # because WG_PRIVATE_KEY in edge.env pins it (ADR-029).
+        # edge_endpoint is the edge's IPv4, NOT the hostname: nixosTest
+        # resolves node names to their IPv6 (2001:db8:1::N) and a WG
+        # handshake to that IPv6 never gets through to the edge's wg0
+        # (pre-existing, reproduced with the original test too). The
+        # vlan IPv4 is stable per node order (edge = node 2).
         environment.etc."cococoir-client.json".text = builtins.toJSON {
           tunnel = {
             ip = "10.10.0.2";
             prefix = 24;
             edge_pubkey = edgePublic;
-            edge_endpoint = "edge:51820";
+            edge_endpoint = "192.168.1.2:51820";
             edge_allowed_ips = "10.10.0.0/24";
           };
           forwards = [
@@ -279,7 +288,19 @@ in {
 
       # The client's wg0 peer already points at the shared pubkey
       # (edge_pubkey = edgePublic in the config, and the edge answers as
-      # that exact key). Nothing to swap — verify the tunnel peer is up.
+      # that exact key). Nothing to swap — but FORCE a fresh handshake:
+      # the boot-time initiation was dropped (the edge had not yet added
+      # this peer — signup runs later) and WireGuard won't re-fire it
+      # before the data-path check. Remove + re-add kicks a new
+      # initiation (the pre-T3 swap did the same); with the shared
+      # identity the key is unchanged, only the handshake is re-armed.
+      # The endpoint is the edge's IPv4 (192.168.1.2): nixosTest resolves
+      # node names to IPv6 and a handshake to that IPv6 never reaches the
+      # edge's wg0 (pre-existing, reproduced with the original test too).
+      client.succeed(
+          "wg set wg0 peer {} remove\n".format("${edgePublic}")
+          + "wg set wg0 peer {} allowed-ips 10.10.0.0/24 endpoint 192.168.1.2:51820 persistent-keepalive 25\n".format(edge_public_key)
+      )
       client.wait_until_succeeds(
           "curl -sf http://127.0.0.1:9090/status | grep -q '" + customer_wgip + ":80'"
       )
@@ -288,13 +309,6 @@ in {
       # socket is reachable from inside the edge VM (no IPv6 transit
       # between nixosTest VMs).
       edge.succeed("ip -6 route add {} dev lo".format(customer_ipv6))
-
-      # DEBUG: dump both wg0 interfaces before the data-path curl.
-      print("=== DEBUG edge wg0 ===\n" + edge.succeed("wg show wg0"))
-      print("=== DEBUG client wg0 ===\n" + client.succeed("wg show wg0"))
-      print("=== DEBUG client resolve edge ===\n" + client.succeed("getent ahosts edge"))
-      print("=== DEBUG edge addr ===\n" + edge.succeed("ip -6 addr show && ip addr show eth1"))
-      print("=== DEBUG client addr ===\n" + client.succeed("ip -6 addr show && ip addr show eth1"))
 
       # THE TEST: from the edge, hit the customer /128 -> edge forwarder
       # -> WireGuard tunnel -> customer box forwarder -> local http. The
