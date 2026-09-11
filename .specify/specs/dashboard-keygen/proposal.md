@@ -13,7 +13,7 @@ AGENTS.md bans. We keep patching it (`write the key file`, `restart
 wg0`) because the client does not own the tunnel.
 
 The structural fix, and the agreed Next move #3: **the client owns wg0
-and its keypair.** `cococoir-client` generates + persists its own WG
+and its keypair.** `fortress-client` generates + persists its own WG
 keypair, brings up wg0 itself, and (once a customer-auth token exists)
 registers via the now-idempotent `/signup`. This removes the operator
 key-file step, the `fopen` fragility, and the edge-holds-keys smell. My
@@ -29,7 +29,7 @@ step, which breaks silently, and amon-sul's remote access stays down.
 
 ## Acceptance criteria
 
-- [x] **L0** `cargo test -p cococoir-client` green: `ensure_keypair` is
+- [x] **L0** `cargo test -p fortress-client` green: `ensure_keypair` is
       idempotent (generates once, persists 0600, never regenerates an
       existing key); `bring_up_wg0` issues the expected `ip`/`wg` command
       sequence (interface ensure, key, peer, addr, up) and is idempotent
@@ -51,7 +51,7 @@ step, which breaks silently, and amon-sul's remote access stays down.
 ## Smallest version
 
 The client generates + persists its own keypair under
-`/var/lib/cococoir/wg-private.key`, brings up `wg0` from a `tunnel` config
+`/var/lib/fortress/wg-private.key`, brings up `wg0` from a `tunnel` config
 section (edge pubkey, endpoint, tunnel IP — all stable, known values), and
 starts the forwarder against the now-existing tunnel IP. The NixOS wg0
 module is removed. The operator registers the client's generated pubkey
@@ -86,15 +86,15 @@ self-registration builds on later — the Rust wg0 ownership does not change.
 
 ## Architecture decisions
 
-- **Client owns wg0 + key.** New `cococoir-client` module shells to
+- **Client owns wg0 + key.** New `fortress-client` module shells to
   `ip`/`wg` (root unit, `path = [iproute2 wireguard-tools]`), mirroring the
   edge's `RealWgClient`. No new customer-facing options beyond one
   `tunnel` config section.
-- **Key persists at `/var/lib/cococoir/wg-private.key`** (0600, under
-  `StateDirectory=cococoir` — the one writable path under
+- **Key persists at `/var/lib/fortress/wg-private.key`** (0600, under
+  `StateDirectory=fortress` — the one writable path under
   `ProtectSystem=strict`). The client is the sole authority; it never sends
   the private key anywhere (ADR-025).
-- **Config-driven tunnel.** `cococoir-client.json` gains a `tunnel`
+- **Config-driven tunnel.** `fortress-client.json` gains a `tunnel`
   section: `{ iface = "wg0", ip = "10.10.0.3", prefix = 24,
   edge_pubkey = "...", edge_endpoint = "62.238.111.21:51820",
   edge_allowed_ips = "10.10.0.0/24", listen_port = 0 }`. The forwarder's
@@ -109,9 +109,9 @@ self-registration builds on later — the Rust wg0 ownership does not change.
 
 ## Tasks
 
-### T1: `cococoir-client` tunnel module (keygen + wg0)
+### T1: `fortress-client` tunnel module (keygen + wg0)
 **Depends on:** none — DONE
-**Verification:** `cargo test -p cococoir-client` green; idempotency
+**Verification:** `cargo test -p fortress-client` green; idempotency
 tests for keypair + interface/addr. L0.
 **Files:** `crates/client/src/tunnel.rs`, `crates/client/src/lib.rs`
 
@@ -121,7 +121,7 @@ idempotent. Test the command construction with a mock shell or capture.
 
 ### T2: wire tunnel into the client entry point + config
 **Depends on:** T1 — DONE
-**Verification:** `cargo test -p cococoir-client` green; `ConfigFile`
+**Verification:** `cargo test -p fortress-client` green; `ConfigFile`
 parses the `tunnel` section; wg0 is brought up before the forwarder
 binds. L0.
 **Files:** `crates/client/src/app.rs`

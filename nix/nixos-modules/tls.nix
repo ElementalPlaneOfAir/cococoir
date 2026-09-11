@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/tls — the platform's TLS posture, read by the service
+# fortress/tls — the platform's TLS posture, read by the service
 # contract factory's Caddy vhost builder.
 #
 # One option. Each service vhost picks up the right `tls` directive
 # from here, so a customer does not write `tls <cert> <key>` into
 # every vhost and does not learn about ACME unless they want to.
 #
-#   cococoir.tls = {
+#   fortress.tls = {
 #     mode = "acme";           # production: Let's Encrypt via Caddy
 #     # mode = "self-signed";  # dev VMs: pre-generated cert/key
 #     # certFile = "/etc/..."; # required when mode = "self-signed"
@@ -23,12 +23,12 @@
 {lib, config, ...}:
 
 {
-  options.cococoir.tls = {
+  options.fortress.tls = {
     mode = lib.mkOption {
       type = lib.types.enum ["off" "acme" "self-signed"];
       default = "off";
       description = ''
-        How Caddy obtains TLS certificates for cococoir vhosts.
+        How Caddy obtains TLS certificates for fortress vhosts.
 
         - `"off"`: no `tls` directive is emitted. Use for HTTP-only
           dev loops or behind another TLS terminator.
@@ -60,18 +60,18 @@
     };
   };
 
-  config = lib.mkIf (config.cococoir.tls.mode == "self-signed") {
+  config = lib.mkIf (config.fortress.tls.mode == "self-signed") {
     assertions = [
       {
-        assertion = config.cococoir.tls.certFile != null;
+        assertion = config.fortress.tls.certFile != null;
         message = ''
-          cococoir.tls: certFile is required when mode = "self-signed".
+          fortress.tls: certFile is required when mode = "self-signed".
         '';
       }
       {
-        assertion = config.cococoir.tls.keyFile != null;
+        assertion = config.fortress.tls.keyFile != null;
         message = ''
-          cococoir.tls: keyFile is required when mode = "self-signed".
+          fortress.tls: keyFile is required when mode = "self-signed".
         '';
       }
     ];

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/baseDomain — the apex domain the customer owns.
+# fortress/baseDomain — the apex domain the customer owns.
 #
 # The single source of truth for "what's the FQDN base for this
 # machine?" Service modules' `domain` options default to
@@ -9,10 +9,10 @@
 # (see PLAN.md v2 single-machine goals; ADR-012 for the per-tenant
 # vs per-machine question).
 #
-#   cococoir.baseDomain = "alice.example.com";
+#   fortress.baseDomain = "alice.example.com";
 #
-# Then `cococoir.services.jellyfin.domain` defaults to
-# `jellyfin.alice.example.com`, `cococoir.services.dex.domain`
+# Then `fortress.services.jellyfin.domain` defaults to
+# `jellyfin.alice.example.com`, `fortress.services.dex.domain`
 # to `auth.alice.example.com`, etc. Override any individual
 # `domain` if a service needs a non-conventional name.
 #
@@ -25,7 +25,7 @@
 {lib, ...}:
 
 {
-  options.cococoir.baseDomain = lib.mkOption {
+  options.fortress.baseDomain = lib.mkOption {
     type = lib.types.nullOr lib.types.str;
     default = null;
     example = "alice.example.com";

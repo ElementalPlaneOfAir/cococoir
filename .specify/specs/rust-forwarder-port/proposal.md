@@ -33,9 +33,9 @@ half is explicitly **out of scope** and gated on this arc's result.
       vmtest-wiring untouched and green). Maps to T8.
 - [ ] Config schema (`{forwards:[{listen_addr,proto,dest_addr}]}`), CLI
       flags (`-config`, `-log-format`, `-health-addr`), and binary names
-      (`cococoir-edge`, `cococoir-client`) unchanged. Maps to T6.
+      (`fortress-edge`, `fortress-client`) unchanged. Maps to T6.
 - [ ] Go module and `internal/store` deleted; no `.go` files remain under
-      `nix/packages/cococoir/`. Maps to T8.
+      `nix/packages/fortress/`. Maps to T8.
 - [ ] Calibration measured: time spent on the port recorded in the proposal
       for the greenfield decision. Maps to T9.
 
@@ -69,7 +69,7 @@ replacing the Go module, with Go deleted in the same commit. Nothing else.
 
 ## Architecture decisions
 
-- New ADR (supersedes ADR-017's "Go service is the spine"): the cococoir
+- New ADR (supersedes ADR-017's "Go service is the spine"): the fortress
   service is Rust. The bounded-scope statement survives; only the language
   changes. Recorded in PLAN.md.
 - No other ADR changes. The two-trust-domain split, the in-process collector,
@@ -81,25 +81,25 @@ replacing the Go module, with Go deleted in the same commit. Nothing else.
 **Depends on:** none
 **Verification:** `cargo test` compiles; `New` rejects empty forwards,
 unknown proto, missing fields (port of `TestNew_*`). L0.
-**Files:** `nix/packages/cococoir/Cargo.toml`,
-`nix/packages/cococoir/src/lib.rs`,
-`nix/packages/cococoir/src/forwarder.rs`
+**Files:** `nix/packages/fortress/Cargo.toml`,
+`nix/packages/fortress/src/lib.rs`,
+`nix/packages/fortress/src/forwarder.rs`
 
 ### T2: retry-with-backoff bind (tcp + udp paths)
 **Depends on:** T1
 **Verification:** unit tests port `TestIsTransientBindErr`,
 `TestNextBackoff`; cancel-during-sleep honored via `tokio::select!`. L0.
-**Files:** `nix/packages/cococoir/src/forwarder.rs`,
-`nix/packages/cococoir/src/retry.rs`
+**Files:** `nix/packages/fortress/src/forwarder.rs`,
+`nix/packages/fortress/src/retry.rs`
 
 ### T3: TCP + UDP serving, stats, graceful drain
 **Depends on:** T2
 **Verification:** ports `TestRun_TCPForward`, `TestRun_UDPForward`,
 `TestRun_GracefulShutdownNoInflight`, `TestStats_*` (bound/bind-error,
 conn/flow counts, slice-is-copy). L0.
-**Files:** `nix/packages/cococoir/src/forwarder.rs`,
-`nix/packages/cococoir/src/tcp.rs`,
-`nix/packages/cococoir/src/udp.rs`
+**Files:** `nix/packages/fortress/src/forwarder.rs`,
+`nix/packages/fortress/src/tcp.rs`,
+`nix/packages/fortress/src/udp.rs`
 
 **Architectural amendments made during implementation (not blind
 Go copies):**
@@ -129,21 +129,21 @@ Go copies):**
 **Depends on:** T3
 **Verification:** unit tests for readyz bound-true/bound-false and /status
 JSON shape. L0.
-**Files:** `nix/packages/cococoir/src/health.rs`,
-`nix/packages/cococoir/Cargo.toml`
+**Files:** `nix/packages/fortress/src/health.rs`,
+`nix/packages/fortress/Cargo.toml`
 
-### T5: logger (text/json) + two mains (cococoir-edge, cococoir-client)
+### T5: logger (text/json) + two mains (fortress-edge, fortress-client)
 **Depends on:** T4
 **Verification:** flag parsing, config load, JSON round-trip; binaries
-produced at `bin/cococoir-edge` and `bin/cococoir-client`. L0.
-**Files:** `nix/packages/cococoir/src/logger.rs`,
-`nix/packages/cococoir/src/bin/edge.rs`,
-`nix/packages/cococoir/src/bin/client.rs`
+produced at `bin/fortress-edge` and `bin/fortress-client`. L0.
+**Files:** `nix/packages/fortress/src/logger.rs`,
+`nix/packages/fortress/src/bin/edge.rs`,
+`nix/packages/fortress/src/bin/client.rs`
 
 **Architectural amendments:**
 - **DRY mains.** Go duplicated ~85 lines across `cmd/edge` and
   `cmd/client`; both are now two-line wrappers over a shared
-  `cococoir::app::run`. The `configFile` struct, flag parsing, signal
+  `fortress::app::run`. The `configFile` struct, flag parsing, signal
   handling, and health wiring exist once. (Violating "duplication is
   weight" was worse than the module boundary.)
 - **tracing replaces slog.** `logger::Format::parse` + a global
@@ -157,7 +157,7 @@ produced at `bin/cococoir-edge` and `bin/cococoir-client`. L0.
 **Depends on:** T5
 **Verification:** `nix build` the Rust package; `nix flake check` `doc-refs`
 passes after ADR update (T8). L1.
-**Files:** `nix/packages/cococoir/default.nix`,
+**Files:** `nix/packages/fortress/default.nix`,
 `flake.nix` (if needed)
 
 **Amendment:** `buildRustPackage` lives under `rustPlatform` in current
@@ -175,7 +175,7 @@ edge→WG→client→python). L2.
 `nix/tests/edge/default.nix` (only if the test needs touch — it should not)
 
 **Result:** No test rewiring was needed — `forwarder-unit-tests` is
-`cococoirPkg.overrideAttrs (doCheck = true)`, which now runs
+`fortressPkg.overrideAttrs (doCheck = true)`, which now runs
 `cargo test` (42 tests) because the package is Rust. Both were
 verified via a single `nix flake check`: all 21 checks pass,
 including the full `edge-forward` 2-VM nixosTest
@@ -191,7 +191,7 @@ spaced string; axum's `Json` emits compact JSON. Fixed in
 **Depends on:** T7
 **Verification:** `rg --files | rg '\.go$'` empty under the package; `nix flake
 check` green; `doc-refs` sees the new ADR. L1.
-**Files:** `nix/packages/cococoir/` (delete go.mod, go.sum, *.go, store/),
+**Files:** `nix/packages/fortress/` (delete go.mod, go.sum, *.go, store/),
 `PLAN.md`
 
 **Done:** Go module + `internal/store` deleted (0 `.go` files). ADR-024

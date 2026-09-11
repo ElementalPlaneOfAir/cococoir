@@ -9,7 +9,7 @@
 //! error, never a silent runtime surprise.
 //!
 //! Values resolve at **runtime** from the dotenv provider
-//! (`/etc/cococoir/edge.env`), through the macro-generated
+//! (`/etc/fortress/edge.env`), through the macro-generated
 //! `SecretSpec::builder().load()`.
 //!
 //! [`SECRETS`] is a process-lifetime global (`LazyLock`), the same shape
@@ -30,17 +30,17 @@ use std::sync::LazyLock;
 /// signup). Panics on failure — the box is unusable without these.
 pub(crate) static SECRETS: LazyLock<secretspec::Resolved<SecretSpec>> = LazyLock::new(|| {
     SecretSpec::builder()
-        .with_provider("dotenv:/etc/cococoir/edge.env")
+        .with_provider("dotenv:/etc/fortress/edge.env")
         // An explicit reason satisfies the default `require_reason =
         // "agents"` policy (the systemd process isn't an agent, but a
         // reason gives the audit log a human-readable provenance and
         // stays correct if the policy ever becomes "always").
-        .with_reason("cococoir-edge boot")
+        .with_reason("fortress-edge boot")
         .load()
         .expect("edge secrets must resolve at boot")
 });
 
-/// The root domain customer hostnames live under, e.g. `interdim.net`.
+/// The root domain customer hostnames live under, e.g. `proletariat.tech`.
 pub fn root_domain() -> &'static str {
     &SECRETS.secrets.root_domain
 }
@@ -119,7 +119,7 @@ mod tests {
     /// `declare_secrets!` no longer matches.
     const CONTRACT: &str = r#"
 [project]
-name = "cococoir-edge"
+name = "fortress-edge"
 revision = "1.0"
 
 [profiles.default]
@@ -141,13 +141,13 @@ MAIL_FROM = { description = "Envelope From", required = false }
     /// + `resolve`) — the same resolution path the macro-generated
     /// `SECRETS::load()` takes, driven with an explicit path because a
     /// test cannot control the process CWD discovery or the hardcoded
-    /// `/etc/cococoir/edge.env` provider.
+    /// `/etc/fortress/edge.env` provider.
     fn resolve_contract(dotenv: &str) -> secretspec::ResolveResponse {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!(
-            "cococoir-secret-test-{}-{}",
+            "fortress-secret-test-{}-{}",
             std::process::id(),
             n
         ));

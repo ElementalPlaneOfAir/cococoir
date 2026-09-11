@@ -48,7 +48,7 @@ pub enum DnsError {
 }
 
 /// A client for a DNS provider's provisioning API. One record per
-/// call; `name` is the FULL record name (e.g. `*.bob.interdim.net`).
+/// call; `name` is the FULL record name (e.g. `*.bob.proletariat.tech`).
 /// The "main + wildcard" policy lives above this (see the module doc).
 #[async_trait]
 pub trait DnsApiClient: Send + Sync {
@@ -373,7 +373,7 @@ pub async fn remove_customer(
     Ok(())
 }
 
-/// The customer's bare hostname, e.g. `bob.interdim.net`.
+/// The customer's bare hostname, e.g. `bob.proletariat.tech`.
 pub fn customer_hostname(username: &str, domain: &str) -> String {
     format!("{username}.{domain}")
 }
@@ -452,7 +452,7 @@ mod tests {
     fn provider() -> HetznerDns {
         HetznerDns::new(
             "zone-123".to_string(),
-            "interdim.net".to_string(),
+            "proletariat.tech".to_string(),
             "secret-token".to_string(),
         )
     }
@@ -460,12 +460,12 @@ mod tests {
     #[test]
     fn relative_name_strips_zone() {
         let dns = provider();
-        assert_eq!(dns.relative_name("bob.interdim.net").unwrap(), "bob");
+        assert_eq!(dns.relative_name("bob.proletariat.tech").unwrap(), "bob");
         assert_eq!(
-            dns.relative_name("*.bob.interdim.net").unwrap(),
+            dns.relative_name("*.bob.proletariat.tech").unwrap(),
             "*.bob"
         );
-        assert_eq!(dns.relative_name("interdim.net").unwrap(), "@");
+        assert_eq!(dns.relative_name("proletariat.tech").unwrap(), "@");
         assert!(dns.relative_name("bob.example.org").is_err());
     }
 
@@ -473,14 +473,14 @@ mod tests {
     async fn mock_records_upsert_and_remove() {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        mock.upsert_aaaa("bob.interdim.net", ip).await.unwrap();
-        mock.upsert_aaaa("*.bob.interdim.net", ip).await.unwrap();
-        mock.remove_aaaa("bob.interdim.net").await.unwrap();
+        mock.upsert_aaaa("bob.proletariat.tech", ip).await.unwrap();
+        mock.upsert_aaaa("*.bob.proletariat.tech", ip).await.unwrap();
+        mock.remove_aaaa("bob.proletariat.tech").await.unwrap();
         let upserts = mock.upserts.lock().unwrap();
         assert_eq!(upserts.len(), 2);
-        assert_eq!(upserts[0], ("bob.interdim.net".to_string(), ip));
-        assert_eq!(upserts[1], ("*.bob.interdim.net".to_string(), ip));
-        assert_eq!(*mock.removes.lock().unwrap(), vec!["bob.interdim.net".to_string()]);
+        assert_eq!(upserts[0], ("bob.proletariat.tech".to_string(), ip));
+        assert_eq!(upserts[1], ("*.bob.proletariat.tech".to_string(), ip));
+        assert_eq!(*mock.removes.lock().unwrap(), vec!["bob.proletariat.tech".to_string()]);
     }
 
     #[tokio::test]
@@ -488,12 +488,12 @@ mod tests {
         let mock = MockDnsApiClient::new();
         mock.fail_upserts();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        assert!(mock.upsert_aaaa("bob.interdim.net", ip).await.is_err());
+        assert!(mock.upsert_aaaa("bob.proletariat.tech", ip).await.is_err());
     }
 
     #[test]
     fn customer_hostname_uses_domain() {
-        assert!(customer_hostname("bob", "interdim.net").ends_with(".interdim.net"));
+        assert!(customer_hostname("bob", "proletariat.tech").ends_with(".proletariat.tech"));
         assert!(customer_hostname("bob", "other.example").ends_with(".other.example"));
     }
 
@@ -501,24 +501,24 @@ mod tests {
     async fn upsert_customer_creates_both_records() {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        upsert_customer(&mock, "bob", ip, "interdim.net").await.unwrap();
+        upsert_customer(&mock, "bob", ip, "proletariat.tech").await.unwrap();
         let upserts = mock.upserts.lock().unwrap();
         assert_eq!(upserts.len(), 2);
         let names: Vec<&str> = upserts.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"bob.interdim.net"));
-        assert!(names.contains(&"*.bob.interdim.net"));
+        assert!(names.contains(&"bob.proletariat.tech"));
+        assert!(names.contains(&"*.bob.proletariat.tech"));
         assert!(upserts.iter().all(|(_, got)| *got == ip));
     }
 
     #[tokio::test]
     async fn remove_customer_removes_both_records() {
         let mock = MockDnsApiClient::new();
-        remove_customer(&mock, "bob", "interdim.net").await.unwrap();
+        remove_customer(&mock, "bob", "proletariat.tech").await.unwrap();
         let mut removes = mock.removes.lock().unwrap();
         removes.sort();
         assert_eq!(
             *removes,
-            vec!["*.bob.interdim.net".to_string(), "bob.interdim.net".to_string()]
+            vec!["*.bob.proletariat.tech".to_string(), "bob.proletariat.tech".to_string()]
         );
     }
 
@@ -541,7 +541,7 @@ mod tests {
         static WRONG: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 9);
         let resolve: AaaaResolver = |_: &str| Box::pin(async move { Ok(vec![WRONG]) });
         let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
+        let reapplied = reconcile_pass(&mock, &customers, resolve, "proletariat.tech").await;
         assert_eq!(reapplied, 2); // bare + wildcard both re-applied
         assert_eq!(mock.upserts.lock().unwrap().len(), 2);
     }
@@ -554,7 +554,7 @@ mod tests {
         static RIGHT: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 2);
         let resolve: AaaaResolver = |_: &str| Box::pin(async move { Ok(vec![RIGHT]) });
         let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
+        let reapplied = reconcile_pass(&mock, &customers, resolve, "proletariat.tech").await;
         assert_eq!(reapplied, 0);
         assert_eq!(mock.upserts.lock().unwrap().len(), 0);
     }
@@ -567,7 +567,7 @@ mod tests {
             Box::pin(async move { Err::<Vec<Ipv6Addr>, DnsError>(DnsError::Resolve("boom".into())) })
         };
         let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve, "interdim.net").await;
+        let reapplied = reconcile_pass(&mock, &customers, resolve, "proletariat.tech").await;
         assert_eq!(reapplied, 2);
     }
 

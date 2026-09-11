@@ -1,4 +1,4 @@
-# Cococoir Plan
+# Fortress Plan
 
 The home server product, end to end. Source of truth for what we're
 building, in what order, against what gate. Older plans live in
@@ -14,7 +14,7 @@ economics.
 
 The product target is the residential customer. The technical debt
 problem we're solving: traditional homelab setups fail non-technical
-users. Cococoir succeeds by shipping a single NixOS config the
+users. Fortress succeeds by shipping a single NixOS config the
 customer can install and forget about, with reliability and
 observability built in.
 
@@ -26,7 +26,7 @@ customer-facing scope, not internal implementation order.
 
 | Version | What it is | Status | Gate |
 |---------|-----------|--------|------|
-| **v0** | L4 forwarder (`cococoir-edge` + `cococoir-client` Rust binaries, NixOS modules, health endpoint) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
+| **v0** | L4 forwarder (`fortress-edge` + `fortress-client` Rust binaries, NixOS modules, health endpoint) | Shipped | 2-VM nixosTest (`nix/tests/edge/`) |
 | **v1** | Legacy home server (clan-core, Garage, FUSE mounts, services, rathole tunnel) at `v1/` | Frozen — soft deprecated. Features port to v2; no new development. | (n/a) |
 | **v2** | New home server (flake-parts + sops-nix, uses the v0 forwarder, btrfs storage, 7 services with Dex OIDC) | Target | `scripts/vmtest-e2e.sh` PASS (Jellyfin + dex + cryptpad + btrfs + sops) |
 | **v3** | Control plane (Redis + auto-provisioning + web UI, multi-tenant) | Deferred. Trigger: IPv6 makes it viable before 10-20 customers (ADR-025); demo slice shipped 2026-08-15. | (n/a yet) |
@@ -50,18 +50,18 @@ need to keep working — we only read it as a source of patterns.
 
 A cargo workspace at the repo root (ADR-026) producing two binaries:
 
-- **`cococoir-edge`** — the edge box's single process (in
-  `cococoir-controlplane` crate): L4 forwarder + control-plane API.
+- **`fortress-edge`** — the edge box's single process (in
+  `fortress-controlplane` crate): L4 forwarder + control-plane API.
   Per-IP binding, retry with backoff on transient bind errors, graceful
   shutdown.
-- **`cococoir-client`** — the customer box's single process (in
-  `cococoir-client` crate): the L4 forwarder receiving WireGuard
+- **`fortress-client`** — the customer box's single process (in
+  `fortress-client` crate): the L4 forwarder receiving WireGuard
   traffic (forwarding to `127.0.0.1:<port>` where local Caddy
   terminates TLS) plus the embedded config dashboard. The binary also
   embeds a prober, a journald tailer, and an OTEL SDK (those land in
   v2 work; v0 ships the forwarder + health endpoint + dashboard).
 
-Shared L4 engine in `cococoir-core` (ADR-024, ported from Go):
+Shared L4 engine in `fortress-core` (ADR-024, ported from Go):
 `crates/core/src/`
 
 - **`forwarder`** — TCP + UDP forwarding, retry, drain, signal
@@ -74,7 +74,7 @@ Shared L4 engine in `cococoir-core` (ADR-024, ported from Go):
   `json` formats.
 
 The 2-VM nixosTest at `nix/tests/edge/default.nix` exercises the
-full data path (`curl → cococoir-edge :80 → WG → cococoir-client :80
+full data path (`curl → fortress-edge :80 → WG → fortress-client :80
 → python :80`) plus the health endpoint. **Gate: green.**
 
 What v0 does *not* do (intentionally):
@@ -86,8 +86,8 @@ What v0 does *not* do (intentionally):
 
 ## v2 — Home server (target)
 
-The full cococoir product for a single-machine deployment. The
-customer (or operator) installs NixOS, applies the cococoir flake,
+The full fortress product for a single-machine deployment. The
+customer (or operator) installs NixOS, applies the fortress flake,
 and gets a working home server with S3-backed storage and local
 OTEL observability.
 
@@ -137,7 +137,7 @@ v2 storage is **btrfs + restic** (see ADR-023):
 
 The factory contract (`_contract.nix`):
 
-Every service calls `mkCococoirService` with a 3-line declaration
+Every service calls `mkFortressService` with a 3-line declaration
 (name, description, port, optional healthPath/bucket), and the
 factory generates: the NixOS option tree (enable/domain/public),
 the Caddy vhost with correct TLS, the systemd unit wiring, and
@@ -169,7 +169,7 @@ The contract adapts per service class:
 ##### Auth: Dex-only OIDC (see ADR-021)
 
 Dex is the sole OIDC provider. Users are declared in
-`cococoir.services.dex.staticPasswords` (a Nix attrset of
+`fortress.services.dex.staticPasswords` (a Nix attrset of
 username → bcrypt-hash). No PocketID, no Authentik, no admin
 dashboard — just a config file. The customer sets an admin
 user at provisioning time and can add more users by editing
@@ -190,7 +190,7 @@ Services are wired to Dex declaratively:
 
 Both integrations auto-activate when their parent service and Dex
 are both enabled — the customer sees one toggle ("enable jellyfin")
-and gets OIDC for free. No `cococoir.integrations.X.enable` option
+and gets OIDC for free. No `fortress.integrations.X.enable` option
 exists.
 
 ##### Planned services
@@ -199,15 +199,15 @@ exists.
 - **qBittorrent** (v2.13): shared `media` volume.
 - **Jellyseerr** (v2.13): request management, OIDC via Dex.
 
-#### cococoir-client extensions (Rust)
+#### fortress-client extensions (Rust)
 
-The `cococoir-client` binary (v0, Rust) gets three new modules:
+The `fortress-client` binary (v0, Rust) gets three new modules:
 
 - **`probe`** — HTTP GET prober, periodic (default 60s),
   one OTEL span per probe: `{name: "probe <url>", kind: CLIENT,
   attributes: {http.url, http.status_code, http.method}, status:
   OK/ERROR, duration: <measured>}`. Reads `services` list from the
-  cococoir config.
+  fortress config.
 - **`journald`** — tails `systemd` journal for each
   service's declared units. Emits one OTEL log record per entry:
   `{time, observed_time, severity_number, severity_text, body,
@@ -307,7 +307,7 @@ These are the rules v2 enforces. They are non-negotiable.
   encrypted file is the source of truth; the age key lives
   outside the repo.
 - **3-option (or 4-option) service contract is enforced by the factory, not by hand.**
-  `mkCococoirService` from `_contract.nix` owns the standard option surface
+  `mkFortressService` from `_contract.nix` owns the standard option surface
   (enable / domain / public), the Caddy vhost, and the standard assertions.
   Adding a 5th option requires careful justification; the factory provides
   `extraConfig` for per-service additions without breaking the contract. See ADR-020.
@@ -325,7 +325,7 @@ operator workflow gets painful at 10-20 customers.
 - Customer records, subscriptions, usage, infrastructure state
 - Auto-provisions IPv4 on the VPS via Hetzner API
 - Auto-provisions DNS via Hetzner DNS API
-- Tracks per-customer bandwidth (cococoir-edge reports periodically)
+- Tracks per-customer bandwidth (fortress-edge reports periodically)
 - Web UI for customers + operators
 - Optional: Stripe integration, self-serve backup, self-serve
   multi-machine customers
@@ -340,8 +340,8 @@ Multiple VPSes, each holding a slice of customers. Triggered at
 50-100 customers or when geographic distribution becomes a hard
 requirement.
 
-- `cococoir.edge.hosts.<name>` option tree for VPS records
-- `cococoir.tenant.<name>.edgeHost` for the assignment
+- `fortress.edge.hosts.<name>` option tree for VPS records
+- `fortress.tenant.<name>.edgeHost` for the assignment
 - Per-VPS NixOS configurations, each filtering the tenant list by
   edgeHost
 - Failover: WireGuard endpoint roaming + manual runbook
@@ -381,18 +381,18 @@ revisited.
 - **ADR-007: L4 forwarder has no service knowledge.** The
   forwarder reads `forwards = [...]` from config. It does not
   know about storage, S3, or any service. Service logic lives in
-  the prober/journald/dashboard extensions of `cococoir-client`.
-- **ADR-008: Prober / journald / dashboard live in cococoir-client.**
+  the prober/journald/dashboard extensions of `fortress-client`.
+- **ADR-008: Prober / journald / dashboard live in fortress-client.**
   One binary, three internal packages. They share the JSON
   config, the slog logger, the OTEL SDK, and the health server.
   They do not share code paths.
-- **ADR-009: Per-customer isolation via `cococoir.tenant` (v3+).**
+- **ADR-009: Per-customer isolation via `fortress.tenant` (v3+).**
   v0 has a tenant module for v0's B2B use case. v2 reuses the
   pattern when multi-tenant lands in v3.
 - **ADR-010: Secrets stay in the user's repo.** Encrypted with
   sops-nix. The age key lives outside the repo (operator's
   laptop, customer's USB stick, or a SOPS-managed secret store).
-- **ADR-011: Cococoir is a deployment tool, not a library.**
+- **ADR-011: Fortress is a deployment tool, not a library.**
   Per the v1 audit (`v1/THE_GREAT_SIMPLIFICATION.md`). v2 carries
   this forward: the flake input shape stays, but we don't ship
   a separate "API contract" for imaginary future consumers.
@@ -408,12 +408,12 @@ revisited.
   just runs. No runtime state to coordinate. Cluster expansion
   (v4) relies on this.
 - **ADR-015: WireGuard handles transport authentication.**
-  The kernel does crypto and peer authentication. cococoir-edge
-  and cococoir-client configure the WireGuard interface; the
+  The kernel does crypto and peer authentication. fortress-edge
+  and fortress-client configure the WireGuard interface; the
   kernel enforces that only valid peers can send packets. v2's
   single-machine deployment skips WireGuard (no remote access);
   v3 reintroduces it.
-- **ADR-016: Per-customer IPv4 is the routing primitive.** Cococoir's
+- **ADR-016: Per-customer IPv4 is the routing primitive.** Fortress's
   network design requires (a) web traffic accessible over IPv4,
   (b) per-customer routing on a shared proxy, (c) TLS keys on
   the device. The only configuration that satisfies all three is
@@ -426,14 +426,14 @@ revisited.
   bounded-scope statement survives; only the language changed — see
   ADR-024.*
 - **ADR-018: Config generation via `environment.etc` + `builtins.toJSON`.**
-  Module `configFile` defaults to `/etc/cococoir-{edge,client}.json`.
+  Module `configFile` defaults to `/etc/fortress-{edge,client}.json`.
   Operators can override with a custom path.
-- **ADR-019: bbolt for per-VPS storage at `/var/lib/cococoir/edge.db`.**
+- **ADR-019: bbolt for per-VPS storage at `/var/lib/fortress/edge.db`.**
   v0 ships bbolt. v2's bbolt usage is the same (no schema change
   in this slice). Badger was rejected as more complex with no
   benefit at this scale.
 - **ADR-020: Factory contract enforces the service contract.**
-  Every service module calls `mkCococoirService` from
+  Every service module calls `mkFortressService` from
   `_contract.nix` with a 3-line declaration. The factory generates
   the option tree, Caddy vhost, systemd wiring, and standard
   assertions. The `contract-conformance` L1 check fails the build
@@ -482,7 +482,7 @@ revisited.
   (idempotent oneshot), subvolume management with quota + owner,
   service auto-declaration, auto-scrub, zstd compression.
   Fresh-boot verified 2026-07-31 + 2026-08-01.*
-- **ADR-024: The cococoir service is Rust, not Go (supersedes
+- **ADR-024: The fortress service is Rust, not Go (supersedes
   ADR-017's language).** The entire Go role — forwarder, edge/client
   mains, health server, logger — is ported to Rust. (The code now
   lives in a cargo workspace — see ADR-026; this ADR decides *language*,
@@ -503,7 +503,7 @@ revisited.
   made the control plane uneconomical before ~10-20 customers. A
   free Hetzner `/64` (2^64 addresses) removes that gate: each customer
   gets a `/128` carved from the box's `/64`, DNS maps
-  `*.<username>.interdim.net` AAAA → that `/128`, and the edge blindly
+  `*.<username>.proletariat.tech` AAAA → that `/128`, and the edge blindly
   forwards it over WireGuard (exactly the v0 forwarder's proven per-IP
   path, address family swapped). Cell carriers are IPv6-native, so
   "remote access from any phone" needs no IPv4 at all. The box's
@@ -548,12 +548,12 @@ revisited.
   diverging dep trees and one shared secret contract that dragged
   operator-side provisioning into the edge binary's compiled union.
   The code is split into three crates at the repo root:
-  `cococoir-core` (the shared L4 engine — forwarder, tcp, udp, retry,
-  logger, health; no binaries, no secrets), `cococoir-controlplane`
-  (the edge box, which *is* the control plane — hosts `cococoir-edge`),
-  and `cococoir-client` (the customer box — forwarder + embedded config
-  dashboard as ONE binary). The redundant `cococoir-controlplane`
-  binary and `cococoir-dashboard` binary are deleted: each was a second
+  `fortress-core` (the shared L4 engine — forwarder, tcp, udp, retry,
+  logger, health; no binaries, no secrets), `fortress-controlplane`
+  (the edge box, which *is* the control plane — hosts `fortress-edge`),
+  and `fortress-client` (the customer box — forwarder + embedded config
+  dashboard as ONE binary). The redundant `fortress-controlplane`
+  binary and `fortress-dashboard` binary are deleted: each was a second
   name for an existing system. Secrets follow the system boundary: the
   edge's five secrets live in
   `crates/controlplane/secretspec.toml` (`[profiles.default]`); the
@@ -568,21 +568,21 @@ revisited.
   preserved for the two surviving binaries.
 
 - **ADR-027: Non-catalog services are userland NixOS modules, not
-  factory services.** The `mkCococoirService` factory implies a Caddy
+  factory services.** The `mkFortressService` factory implies a Caddy
   vhost + Dex OIDC + health-prober + btrfs-subvolume contract. Services
   the customer runs that are *not* in the catalog (matrix-synapse,
   minecraft, bridges, one-off daemons) want none of that. They are
   declared as **plain NixOS modules the customer imports in their
   machine config** (`nixosConfigurations/<machine>/custom/*.nix`), never
-  under `nix/nixos-modules/services/`. They compose with cococoir only
+  under `nix/nixos-modules/services/`. They compose with fortress only
   through ordinary additive nixpkgs options (their own Caddy vhost, a
   storage mount, a secret). `contract-conformance` governs the catalog
   only, so userland modules are structurally out of its scope — no
   special-casing. This is the same layer split as the dashboard's
-  `dashboard.nix`: cococoir owns the catalog + platform; the customer
+  `dashboard.nix`: fortress owns the catalog + platform; the customer
   owns the long tail. Rejected: forcing customs through the factory
   (applies a contract they don't need); a per-service
-  `cococoir.integrations.X.enable` escape hatch (violates "no separate
+  `fortress.integrations.X.enable` escape hatch (violates "no separate
   toggle", ADR-020).
 
 - **ADR-028: LAN access is customer-redirected DNS + dnsmasq; RA/RDNSS
@@ -591,14 +591,14 @@ revisited.
   exists (RAs are IPv6-only): on a v4-only LAN there is no joinable
   channel to a client's resolver list other than the DHCP server.
   So the mechanism is explicit: the customer sets **one** option
-  (`cococoir.network.lanAddress` = the box's DHCP-reserved LAN IPv4)
-  plus one router change (DHCP-DNS → box). `cococoir.network.dns`
+  (`fortress.network.lanAddress` = the box's DHCP-reserved LAN IPv4)
+  plus one router change (DHCP-DNS → box). `fortress.network.dns`
   defaults on when the address is set; dnsmasq (DNS only, router keeps
   DHCP) answers every enabled service's domain with the LAN address
-  (enumerated from `cococoir.services`, never configured per-service)
+  (enumerated from `fortress.services`, never configured per-service)
   and NXDOMAINs the Firefox DoH canary (`use-application-dns.net`) by
   default; the service factory's Caddy vhosts bind
-  `cococoir.network.caddyBindAddresses` (localhost + LAN address) so
+  `fortress.network.caddyBindAddresses` (localhost + LAN address) so
   LAN TLS terminates on the box. Split-horizon stays safe: the global
   answer (edge /128 → tunnel) still works, so the local override is
   an optimization with a working fallback. Rejected: radvd/RDNSS
@@ -630,7 +630,7 @@ revisited.
     replicated store), so customers reconnect at the SAME addresses
     within seconds, DNS untouched. No cache-staleness class. In-flight
     TCP blips once (stateless forwarder, ADR-014) — accepted by design.
-  - **Coordination = Redis leader lease** (`cococoir:edge:lease`), not
+  - **Coordination = Redis leader lease** (`fortress:edge:lease`), not
     keepalived/VRRP: the lease holder is Redis primary + active; the
     standby reconciles to replica + ready. Redis is the single
     coordination point, so there is no VRRP split-brain class; detection
@@ -713,9 +713,9 @@ verifies it. "Done" = shipped, tested, committed.
   (S3/B2/rsync), password from secrets, timer on btrfs subvolumes.
 - **v2.nextcloud**: Nextcloud service module with btrfs subvolume
   storage + OIDC via Dex.
-- **v2.probe**: `cococoir-client internal/probe` — HTTP GET
+- **v2.probe**: `fortress-client internal/probe` — HTTP GET
   prober reading services list from config, emitting OTEL spans.
-- **v2.journald**: `cococoir-client internal/journald` — tails
+- **v2.journald**: `fortress-client internal/journald` — tails
   systemd journal per service, emits OTEL log records.
 - **v2.otel**: OTEL SDK wiring (in-memory exporter).
 - **v2.dashboard**: Embedded HTML/JS dashboard serving probe +
@@ -738,13 +738,13 @@ verifies it. "Done" = shipped, tested, committed.
 ADR-025 reshaped this: IPv6 `/64` per-customer `/128` replacing
 per-customer IPv4, Redis storage (not Postgres), and a separate
 minimal service in the Rust crate (`controlplane/`, binary
-`cococoir-controlplane`). **Shipped (demo slice, 2026-08-15):**
+`fortress-controlplane`). **Shipped (demo slice, 2026-08-15):**
 - `POST /signup` — atomic Redis `INCR` allocates the next `/128`
   (host 1 = edge primary, customers from 2), generates a WG keypair
   (x25519-dalek), stores the customer, returns the private key once.
 - `GET /customers`, `DELETE /customers/:id`. Storage: Redis
-  (`cococoir:customer:*`, `cococoir:alloc:next`,
-  `cococoir:customers` list). Proof: `cargo test` 101/101 + live
+  (`fortress:customer:*`, `fortress:alloc:next`,
+  `fortress:customers` list). Proof: `cargo test` 101/101 + live
   Redis round-trip (::2/::3, list, delete 204, re-delete 404).
 
 **Remaining v3 work (ordered):**
@@ -762,7 +762,7 @@ minimal service in the Rust crate (`controlplane/`, binary
 
 ### v4 — Cluster expansion (deferred)
 
-- `cococoir.edge.hosts.<name>` option tree.
+- `fortress.edge.hosts.<name>` option tree.
 - Per-VPS NixOS configurations filtering tenant list by edgeHost.
 - WireGuard endpoint roaming runbook.
 - (Future) auto-failover via heartbeat + tenant migration.

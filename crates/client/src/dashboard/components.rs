@@ -41,7 +41,7 @@ pub fn LoginPage(props: &LoginPageProps) -> Node {
     <body class="min-h-screen flex items-center justify-center bg-base-200 p-4">
     <div class="card w-full max-w-sm bg-base-100 shadow-xl">
         <div class="card-body">
-            <h1 class="card-title text-2xl">"Cococoir"</h1>
+            <h1 class="card-title text-2xl">"Fortress"</h1>
             <p class="text-sm text-base-content/60">"Sign in to the admin dashboard"</p>
             <form method="post" action="/auth/login" class="flex flex-col gap-4">
                 <label class="input input-bordered flex items-center gap-2">
@@ -192,7 +192,7 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
     rsx!(
     <html lang="en" data_theme="dark">
     <head>
-    <title>"Cococoir"</title>
+    <title>"Fortress"</title>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.10/htmx.min.js"/>
@@ -202,7 +202,7 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
     <body class="min-h-screen bg-base-200">
     <div class="navbar bg-base-100 shadow-sm">
         <div class="flex-1 px-2">
-            <span class="text-lg font-semibold">"Cococoir"</span>
+            <span class="text-lg font-semibold">"Fortress"</span>
         </div>
         <div class="flex-none px-2">
             <a href="/auth/logout" class="btn btn-ghost btn-sm">"Sign out"</a>
@@ -251,7 +251,7 @@ pub fn IndexPage(props: &IndexProps) -> Node {
     rsx!(
     <html lang="en" data_theme="dark">
     <head>
-    <title>"Cococoir"</title>
+    <title>"Fortress"</title>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.10/htmx.min.js"/>
@@ -261,7 +261,7 @@ pub fn IndexPage(props: &IndexProps) -> Node {
     <body class="min-h-screen bg-base-200">
     <div class="navbar bg-base-100 shadow-sm">
         <div class="flex-1 px-2">
-            <span class="text-lg font-semibold">"Cococoir"</span>
+            <span class="text-lg font-semibold">"Fortress"</span>
         </div>
         <div class="flex-none px-2">
             <a href="/auth/logout" class="btn btn-ghost btn-sm">"Sign out"</a>
@@ -272,7 +272,7 @@ pub fn IndexPage(props: &IndexProps) -> Node {
             <div class="hero-content py-10 text-center">
                 <div class="max-w-md">
                     <h1 class="text-4xl font-bold">"Hello " {&props.name}</h1>
-                    <p class="py-4 text-base-content/60">"Cococoir admin dashboard"</p>
+                    <p class="py-4 text-base-content/60">"Fortress admin dashboard"</p>
                 </div>
             </div>
         </div>

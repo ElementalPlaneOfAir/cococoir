@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! cococoir-edge: the edge box's single process.
+//! fortress-edge: the edge box's single process.
 //!
 //! One tokio app runs the L4 forwarder (live add/remove via
 //! `IPV6_FREEBIND`), the control plane HTTP API (signup/delete),
@@ -18,7 +18,7 @@
 //!   --api-addr 0.0.0.0:8081           (control plane HTTP + /healthz /readyz /status)
 #![deny(unsafe_code)]
 
-use cococoir_controlplane::{Subnet64, WgSubnet, control_plane, init_globals};
+use fortress_controlplane::{Subnet64, WgSubnet, control_plane, init_globals};
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -42,7 +42,7 @@ async fn main() -> Result<(), std::io::Error> {
             other => {
                 eprintln!("unknown flag {other}");
                 return Err(std::io::Error::other(
-                    "usage: cococoir-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR] [--ipv6-iface IFACE]",
+                    "usage: fortress-edge --subnet /64 [--redis-url URL] [--wg-subnet NET] [--api-addr ADDR] [--ipv6-iface IFACE]",
                 ));
             }
         }
@@ -70,7 +70,7 @@ async fn main() -> Result<(), std::io::Error> {
     // (/healthz /readyz /status) on --api-addr. app() merges the health
     // endpoints into the same OpenAPI handler, so one listener serves
     // both API checks and health checks.
-    let api = cococoir_controlplane::app();
+    let api = fortress_controlplane::app();
     let api_addr2 = api_addr.clone();
     let api_shutdown = shutdown_rx.clone();
     let api_task = tokio::spawn(async move {

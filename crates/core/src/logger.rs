@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Structured logging setup for the cococoir binaries.
+//! Structured logging setup for the fortress binaries.
 //!
 //! Port of Go `internal/logger/logger.go`. The cmd entry points call
 //! [`Format::parse`] on their `-log-format` flag, then [`init`] the

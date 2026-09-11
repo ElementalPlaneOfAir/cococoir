@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/sonarr — TV show management.
+# fortress/services/sonarr — TV show management.
 #
 # 3-option contract (metadata-only service, no bucket).
 {config, lib, pkgs, options, ...}:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  mkFortressService = import ./_contract.nix {inherit lib config pkgs options;};
 in
-mkCococoirService {
+mkFortressService {
   name = "sonarr";
   description = "Sonarr TV show management";
   defaultPort = 8989;

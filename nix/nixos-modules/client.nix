@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — client service module (Rust workspace).
+# Fortress v2 — client service module (Rust workspace).
 #
-# The cocococoir-client binary is the customer-box's single process: it
-# runs the L4 forwarder (receiving traffic from cocococoir-edge over the
+# The cofortress-client binary is the customer-box's single process: it
+# runs the L4 forwarder (receiving traffic from cofortress-edge over the
 # WireGuard tunnel and forwarding to 127.0.0.1:<port> where the local
 # Caddy terminates TLS) and the embedded config dashboard. The shared
 # forwarder engine lives in crates/core; the client is built from the
-# Rust workspace at nix/packages/cococoir.
+# Rust workspace at nix/packages/fortress.
 #
 # v0 scope of this module:
 #   - No SIGHUP hot-reload. NixOS rebuild -> systemd restart.
@@ -30,30 +30,30 @@
   pkgs,
   ...
 }: let
-  cfg = config.services.cococoir-client;
-  clientPkg = pkgs.callPackage ../packages/cococoir {};
+  cfg = config.services.fortress-client;
+  clientPkg = pkgs.callPackage ../packages/fortress {};
 in {
-  options.services.cococoir-client = {
-    enable = lib.mkEnableOption "cococoir v2 client service (L4 TCP/UDP forwarder + embedded dashboard on the customer box)";
+  options.services.fortress-client = {
+    enable = lib.mkEnableOption "fortress v2 client service (L4 TCP/UDP forwarder + embedded dashboard on the customer box)";
 
     configFile = lib.mkOption {
       type = lib.types.path;
-      default = "/etc/cococoir-client.json";
-      defaultText = lib.literalExpression "/etc/cococoir-client.json";
+      default = "/etc/fortress-client.json";
+      defaultText = lib.literalExpression "/etc/fortress-client.json";
       description = ''
         Path to client.json. Most users should generate this with
-        `environment.etc."cococoir-client.json".text = builtins.toJSON { ... };`
-        (or `sops.templates."cococoir-client.json".content = builtins.toJSON { ... };`
+        `environment.etc."fortress-client.json".text = builtins.toJSON { ... };`
+        (or `sops.templates."fortress-client.json".content = builtins.toJSON { ... };`
         if the config needs secrets). The default points at the standard
-        `/etc/cococoir-client.json` path produced by `environment.etc`.
+        `/etc/fortress-client.json` path produced by `environment.etc`.
       '';
     };
 
     package = lib.mkOption {
       type = lib.types.package;
       default = clientPkg;
-      defaultText = lib.literalExpression "pkgs.callPackage ../packages/cococoir {}";
-      description = "cococoir package. Override to point at a fork or pinned version. The systemd unit uses the `cococoir-client` binary out of this package's bin/.";
+      defaultText = lib.literalExpression "pkgs.callPackage ../packages/fortress {}";
+      description = "fortress package. Override to point at a fork or pinned version. The systemd unit uses the `fortress-client` binary out of this package's bin/.";
     };
 
     logFormat = lib.mkOption {
@@ -88,7 +88,7 @@ in {
       type = lib.types.nullOr lib.types.path;
       default = null;
       description = ''
-        Path to a file containing `COCOCOIR_ADMIN_PASSWORD_HASH=<bcrypt-hash>`
+        Path to a file containing `FORTRESS_ADMIN_PASSWORD_HASH=<bcrypt-hash>`
         — the embedded dashboard's admin login (the box's control plane).
         The dashboard reads this env var; without it the dashboard runs
         in Dev mode (no login), which must never be the case on a
@@ -100,8 +100,8 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.services.cococoir-client = {
-      description = "Cococoir v2 client service — L4 TCP/UDP forwarder + embedded dashboard (customer box)";
+    systemd.services.fortress-client = {
+      description = "Fortress v2 client service — L4 TCP/UDP forwarder + embedded dashboard (customer box)";
       # The client owns wg0 (client-side keygen): it brings the tunnel up
       # itself, so it no longer waits on a NixOS wireguard-wg0 unit. It
       # still needs real network-online to reach the edge.
@@ -115,7 +115,7 @@ in {
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/cococoir-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
+        ExecStart = "${cfg.package}/bin/fortress-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
         Restart = "on-failure";
         RestartSec = 5;
 
@@ -125,11 +125,11 @@ in {
         EnvironmentFile = lib.mkIf (cfg.adminPasswordEnvFile != null) cfg.adminPasswordEnvFile;
 
         # The embedded dashboard's sqlite DB. StateDirectory creates
-        # /var/lib/cococoir (root-owned) and makes it writable even with
+        # /var/lib/fortress (root-owned) and makes it writable even with
         # ProtectSystem=strict; XDG_DATA_HOME points Db::open() there
         # (its default ~/.local/share is masked by ProtectHome).
-        StateDirectory = "cococoir";
-        Environment = "XDG_DATA_HOME=/var/lib/cococoir";
+        StateDirectory = "fortress";
+        Environment = "XDG_DATA_HOME=/var/lib/fortress";
 
         # Hardening. Client runs as root for v0 (binding to the WG
         # interface doesn't require it, but matching the edge's

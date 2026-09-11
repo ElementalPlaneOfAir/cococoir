@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared L4 TCP/UDP forwarder used by both `cococoir-edge` (VPS)
-//! and `cococoir-client` (customer box). The two binaries are thin
+//! Shared L4 TCP/UDP forwarder used by both `fortress-edge` (VPS)
+//! and `fortress-client` (customer box). The two binaries are thin
 //! wrappers around this module: they parse a JSON config of
 //! `{forwards: [{listen_addr, proto, dest_addr}, ...]}` and hand
 //! the slice to a `Forwarder`.
@@ -89,7 +89,7 @@ impl Default for Config {
             shutdown_timeout: Duration::from_secs(30),
             bind_timeout: Duration::from_secs(30),
             udp_flow_idle: Duration::from_secs(300),
-            component: "cococoir".to_string(),
+            component: "fortress".to_string(),
             ipv6_iface: None,
         }
     }
@@ -107,7 +107,7 @@ pub enum ConfigError {
 
 /// Point-in-time snapshot of forwarder state, safe to consume from
 /// any task. The JSON shape is the contract of the `/status`
-/// endpoint (see `cococoir::health`).
+/// endpoint (see `fortress::health`).
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
     pub component: String,
@@ -645,15 +645,15 @@ mod tests {
                 proto: Proto::Tcp,
                 dest_addr: "127.0.0.1:1".to_string(),
             }],
-            component: "cococoir-edge".to_string(),
+            component: "fortress-edge".to_string(),
             ..Config::default()
         })
         .unwrap();
-        assert_eq!(f.component(), "cococoir-edge");
+        assert_eq!(f.component(), "fortress-edge");
     }
 
     #[test]
-    fn default_component_is_cococoir() {
+    fn default_component_is_fortress() {
         let f = Forwarder::new(Config {
             forwards: vec![Forward {
                 listen_addr: "127.0.0.1:0".to_string(),
@@ -663,7 +663,7 @@ mod tests {
             ..Config::default()
         })
         .unwrap();
-        assert_eq!(f.component(), "cococoir");
+        assert_eq!(f.component(), "fortress");
     }
 
     #[test]
@@ -971,7 +971,7 @@ mod tests {
     async fn stats_records_bound_forward() {
         let cfg = Config {
             forwards: vec![forward(Proto::Tcp, "127.0.0.1:0", "127.0.0.1:1")],
-            component: "cococoir-edge".to_string(),
+            component: "fortress-edge".to_string(),
             ..Config::default()
         };
         let f = Arc::new(Forwarder::new(cfg.clone()).unwrap());
@@ -981,7 +981,7 @@ mod tests {
 
         let fwd_port = bound_port(&f).await;
         let stats = f.stats();
-        assert_eq!(stats.component, "cococoir-edge");
+        assert_eq!(stats.component, "fortress-edge");
         assert_eq!(stats.forwards.len(), 1);
         assert!(stats.forwards[0].bound);
         assert!(stats.forwards[0].bound_at.is_some());
@@ -1126,7 +1126,7 @@ mod tests {
         })
         .unwrap();
         let stats = f.stats();
-        assert_eq!(stats.component, "cococoir");
+        assert_eq!(stats.component, "fortress");
         assert_eq!(stats.tcp_connections, 0);
         assert_eq!(stats.udp_flows, 0);
         assert!(stats.forwards.is_empty());

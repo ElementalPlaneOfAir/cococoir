@@ -94,7 +94,7 @@ accepts); delete → listener gone
 
 ### T4: Edge = one tokio app
 **Depends on:** T3
-**Verification:** `cococoir-edge` runs forwarder + API in one process;
+**Verification:** `fortress-edge` runs forwarder + API in one process;
 a signup against the live binary binds a listener (L2 on the box, or
 L0 with a test harness)
 **Files:** `src/bin/edge.rs`, `src/app.rs`

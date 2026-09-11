@@ -1,24 +1,24 @@
-# Cococoir Rust workspace: per-system crates + per-system secrets
+# Fortress Rust workspace: per-system crates + per-system secrets
 
 ## Premise
 
-**Why this, why now.** Cococoir is **two systems**, but they live in one
-monolith crate `packages/cococoir`:
+**Why this, why now.** Fortress is **two systems**, but they live in one
+monolith crate `packages/fortress`:
 
 1. **The remote infra** — the `edge` box, which *is* the control plane:
    forwarder + control-plane API + health + DNS reconcile, one process.
    "edge" vs "controlplane" is naming, not two services (today
-   `cococoir-edge` runs the control plane in-process, and a redundant
-   `cococoir-controlplane` binary duplicates it).
+   `fortress-edge` runs the control plane in-process, and a redundant
+   `fortress-controlplane` binary duplicates it).
 2. **The customer box** — forwards local traffic to the edge *and*
    serves the config dashboard. Today this is split into two binaries
-   (`cococoir-client` forwarder + `cococoir-dashboard` UI), but it is
+   (`fortress-client` forwarder + `fortress-dashboard` UI), but it is
    one system (the original ADR-017/024 "embedded dashboard" shape).
 
 One `Cargo.toml` means every binary compiles the union of all deps
 (sqlx + rnix + redis + hickory + x25519 + askama + poem + …) and shares
 one tangled `Cargo.lock`. Secrets are inconsistent: the edge uses typed
-`declare_secrets!`, the dashboard reads `COCOCOIR_ADMIN_PASSWORD_HASH`
+`declare_secrets!`, the dashboard reads `FORTRESS_ADMIN_PASSWORD_HASH`
 via ad-hoc `env::var`, `REDIS_URL` is a CLI flag — and the edge's toml
 already drags the operator-side `[profiles.provisioning]` into its
 generated union (pollution). The secretspec-scopes arc left a
@@ -46,10 +46,10 @@ contract.
 - [ ] Workspace at repo root: `Cargo.toml` + `Cargo.lock` at root, three
       members under `crates/` (`core`, `controlplane`, `client`).
       `cargo test` green from the root. (L0)
-- [x] Binary names: `cococoir-edge` and `cococoir-client` build and are
-      the only two deployed binaries. `cococoir-controlplane` is deleted
-      (edge *is* the control plane); `cococoir-dashboard` is deleted
-      (merged into `cococoir-client`, which now serves both the
+- [x] Binary names: `fortress-edge` and `fortress-client` build and are
+      the only two deployed binaries. `fortress-controlplane` is deleted
+      (edge *is* the control plane); `fortress-dashboard` is deleted
+      (merged into `fortress-client`, which now serves both the
       forwarder and the config dashboard). (L0 cargo build; L1 edge
       systemConfig builds)
 - [x] The edge's secrets live in `crates/controlplane/secretspec.toml`
@@ -57,13 +57,13 @@ contract.
       block removed — no union pollution. The client crate has no
       secretspec.toml yet (its only candidate secret, the dashboard
       admin hash, is deferred — see below). (L0 secret tests)
-- [x] `cococoir-client` runs the forwarder and the dashboard in one
+- [x] `fortress-client` runs the forwarder and the dashboard in one
       process with a shared shutdown signal; a dashboard DB failure
       degrades the dashboard off without taking down the forwarder.
       (L0 cargo build; L1 vmtest-wiring)
 - [ ] ~~Dashboard admin password hash resolves via `declare_secrets!`~~ —
       **deferred** to a follow-up (keeps reading
-      `COCOCOIR_ADMIN_PASSWORD_HASH` env; `crates/client/secretspec.toml`
+      `FORTRESS_ADMIN_PASSWORD_HASH` env; `crates/client/secretspec.toml`
       added when it lands).
 - [x] Provisioning toml is a standalone real file at repo root (no
       symlink), and `nix run .#secretspec -- export -P provisioning -S
@@ -73,7 +73,7 @@ contract.
       builds, `vmtest-wiring` + `contract-conformance` L1 green. `nix
       flake check` is green except the **two pre-existing** failures:
       `example123` placeholder (missing storage) and `edge-forward`
-      (references the removed NixOS `services.cococoir-edge` module; the
+      (references the removed NixOS `services.fortress-edge` module; the
       edge now runs via system-manager). (L0/L1)
 - [ ] `PLAN.md` (ADR-026) + `docs/STATUS.md` updated in the same commit.
 
@@ -87,7 +87,7 @@ admin-hash migration is the explicitly deferrable slice.
 
 - **A — root workspace + `crates/` (winner).** `Cargo.toml`/`Cargo.lock`
   at root; members under `crates/{core,controlplane,client}`; the Nix
-  build wrapper at `nix/packages/cococoir/default.nix` produces one
+  build wrapper at `nix/packages/fortress/default.nix` produces one
   derivation with both binaries. For: realizes the two-system model,
   per-system dep graphs, `cargo` works from anywhere, matches the
   user's stated proposal-1 intent. Against: re-touches the same paths
@@ -96,10 +96,10 @@ admin-hash migration is the explicitly deferrable slice.
 - **B — single crate + workspace manifest, one member.** For: minimal
   diff. Against: pure churn — no dependency isolation, no boundary to
   hang a secret contract on. Rejected.
-- **C — workspace under `packages/cococoir/` (`crates/` nested).**
+- **C — workspace under `packages/fortress/` (`crates/` nested).**
   For: smallest path churn (`flake.nix`, `client.nix`, `doc-refs` keep
-  pointing at `packages/cococoir`). Against: workspace not at root (the
-  stated intent), and the name `packages/cococoir` becomes a lie — it
+  pointing at `packages/fortress`). Against: workspace not at root (the
+  stated intent), and the name `packages/fortress` becomes a lie — it
   holds crates, not a crate. Rejected.
 - **D — one root `secretspec.toml`, every crate
   `declare_secrets!("../secretspec.toml")` + `load_profile()`.** For:
@@ -117,37 +117,37 @@ admin-hash migration is the explicitly deferrable slice.
   the airplane.
 - **Customer box = one binary (merge), not two.** Decided by the user:
   the forwarder and the config dashboard are one system, so
-  `cococoir-client` embeds the dashboard (ADR-017/024's original shape)
-  and `cococoir-dashboard` is deleted. The rejected alternative —
+  `fortress-client` embeds the dashboard (ADR-017/024's original shape)
+  and `fortress-dashboard` is deleted. The rejected alternative —
   keeping two processes in one crate — was smaller but preserved the
   "naming confusion" the user wants gone.
 
 ## Architecture decisions
 
-- **ADR-026 (new): the cococoir Rust code is a cargo workspace of
+- **ADR-026 (new): the fortress Rust code is a cargo workspace of
   per-system crates; each secrets-consuming crate owns its
   `secretspec.toml`.** Supersedes ADR-024's "single Rust crate
-  (`packages/cococoir`)" language; ADR-024's contract (binary names,
+  (`packages/fortress`)" language; ADR-024's contract (binary names,
   CLI flags, config JSON, `/status` schema) is preserved for the two
   surviving binaries. Two redundant binaries are deleted
-  (`cococoir-controlplane`, `cococoir-dashboard`) because each was a
+  (`fortress-controlplane`, `fortress-dashboard`) because each was a
   second name for an existing system.
 - **Crate boundaries** (module ownership is already clean):
-  - `cococoir-core` — `forwarder`, `tcp`, `udp`, `retry`, `logger`,
+  - `fortress-core` — `forwarder`, `tcp`, `udp`, `retry`, `logger`,
     `health` (the shared L4 engine). No binaries, no secrets.
-  - `cococoir-controlplane` — `controlplane` module (dns, wg,
-    routing_config, secret, auth); hosts `cococoir-edge` (forwarder +
+  - `fortress-controlplane` — `controlplane` module (dns, wg,
+    routing_config, secret, auth); hosts `fortress-edge` (forwarder +
     control-plane API + health + reconcile, one process). Owns
     `[profiles.edge]`.
-  - `cococoir-client` — `app` (forwarder runner) + `dashboard` module
+  - `fortress-client` — `app` (forwarder runner) + `dashboard` module
     (auth, components, db, nix_config_parser); hosts the single merged
-    `cococoir-client` binary. Owns `[profiles.dashboard]`.
+    `fortress-client` binary. Owns `[profiles.dashboard]`.
 - **The merge:** one tokio runtime, the forwarder and the dashboard
   server as concurrent tasks, one shared shutdown signal. `app::run`'s
   blocking shape and `dashboard_entry` are refactored into a single
   `main` (this is the one non-mechanical task — see T3).
 - **Binary naming:** the merged customer-box binary keeps the deployed
-  name `cococoir-client` (systemd unit, `example123.nix`, L2 test all
+  name `fortress-client` (systemd unit, `example123.nix`, L2 test all
   reference it). If "dashboard" should be the canonical name instead,
   that is a one-line rename in a follow-up — flagged, not decided here.
 - **Secrets:** the edge profile stays `[profiles.default]` (deferred
@@ -155,52 +155,52 @@ admin-hash migration is the explicitly deferrable slice.
   rename would churn `load()` → `load_profile()`). `REDIS_URL` is **not**
   migrated — it is a CLI flag (`--redis-url`), not a secret. The
   dashboard `ADMIN_PASSWORD_HASH` migration is **deferred** (keeps
-  reading `COCOCOIR_ADMIN_PASSWORD_HASH` env; the "no hash → Dev auth
+  reading `FORTRESS_ADMIN_PASSWORD_HASH` env; the "no hash → Dev auth
   mode" behavior is unchanged). Provisioning secrets (`HETZNER_TOKEN`,
   `ADMIN_KEY`) move to the standalone root toml that no crate extends,
-  keeping project name `cococoir-edge` so the file-store path
-  (`remote-infra/.secrets/cococoir-edge/provisioning/`) is unchanged.
+  keeping project name `fortress-edge` so the file-store path
+  (`remote-infra/.secrets/fortress-edge/provisioning/`) is unchanged.
 - **Nix:** one derivation builds the workspace (crane `src` = workspace
   root; `cargoLock = ./Cargo.lock`). `cleanCargoSource` drops
   `secretspec.toml` (unknown extension) as it does today, so the filter
   keeps `**/secretspec.toml` and layers it into the store. Binaries are
-  named `cococoir-*` in `src/bin/` so the `postInstall` renames go away.
+  named `fortress-*` in `src/bin/` so the `postInstall` renames go away.
 
 ## Tasks
 
-### T1: Workspace scaffold + `cococoir-core`
+### T1: Workspace scaffold + `fortress-core`
 **Depends on:** none
-**Verification:** `cargo test -p cocococoir-core` green.
+**Verification:** `cargo test -p cofortress-core` green.
 **Files:** root `Cargo.toml`/`Cargo.lock`, `crates/core/Cargo.toml`,
 `crates/core/src/{lib,forwarder,tcp,udp,retry,logger,health}.rs`
-- Move the shared engine out of `packages/cococoir/src` into
+- Move the shared engine out of `packages/fortress/src` into
   `crates/core` and assign the core-only deps.
 
-### T2: `cococoir-controlplane` + `[profiles.default]`
+### T2: `fortress-controlplane` + `[profiles.default]`
 **Depends on:** T1
-**Verification:** `cargo test -p cocococoir-controlplane` green;
+**Verification:** `cargo test -p cofortress-controlplane` green;
 `secret::tests::*` resolve the five edge secrets from a scratch toml;
-`cococoir-edge` builds.
+`fortress-edge` builds.
 **Files:** `crates/controlplane/Cargo.toml`,
 `crates/controlplane/src/{lib,controlplane/**}.rs`,
-`crates/controlplane/src/bin/cococoir-edge.rs`,
+`crates/controlplane/src/bin/fortress-edge.rs`,
 `crates/controlplane/secretspec.toml`
 - Move the `controlplane` module; write `secretspec.toml` with the five
   secrets only (no provisioning block; profile stays `default`);
   delete `controlplane.rs` + `controlplane_entry` (redundant — edge is
   the control plane).
 
-### T3: `cococoir-client` — merge forwarder + dashboard
+### T3: `fortress-client` — merge forwarder + dashboard
 **Depends on:** T1
-**Verification:** `cargo test -p cocococoir-client` green; one binary
+**Verification:** `cargo test -p cofortress-client` green; one binary
 serves both `/status` (forwarder) and the dashboard routes; a dashboard
 DB failure degrades the dashboard off without killing the forwarder.
 **Files:** `crates/client/Cargo.toml`,
 `crates/client/src/{lib,app,dashboard/**}.rs`,
-`crates/client/src/bin/cococoir-client.rs`
+`crates/client/src/bin/fortress-client.rs`
 - Move `app` + `dashboard`; refactor `app::run` (blocking) and
   `dashboard_entry` into one entry with a shared shutdown signal;
-  delete the `cococoir-dashboard` bin. Dashboard admin-hash secretspec
+  delete the `fortress-dashboard` bin. Dashboard admin-hash secretspec
   migration **deferred** (keep `AuthMode::from_env`).
 
 ### T4: Nix build over the workspace
@@ -210,14 +210,14 @@ DB failure degrades the dashboard off without killing the forwarder.
 checks green; the dashboard dev flow runs against the merged binary.
 (`edge-forward` and `example123` fail for pre-existing reasons unrelated
 to this arc.)
-**Files:** `nix/packages/cococoir/default.nix`, `flake.nix`,
+**Files:** `nix/packages/fortress/default.nix`, `flake.nix`,
 `nix/nixos-modules/client.nix`, `nix/dev/process-compose.nix`,
 `nix/tests/doc-refs/default.nix`, `nix/tests/default.nix`
-- Move the derivation to `nix/packages/cococoir/default.nix` (workspace
+- Move the derivation to `nix/packages/fortress/default.nix` (workspace
   src + `**/secretspec.toml` filter, root `cargoLock`); repoint
   `flake.nix:92`/`:95`, `client.nix`, `doc-refs` `moduleFiles`,
-  `nix/tests/default.nix`'s `cococoirPkg` call site, and
-  `process-compose.nix`'s `cd` + `COCOCOIR_CONFIG_PATH`; drop the stale
+  `nix/tests/default.nix`'s `fortressPkg` call site, and
+  `process-compose.nix`'s `cd` + `FORTRESS_CONFIG_PATH`; drop the stale
   Go-era comments in `client.nix`/`nix/tests/default.nix`; give the
   client systemd unit a writable dashboard DB path (`StateDirectory` +
   `XDG_DATA_HOME`).
@@ -231,7 +231,7 @@ dry-run reaches the export steps.
 `remote-infra/scripts/provision-edge.sh`
 - Delete the crate-local `[profiles.provisioning]`/`[scopes.*]`/provider
   block; write the standalone provisioning toml at repo root (no
-  symlink) keeping project name `cococoir-edge` (preserves the file-store
+  symlink) keeping project name `fortress-edge` (preserves the file-store
   path); keep the `-f ./secretspec.toml` anchor.
 
 ### T6: Verify + docs
@@ -240,7 +240,7 @@ dry-run reaches the export steps.
 `forwarder-unit-tests`, `vmtest-wiring`, `contract-conformance` green;
 `tofu validate` green.
 **Files:** `PLAN.md` (ADR-026), `docs/STATUS.md`
-- Add ADR-026, update the ADR-024 language + every `packages/cococoir`
+- Add ADR-026, update the ADR-024 language + every `packages/fortress`
   path reference, and refresh STATUS.md (move the secretspec-scopes
   entry's "real file in crate" framing to the new per-crate layout).
 

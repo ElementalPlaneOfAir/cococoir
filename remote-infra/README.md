@@ -1,4 +1,4 @@
-# Cococoir remote infra
+# Fortress remote infra
 
 Provisioning for the IPv6 edge demo — the "global IP box" from
 `writing/human/architecture_of_ipv6.md`, plus the DNS that fronts it.
@@ -12,7 +12,7 @@ deployment can be reviewed and modified in one place.
 remote-infra/
 ├── tofu/                    # OpenTofu: the source of truth
 │   ├── main.tf              # server, firewall, ssh key, address derivation
-│   ├── dns.tf               # interdim.net zone + records
+│   ├── dns.tf               # proletariat.tech zone + records
 │   ├── render.tf            # renders the customer (NixOS) config from template
 │   ├── templates/           # example123.nix template
 │   ├── versions.tf          # hcloud + local providers
@@ -30,7 +30,7 @@ remote-infra/
 
 - **No first-party NixOS image on Hetzner** (confirmed via changelog
   2026-08). The edge box boots a stock `debian-12` image and
-  **system-manager** applies the cococoir config on top (systemd
+  **system-manager** applies the fortress config on top (systemd
   services, packages, `/etc` files) without taking over the OS. This
   sidesteps the disko/fstab/NIC boot failures that plagued the old
   NixOS edge. Customer boxes stay full NixOS — that's the product.
@@ -49,13 +49,13 @@ remote-infra/
 ## The IPv6 model being provisioned
 
 ```
-cellular (IPv6) ──*.example123.interdim.net AAAA──▶ edge /128 :80/:443
-                                                      │  cococoir-edge
+cellular (IPv6) ──*.example123.proletariat.tech AAAA──▶ edge /128 :80/:443
+                                                      │  fortress-edge
                                                       │  (blind L4 forward)
                                                       ▼
                                      WireGuard (10.10.0.1/24, dial-out)
                                                       │
-home box ──cococoir-client──▶ 127.0.0.1:80/443 ──▶ Caddy (ACME via tunnel)
+home box ──fortress-client──▶ 127.0.0.1:80/443 ──▶ Caddy (ACME via tunnel)
 ```
 
 Caddy on the home box gets real Let's Encrypt certs because the ACME
@@ -91,7 +91,7 @@ at runtime).
 
 ## After provisioning
 
-1. **Point interdim.net's NS records at Hetzner's nameservers**
+1. **Point proletariat.tech's NS records at Hetzner's nameservers**
    (`tofu output nameservers`) at your registrar. Until then the zone
    exists but is not authoritative.
 2. **Customer box** (home machine, NixOS): apply

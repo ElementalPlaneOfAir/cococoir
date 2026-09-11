@@ -63,7 +63,7 @@ to the next arc — this is the gate that makes that retirement safe.
   hands out the singleton. `HetznerDns::from_env()` fails fast (missing
   env → boot `Err` via `init_globals`).
 - `DOMAIN` is a **separate** `'static` `LazyLock<String>` (env
-  `COCOCOIR_ROOT_DOMAIN`, default `interdim.net`) — the naming layer,
+  `FORTRESS_ROOT_DOMAIN`, default `interdim.net`) — the naming layer,
   above the provider config, owned by the orchestrator, not the DNS
   client.
 - **Resolution is independent of provisioning**: a free

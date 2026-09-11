@@ -16,7 +16,7 @@ use crate::dashboard::components::{
     IndexPage, IndexProps, LoginPage, LoginPageProps,
 };
 use crate::dashboard::nix_config_parser::{
-    ConfigSchema, CococoirConfig, NixConfigFile, NixParseError, NixValue, SetError,
+    ConfigSchema, FortressConfig, NixConfigFile, NixParseError, NixValue, SetError,
 };
 use momenta::prelude::*;
 use poem::{
@@ -35,7 +35,7 @@ use tokio::time::sleep;
 const PAGE_LOAD_KEY: &str = "page_loads";
 
 /// The dashboard-edited Nix config file. Resolved once from the
-/// `COCOCOIR_CONFIG_PATH` env var; falls back to the repo-relative
+/// `FORTRESS_CONFIG_PATH` env var; falls back to the repo-relative
 /// `nixosConfigurations/dashboard.nix` for the dev loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPath(PathBuf);
@@ -43,7 +43,7 @@ pub struct ConfigPath(PathBuf);
 impl ConfigPath {
     pub fn resolve() -> Self {
         Self(
-            std::env::var_os("COCOCOIR_CONFIG_PATH")
+            std::env::var_os("FORTRESS_CONFIG_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("nixosConfigurations/dashboard.nix")),
         )
@@ -115,7 +115,7 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), SaveError>
         ))
     })?;
     let tmp = parent.join(format!(
-        ".cococoir-dashboard.{}.tmp",
+        ".fortress-dashboard.{}.tmp",
         uuid::Uuid::new_v4()
     ));
     std::fs::write(&tmp, contents)
@@ -152,7 +152,7 @@ async fn next_page_load(db: &Db) -> usize {
 /// Build the editor page from the extracted config. `config_error`
 /// surfaces a read failure; otherwise the page shows the current values.
 fn editor_page(
-    config: &CococoirConfig,
+    config: &FortressConfig,
     config_error: Option<String>,
     saved: bool,
     save_error: Option<String>,
@@ -194,13 +194,13 @@ fn editor_page(
         .into_response()
 }
 
-fn editor_state(path: &ConfigPath) -> (CococoirConfig, Option<String>) {
+fn editor_state(path: &ConfigPath) -> (FortressConfig, Option<String>) {
     match read_config(path) {
         Ok(file) => {
-            let config = CococoirConfig::extract(&file, &ConfigSchema::default());
+            let config = FortressConfig::extract(&file, &ConfigSchema::default());
             (config, None)
         }
-        Err(error) => (CococoirConfig::default(), Some(error.to_string())),
+        Err(error) => (FortressConfig::default(), Some(error.to_string())),
     }
 }
 
@@ -235,7 +235,7 @@ impl EditorForm {
 /// Build the edits for a save from the submitted form, skipping fields
 /// the parser cannot edit (undeclared service enables, undeclared user
 /// groups) — those stay manual edits, matching the read-only UI.
-fn build_edits(config: &CococoirConfig, form: &EditorForm) -> Vec<ConfigEdit> {
+fn build_edits(config: &FortressConfig, form: &EditorForm) -> Vec<ConfigEdit> {
     let mut edits = Vec::new();
 
     if let Some(hostname) = &form.hostname {
@@ -249,7 +249,7 @@ fn build_edits(config: &CococoirConfig, form: &EditorForm) -> Vec<ConfigEdit> {
     if let Some(domain) = &form.base_domain {
         if config.root_domain.is_some() {
             edits.push(ConfigEdit {
-                path: vec!["cococoir".into(), "baseDomain".into()],
+                path: vec!["fortress".into(), "baseDomain".into()],
                 source: NixValue::Str(domain.clone()).to_source(),
             });
         }
@@ -259,7 +259,7 @@ fn build_edits(config: &CococoirConfig, form: &EditorForm) -> Vec<ConfigEdit> {
         if config.services_enabled.contains_key(service.nixname) {
             let enabled = form.service_checked(service.nixname);
             edits.push(ConfigEdit {
-                path: vec!["cococoir".into(), "services".into(), service.nixname.into(), "enable".into()],
+                path: vec!["fortress".into(), "services".into(), service.nixname.into(), "enable".into()],
                 source: NixValue::Bool(enabled).to_source(),
             });
         }
@@ -595,7 +595,7 @@ mod tests {
         let client = TestClient::new(app(db, test_auth(), test_config_path()));
         let response = client
             .get("/hello/alice")
-            .header(header::COOKIE, format!("cococoir_session={token}"))
+            .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
         response.assert_status(StatusCode::OK);
@@ -639,15 +639,15 @@ mod tests {
             .expect("session cookie set")
             .to_str()
             .unwrap();
-        assert!(set_cookie.contains("cococoir_session="));
+        assert!(set_cookie.contains("fortress_session="));
         let token = set_cookie
-            .split("cococoir_session=")
+            .split("fortress_session=")
             .nth(1)
             .and_then(|rest| rest.split(';').next())
             .expect("cookie token");
         let gate = client
             .get("/hello/alice")
-            .header(header::COOKIE, format!("cococoir_session={token}"))
+            .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
         gate.assert_status(StatusCode::OK);
@@ -693,7 +693,7 @@ mod tests {
         let client = TestClient::new(app(db.clone(), test_auth(), test_config_path()));
         let response = client
             .get("/auth/logout")
-            .header(header::COOKIE, format!("cococoir_session={token}"))
+            .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
         response.assert_status(StatusCode::SEE_OTHER);
@@ -715,7 +715,7 @@ mod tests {
     fn config_path_resolves_from_env_with_fallback() {
         // Fallback when unset.
         unsafe {
-            std::env::remove_var("COCOCOIR_CONFIG_PATH");
+            std::env::remove_var("FORTRESS_CONFIG_PATH");
         }
         assert_eq!(
             ConfigPath::resolve().as_path(),
@@ -724,12 +724,12 @@ mod tests {
 
         // Explicit value wins.
         unsafe {
-            std::env::set_var("COCOCOIR_CONFIG_PATH", "/tmp/coco.nix");
+            std::env::set_var("FORTRESS_CONFIG_PATH", "/tmp/coco.nix");
         }
         let resolved = ConfigPath::resolve();
         assert_eq!(resolved.as_path(), PathBuf::from("/tmp/coco.nix"));
         unsafe {
-            std::env::remove_var("COCOCOIR_CONFIG_PATH");
+            std::env::remove_var("FORTRESS_CONFIG_PATH");
         }
     }
 
@@ -744,7 +744,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("coco-read-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = ConfigPath(dir.join("dashboard.nix"));
-        std::fs::write(path.as_path(), "cococoir = {").expect("write garbage");
+        std::fs::write(path.as_path(), "fortress = {").expect("write garbage");
         assert!(matches!(read_config(&path), Err(ConfigReadError::Parse(_))));
     }
 
@@ -764,7 +764,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("coco-save-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = ConfigPath(dir.join("dashboard.nix"));
-        let original = "{ cococoir.baseDomain = \"vmtest.local\"; networking.hostName = \"vmtest\"; }\n";
+        let original = "{ fortress.baseDomain = \"vmtest.local\"; networking.hostName = \"vmtest\"; }\n";
         std::fs::write(path.as_path(), original).expect("write config");
 
         let edits = vec![ConfigEdit {
@@ -774,7 +774,7 @@ mod tests {
         save_config(&path, &edits).expect("save succeeds");
 
         let written = std::fs::read_to_string(path.as_path()).expect("read back");
-        assert!(written.contains("cococoir.baseDomain = \"vmtest.local\""));
+        assert!(written.contains("fortress.baseDomain = \"vmtest.local\""));
         assert!(written.contains("networking.hostName = \"other\""));
         assert!(!written.contains("networking.hostName = \"vmtest\""));
     }
@@ -793,7 +793,7 @@ mod tests {
                 source: "\"changed\"".to_string(),
             },
             ConfigEdit {
-                path: vec!["cococoir".into(), "nonexistent".into()],
+                path: vec!["fortress".into(), "nonexistent".into()],
                 source: "true".to_string(),
             },
         ];
@@ -835,10 +835,10 @@ mod tests {
     }
 
     const EDITOR_FIXTURE: &str = r#"{
-  cococoir.baseDomain = "vmtest.local";
+  fortress.baseDomain = "vmtest.local";
   networking.hostName = "vmtest";
-  cococoir.services.jellyfin.enable = true;
-  cococoir.services.cryptpad.enable = false;
+  fortress.services.jellyfin.enable = true;
+  fortress.services.cryptpad.enable = false;
   users.users.nicole = {
     groups = [ "wheel" "storage" ];
   };
@@ -888,9 +888,9 @@ mod tests {
 
         let written = std::fs::read_to_string(path.as_path()).expect("read back");
         assert!(written.contains("networking.hostName = \"other\""));
-        assert!(written.contains("cococoir.baseDomain = \"home.arpa\""));
-        assert!(written.contains("cococoir.services.cryptpad.enable = true"));
-        assert!(written.contains("cococoir.services.jellyfin.enable = true"));
+        assert!(written.contains("fortress.baseDomain = \"home.arpa\""));
+        assert!(written.contains("fortress.services.cryptpad.enable = true"));
+        assert!(written.contains("fortress.services.jellyfin.enable = true"));
         assert!(written.contains("groups = [ \"wheel\" ]"), "groups replaced: {written}");
     }
 
@@ -908,7 +908,7 @@ mod tests {
         response.assert_status(StatusCode::OK);
         let written = std::fs::read_to_string(path.as_path()).expect("read back");
         assert!(
-            written.contains("cococoir.services.cryptpad.enable = false"),
+            written.contains("fortress.services.cryptpad.enable = false"),
             "unchecked service must save as false: {written}"
         );
     }

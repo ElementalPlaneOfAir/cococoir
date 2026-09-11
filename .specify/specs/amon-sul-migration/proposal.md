@@ -33,7 +33,7 @@ Two code changes are required before the box can run the v2 stack as-is:
 
 1. **Storage paths are hardcoded and decoupled.** Service modules declare
    absolute subvolume paths (`/data/media/movies`, `jellyfin.nix:70`) that
-   ignore `cococoir.storage.btrfs.pool.mountpoint`, and the subvolume
+   ignore `fortress.storage.btrfs.pool.mountpoint`, and the subvolume
    oneshot (`btrfs.nix:79`) fails on a target that already exists as a
    plain directory. "Point the stack at existing folders" therefore needs a
    small refactor: subvolume `mountpoint`/`quota`/`owner` become
@@ -45,7 +45,7 @@ Two code changes are required before the box can run the v2 stack as-is:
 2. **The customer side of the signup flow is deferred.** The edge signs a
    customer up (allocates `/128`, generates the WG keypair, `wg set`-adds
    the peer, upserts AAAA DNS — proven by `edge-forward` L2), and the
-   customer template renders `wg0` + `cococoir-client`, but with
+   customer template renders `wg0` + `fortress-client`, but with
    `peers = []`: the customer never learns its own WG IP or the edge's
    endpoint, so the tunnel cannot come up. Completing that wiring is real
    work, not "just deploy".
@@ -63,7 +63,7 @@ Deliberately out of scope for this arc:
       vmtest render byte-identical (subvolume paths, quotas, owners
       unchanged under the `/data` default), and the new `amon-sul`
       configuration evaluates (renders all enabled services + the four
-      custom modules + wg0 + cococoir-client). Maps to T1, T2, T5, T6.
+      custom modules + wg0 + fortress-client). Maps to T1, T2, T5, T6.
 - [ ] **L2** `scripts/vmtest-e2e.sh` outcome is **unchanged** by the storage
       refactor (still at the jellarr P0 re-verification point — T0 records
       the baseline). Maps to T1, T2.
@@ -82,10 +82,10 @@ Deliberately out of scope for this arc:
 
 ## Smallest version
 
-A `nixosConfigurations/amon-sul.nix` that imports the cococoir modules, the
+A `nixosConfigurations/amon-sul.nix` that imports the fortress modules, the
 four userland custom modules, points storage at the existing
 `/media/entertain/*` dirs (single drive, `stripe`), enables
-jellyfin/cryptpad/dex, strips the desktop, and renders wg0 + cococoir-client
+jellyfin/cryptpad/dex, strips the desktop, and renders wg0 + fortress-client
 with a **wired** edge peer. It evaluates under `nix flake check` and the
 customer-side signup wiring is proven by the `edge-forward` L2 test. The
 live `nixos-rebuild` on the box is the final task, gated on the above.
@@ -121,7 +121,7 @@ live `nixos-rebuild` on the box is the final task, gated on the above.
 - **ADR-027 (new): userland custom services.** Non-catalog services are
   plain NixOS modules the customer imports in their machine config,
   *outside* `nix/nixos-modules/services/`. They never call
-  `mkCococoirService`; they compose with cococoir only through ordinary
+  `mkFortressService`; they compose with fortress only through ordinary
   additive nixpkgs options (Caddy vhosts, storage mounts, secrets).
   `contract-conformance` governs the catalog only, so userland modules are
   structurally out of its scope — no special-casing.
@@ -155,7 +155,7 @@ clean-boot, or is it fixed?). This is the baseline every later L2 claim is
 ### T1: storage refactor — derive subvolume defaults from the pool mountpoint
 **Depends on:** T0
 **Verification:** `nix flake check` green; `nix eval
-.#nixosConfigurations.vmtest.config.cococoir.storage.btrfs.subvolumes`
+.#nixosConfigurations.vmtest.config.fortress.storage.btrfs.subvolumes`
 renders the same `/data/media/...` + `/data/jellyfin/metadata` paths as
 today (no drift). L1.
 **Files:** `nix/nixos-modules/storage/btrfs.nix`,
@@ -164,7 +164,7 @@ today (no drift). L1.
 
 Subvolume `mountpoint`/`quota`/`owner` become `lib.mkDefault`, and the
 service modules derive their default paths from
-`config.cococoir.storage.btrfs.pool.mountpoint` instead of hardcoding
+`config.fortress.storage.btrfs.pool.mountpoint` instead of hardcoding
 `/data`. The vmtest render must stay byte-identical.
 
 ### T2: subvolume oneshot tolerates an existing plain directory
@@ -203,7 +203,7 @@ Plain NixOS modules wrapping the nixpkgs services, ported from the live
 box's running configs (extracted over SSH — matrix homeserver.yaml,
 minecraft server.properties, gdoc-extract + mautrix unit files). matrix +
 mautrix bring their own postgres; that is additive, no conflict with
-cococoir.
+fortress.
 
 ### T6: amon-sul machine config + strip headless
 **Depends on:** T1, T2, T5
@@ -215,7 +215,7 @@ pipewire) absent. L1.
 `nixosConfigurations/amon-sul/custom/*.nix`,
 `flake.nix`
 
-Imports the cococoir modules + the four custom modules, sets
+Imports the fortress modules + the four custom modules, sets
 `baseDomain = "fractal.interdim.net"`, `tls.mode = "acme"`, storage reuse
 (`pool.devices = ["/dev/sda1"]`, `mountpoint = "/media"`, subvolume
 overrides), dex `staticPasswords`, and removes the desktop.
@@ -225,7 +225,7 @@ overrides), dex `staticPasswords`, and removes the desktop.
 **Verification:** `nix flake check` green; secrets inventory resolves.
 **Files:** `nixosConfigurations/amon-sul.nix` (or a sibling `secrets` module)
 
-Wire `cococoir.secrets.sopsFile` + `sops.secrets.{jellarr-api-key,
+Wire `fortress.secrets.sopsFile` + `sops.secrets.{jellarr-api-key,
 jellyfin-admin-password}` + the age key on the box.
 
 ### T8: complete the customer-side signup wiring
@@ -251,7 +251,7 @@ over the tunnel returns 200; ACME cert issued. Manual + `demo-verify.sh`.
 **Depends on:** T9
 **Verification:** jellyfin/cryptpad/dex active; the four custom services
 active; media visible at `/media/entertain/*`; `git diff` on the box shows
-the swap from the legacy flake to the cococoir flake. Manual.
+the swap from the legacy flake to the fortress flake. Manual.
 **Files:** none (live operation; results into `docs/STATUS.md`)
 
 ## Strongest objection

@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/network — the LAN access plane (ADR-028).
+# fortress/network — the LAN access plane (ADR-028).
 #
 # One customer-facing option:
 #
-#   cococoir.network.lanAddress = "192.168.1.10";
+#   fortress.network.lanAddress = "192.168.1.10";
 #
 # (the box's static LAN IPv4, i.e. a DHCP reservation on the router)
 # plus one router change: point the router's DHCP DNS at that address.
 # Everything else derives:
 #
-#   - cococoir.network.dns.enable defaults to true when lanAddress is
+#   - fortress.network.dns.enable defaults to true when lanAddress is
 #     set — setting the address IS the intent signal. No second toggle.
 #   - dnsmasq (DNS only; the router keeps DHCP) answers every enabled
 #     service's `domain` with lanAddress, enumerated from
-#     cococoir.services — new catalog services are covered with zero
+#     fortress.services — new catalog services are covered with zero
 #     config. Other queries forward upstream via the box's own
 #     resolver config (resolv.conf), so no loop is possible as long as
 #     the box does not resolve from itself (asserted below).
@@ -22,7 +22,7 @@
 #     Browsers with "Secure DNS" enabled would bypass split-horizon
 #     entirely; this auto-disables it on Firefox. Default-on, no option.
 #   - The service factory's Caddy vhosts bind
-#     cococoir.network.caddyBindAddresses (localhost + lanAddress), so
+#     fortress.network.caddyBindAddresses (localhost + lanAddress), so
 #     LAN traffic terminates TLS on the box directly. The forwarder's
 #     tunnel IP (10.10.0.<n>:443) stays the remote ingress; a wildcard
 #     bind would still collide with it (EADDRINUSE), hence the explicit
@@ -41,17 +41,17 @@
 {lib, config, ...}:
 let
   inherit (lib) mkOption types;
-  cfg = config.cococoir.network;
+  cfg = config.fortress.network;
 
   # Domains of every enabled factory service. Derived, never
   # configured — dnsmasq coverage tracks the service tree.
   enabledDomains =
     lib.unique
       (lib.mapAttrsToList (_: s: s.domain)
-        (lib.filterAttrs (_: s: s.enable or false) config.cococoir.services));
+        (lib.filterAttrs (_: s: s.enable or false) config.fortress.services));
 in
 {
-  options.cococoir.network = {
+  options.fortress.network = {
     lanAddress = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -72,7 +72,7 @@ in
       description = ''
         Run the LAN DNS layer (dnsmasq) serving every enabled
         service's domain with `lanAddress`. Defaults to true when
-        `cococoir.network.lanAddress` is set.
+        `fortress.network.lanAddress` is set.
       '';
     };
 
@@ -81,7 +81,7 @@ in
       internal = true;
       default = ["127.0.0.1" "::1"] ++ lib.optional (cfg.lanAddress != null) cfg.lanAddress;
       description = ''
-        Addresses every cococoir Caddy vhost binds. Localhost (the
+        Addresses every fortress Caddy vhost binds. Localhost (the
         forwarder's ingress target) plus the LAN address when set.
         Never 0.0.0.0 — the forwarder owns the tunnel IP and a
         wildcard bind would collide (EADDRINUSE).
@@ -92,21 +92,21 @@ in
   config = lib.mkMerge [
     # Auto-activation outside the mkIf — the gate itself must not be
     # defined inside its own gate.
-    { cococoir.network.dns.enable = lib.mkDefault (cfg.lanAddress != null); }
+    { fortress.network.dns.enable = lib.mkDefault (cfg.lanAddress != null); }
 
     (lib.mkIf cfg.dns.enable {
       assertions = [
         {
           assertion = cfg.lanAddress != null;
           message = ''
-            cococoir.network.dns: enabled but `cococoir.network.lanAddress`
+            fortress.network.dns: enabled but `fortress.network.lanAddress`
             is null. Set the box's static LAN address (a DHCP reservation).
           '';
         }
         {
           assertion = !builtins.elem cfg.lanAddress config.networking.nameservers;
           message = ''
-            cococoir.network: `networking.nameservers` contains
+            fortress.network: `networking.nameservers` contains
             ${cfg.lanAddress} — the box would forward upstream queries
             to its own dnsmasq (resolver loop).
           '';

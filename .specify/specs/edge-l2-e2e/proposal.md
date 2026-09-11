@@ -3,13 +3,13 @@
 ## Problem
 
 `nix flake check`'s `edge-forward` check fails to build. It models a **dead
-data path**: it enables `services.cococoir-edge` (a NixOS module that was
+data path**: it enables `services.fortress-edge` (a NixOS module that was
 deleted in `82f2276`; the edge now runs via system-manager) and drives the
-edge with a **config file** (`/etc/cococoir-edge.json` + `forwards`) and an
-IPv4 per-IP bind. Neither exists anymore: the new `cococoir-edge`
+edge with a **config file** (`/etc/fortress-edge.json` + `forwards`) and an
+IPv4 per-IP bind. Neither exists anymore: the new `fortress-edge`
 (ADR-025) has no config file, is Redis-driven, binds customer **IPv6
 /128s** via `IPV6_FREEBIND`, and reads boot secrets from
-`/etc/cococoir/` (secret.rs:31-41 — panics if absent). So the old test
+`/etc/fortress/` (secret.rs:31-41 — panics if absent). So the old test
 cannot be salvaged by changing one line.
 
 ## Goal
@@ -23,19 +23,19 @@ auth), then proves the full path:
 
 ```
 curl (edge, to its own customer /128 via a lo route)
-  -> cocococoir-edge forwarder, [2001:db8:1::2]:80 (IPV6_FREEBIND bind)
+  -> cofortress-edge forwarder, [2001:db8:1::2]:80 (IPV6_FREEBIND bind)
     -> WireGuard tunnel (10.10.0.0/24)
-      -> cocococoir-client forwarder, 10.10.0.2:80 (wg0)
+      -> cofortress-client forwarder, 10.10.0.2:80 (wg0)
         -> 127.0.0.1:80 (python3 http.server, Caddy stand-in)
 ```
 
 ## Decisions
 
 - **The edge node runs the binary directly** (systemd unit mirroring
-  `edge.nix`), not a NixOS `services.cococoir-edge` module. Redis via
+  `edge.nix`), not a NixOS `services.fortress-edge` module. Redis via
   `services.redis`; `wg0` via `networking.wireguard`; `wireguard-tools`
   installed (the `RealWgClient` shells out to `wg set wg0`).
-- **Boot secrets are written into the test VM** (`/etc/cococoir/`
+- **Boot secrets are written into the test VM** (`/etc/fortress/`
   `secretspec.toml` + `edge.env`) with the five required values, so
   `init_globals`/`SECRETS` resolve. `DNS_*` are throwaway (DNS is
   non-fatal + reconcile-logged); `ROOT_DOMAIN=edge-test.local`;
@@ -62,7 +62,7 @@ curl (edge, to its own customer /128 via a lo route)
 1. `nix flake check`'s `edge-forward` check **builds and passes**, booting
    both VMs, doing a real `/signup`, and returning the HTTP fixture over
    the real WG tunnel.
-2. The edge runs the `cococoir-edge` binary with the system-manager flag
+2. The edge runs the `fortress-edge` binary with the system-manager flag
    shape (`--subnet /64 --wg-subnet --redis-url --api-addr --health-addr`),
    backed by Redis, with boot secrets present — not a NixOS edge module.
 3. The test asserts: edge `/status` shows the bound `[2001:db8:1::2]:80`
@@ -83,7 +83,7 @@ curl (edge, to its own customer /128 via a lo route)
 - **T1**: Rewrite `nix/tests/edge/default.nix` to the control-plane edge
   (edge node: systemd unit + Redis + secrets + wg0 + wireguard-tools;
   client node: python stand-in + manual forwarder unit).
-- **T2**: Pass `cococoirPkg` into the test from `nix/tests/default.nix`;
+- **T2**: Pass `fortressPkg` into the test from `nix/tests/default.nix`;
   update that file's header comment (drop Go-era `192.168.1.10` framing).
 - **T3**: Verify — `cargo test` still green; `nix flake check`
   `edge-forward` builds + boots (needs `/dev/kvm`).

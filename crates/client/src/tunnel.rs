@@ -5,7 +5,7 @@
 //! wg0 interface — there is no operator key-file step and no NixOS wg0
 //! module to keep in sync. The client brings wg0 up before the forwarder
 //! binds, so the forwarder's tunnel-IP listeners have an address. The
-//! private key lives at a persisted path (under `StateDirectory=cococoir`)
+//! private key lives at a persisted path (under `StateDirectory=fortress`)
 //! and is applied via `wg set` — it is never written to `/etc/wireguard`
 //! and never sent anywhere (ADR-025: the edge holds only the public key).
 
@@ -16,7 +16,7 @@ use std::process::Command;
 use serde::Deserialize;
 use thiserror::Error;
 
-use cococoir_core::wg;
+use fortress_core::wg;
 
 const DEFAULT_IFACE: &str = "wg0";
 const DEFAULT_PREFIX: u8 = 24;
@@ -53,10 +53,10 @@ fn default_prefix() -> u8 {
     DEFAULT_PREFIX
 }
 
-/// The persisted private-key path. Under `StateDirectory=cococoir`, the
+/// The persisted private-key path. Under `StateDirectory=fortress`, the
 /// one writable path under `ProtectSystem=strict`.
 pub fn key_path() -> PathBuf {
-    PathBuf::from("/var/lib/cococoir/wg-private.key")
+    PathBuf::from("/var/lib/fortress/wg-private.key")
 }
 
 /// Tunnel bring-up failure.

@@ -1,22 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — top-level module.
+# Fortress v2 — top-level module.
 #
 # Aggregates the platform's NixOS modules. The flake's
 # `nixosModules.default` ultimately imports this file (via
 # default.nix).
 #
 # v2 architecture (see PLAN.md):
-#   - cococoir.tls — TLS posture (off / acme / self-signed),
+#   - fortress.tls — TLS posture (off / acme / self-signed),
 #     read by the service contract factory's Caddy vhost builder
-#   - cococoir.baseDomain — apex domain; service domains derive
+#   - fortress.baseDomain — apex domain; service domains derive
 #     from it so customer configs stay small
-#   - cococoir.network — LAN access plane: lanAddress + dnsmasq +
+#   - fortress.network — LAN access plane: lanAddress + dnsmasq +
 #     the Caddy bind address list (ADR-028)
-#   - cococoir.secrets — sops-nix secret inventory (Phase 2)
-#   - cococoir.storage.* — btrfs pool + subvolumes (ADR-023)
-#   - cococoir.services.<name> — 4-option (or 3-option for
+#   - fortress.secrets — sops-nix secret inventory (Phase 2)
+#   - fortress.storage.* — btrfs pool + subvolumes (ADR-023)
+#   - fortress.services.<name> — 4-option (or 3-option for
 #     infra) contract; built via services/_contract.nix
-#   - services.cococoir-client — v0 L4 tunnel client systemd
+#   - services.fortress-client — v0 L4 tunnel client systemd
 #     unit (no-op on a v2 single-machine with no WireGuard peer)
 {
   imports = [

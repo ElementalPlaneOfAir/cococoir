@@ -28,7 +28,7 @@ Forbidden inputs: the conversation that produced the code, the author's explanat
    - Customer-facing config over 50 lines total → cite
    - Bug fix without its tripwire in the same change → cite
    - `lib.mkForce` or `options.services ? X` without an L1 assertion → cite
-   - Service module not using `mkCococoirService` → cite
+   - Service module not using `mkFortressService` → cite
    - STATUS.md "works" claim without a named proof → cite
    - Comments narrating what code does, where naming or assertions would speak → cite
    - Diff size wildly exceeding the task's stated files → cite (megadiff privileges are revocable)

@@ -2,30 +2,30 @@
 
 ## Problem
 
-LAN devices reach cococoir services only through the edge (`AAAA →
+LAN devices reach fortress services only through the edge (`AAAA →
 edge /128 → WG tunnel → box`), paying full internet transit for
 traffic that never needs to leave the house, and keeping the box's
-LAN-side story dependent on cococoir infra. The fix is the box
+LAN-side story dependent on fortress infra. The fix is the box
 answering DNS for its own service domains with a LAN address — but
 that requires (a) devices to *use* the box as resolver and (b) Caddy
 to actually listen on the address the answers point at.
 
 ## Decision
 
-Customer sets **one** thing: `cococoir.network.lanAddress` (the box's
+Customer sets **one** thing: `fortress.network.lanAddress` (the box's
 static LAN IPv4, via a DHCP reservation) + one router DHCP-DNS
 redirect to that address. Everything else derives:
 
-- `cococoir.network.dns.enable` defaults to `lanAddress != null` —
+- `fortress.network.dns.enable` defaults to `lanAddress != null` —
   setting the address is the intent signal. No second toggle.
 - dnsmasq (DNS only, no DHCP — the router keeps DHCP) answers every
   **enabled** service's `domain` with `lanAddress`, enumerated from
-  `config.cococoir.services` — new catalog services are covered with
+  `config.fortress.services` — new catalog services are covered with
   zero config. All other queries forward upstream via the box's own
   resolver config. NXDOMAIN for `use-application-dns.net` (Firefox
   DoH canary) by default.
 - The factory's hardcoded `bind 127.0.0.1 ::1` becomes the
-  platform-internal `cococoir.network.caddyBindAddresses` (default
+  platform-internal `fortress.network.caddyBindAddresses` (default
   `["127.0.0.1" "::1"] ++ lanAddress`), so Caddy terminates TLS on
   the LAN address too. Contract surface unchanged (no new per-service
   option; ADR-020 intact).

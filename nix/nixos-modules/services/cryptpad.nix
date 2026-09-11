@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/cryptpad — CryptPad collaborative office suite.
+# fortress/services/cryptpad — CryptPad collaborative office suite.
 #
 # 4-option contract (per PLAN.md "Services" + ADR-004):
 #   enable  — opt-in toggle
@@ -21,7 +21,7 @@
   ...
 }:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  mkFortressService = import ./_contract.nix {inherit lib config pkgs options;};
 
   cryptpadSSO = pkgs.fetchFromGitHub {
     owner = "cryptpad";
@@ -41,22 +41,22 @@ let
     sed -i "s|${pkgs.cryptpad}|$out|g" $out/bin/cryptpad
   '';
 in
-mkCococoirService {
+mkFortressService {
   name = "cryptpad";
   description = "CryptPad collaborative office suite";
   defaultPort = 3000;
   defaultHealthPath = "/checkup/";
   storageNeeded = true;
   extraConfig = {cfg, lib, pkgs, config, ...}: let
-    dataRoot = config.cococoir.storage.btrfs.pool.mountpoint;
+    dataRoot = config.fortress.storage.btrfs.pool.mountpoint;
     cryptpadDataPath = "${dataRoot}/cryptpad/data";
   in {
-    users.users.cococoir-cryptpad = {
+    users.users.fortress-cryptpad = {
       isSystemUser = true;
-      group = "cococoir-cryptpad";
+      group = "fortress-cryptpad";
       description = "CryptPad service user";
     };
-    users.groups.cococoir-cryptpad = {};
+    users.groups.fortress-cryptpad = {};
 
     services.cryptpad = {
       enable = true;
@@ -70,22 +70,22 @@ mkCococoirService {
         filePath = cryptpadDataPath;
         blockDailyCheck = true;
         logToStdout = true;
-        installMethod = "cococoir";
+        installMethod = "fortress";
       };
     };
 
     systemd.services.cryptpad = {
-      after = ["cococoir-btrfs-subvolumes.service"];
-      requires = ["cococoir-btrfs-subvolumes.service"];
+      after = ["fortress-btrfs-subvolumes.service"];
+      requires = ["fortress-btrfs-subvolumes.service"];
       unitConfig.RequiresMountsFor = cryptpadDataPath;
       confinement.enable = lib.mkForce false;
       serviceConfig = {
-        # The subvolume is chowned to cococoir-cryptpad by the btrfs
+        # The subvolume is chowned to fortress-cryptpad by the btrfs
         # module, so the service needs a stable user rather than the
         # DynamicUser the nixpkgs module defaults to.
         DynamicUser = lib.mkForce false;
-        User = "cococoir-cryptpad";
-        Group = "cococoir-cryptpad";
+        User = "fortress-cryptpad";
+        Group = "fortress-cryptpad";
         ReadWritePaths = [cryptpadDataPath];
       };
       # cryptpad first-boot bug: on an empty decree file, api.js
@@ -95,11 +95,11 @@ mkCococoirService {
       # a value" until the next restart. Seed the decree before start
       # so Decrees.load replays it on first boot.
       serviceConfig.ExecStartPre = lib.mkAfter [
-        (pkgs.writeShellScript "cococoir-cryptpad-seed-bearer" ''
+        (pkgs.writeShellScript "fortress-cryptpad-seed-bearer" ''
           set -euo pipefail
           DECREE="''${STATE_DIRECTORY:-}/data/decree.ndjson"
           if [ -z "$DECREE" ]; then
-            echo "cococoir-cryptpad-seed-bearer: \$STATE_DIRECTORY unset" >&2
+            echo "fortress-cryptpad-seed-bearer: \$STATE_DIRECTORY unset" >&2
             exit 1
           fi
           if [ ! -f "$DECREE" ] || ! grep -q SET_BEARER_SECRET "$DECREE"; then
@@ -111,11 +111,11 @@ mkCococoirService {
       ];
     };
 
-    cococoir.storage.btrfs.subvolumes."cryptpad-data" = {
+    fortress.storage.btrfs.subvolumes."cryptpad-data" = {
       mountpoint = lib.mkDefault cryptpadDataPath;
       quota = "100G";
       owner = {
-        user = "cococoir-cryptpad";
+        user = "fortress-cryptpad";
         mode = "700";
       };
     };

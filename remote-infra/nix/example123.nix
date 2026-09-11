@@ -3,12 +3,12 @@
 # Rendered by tofu from remote-infra/tofu/main.tf — do not hand-edit.
 # The customer box is the home machine (behind CG-NAT, no public
 # IPv6): the full v2 product plus a WireGuard DIAL-OUT to the edge
-# and cococoir-client forwarding the tunnel's :80/:443 to local
+# and fortress-client forwarding the tunnel's :80/:443 to local
 # Caddy. Caddy terminates TLS with real ACME certs obtained through
 # the tunnel (blind forwarding).
 #
 # FILL IN (operator, after render):
-#   cococoir.storage.btrfs.pool.devices — this box's real disks
+#   fortress.storage.btrfs.pool.devices — this box's real disks
 {
   config,
   lib,
@@ -22,8 +22,8 @@
   system.stateVersion = "25.11";
   networking.hostName = "example123";
 
-  cococoir = {
-    baseDomain = "example123.interdim.net";
+  fortress = {
+    baseDomain = "example123.proletariat.tech";
     tls.mode = "acme"; # real certs through the tunnel
 
     services = {
@@ -44,8 +44,8 @@
   services.caddy.enable = true;
 
   # ── Tunnel client half ───────────────────────────────────────────
-  services.cococoir-client.enable = true;
-  environment.etc."cococoir-client.json".text = builtins.toJSON {
+  services.fortress-client.enable = true;
+  environment.etc."fortress-client.json".text = builtins.toJSON {
     forwards = [
       {
         listen_addr = "10.10.0.2:80";
@@ -73,9 +73,9 @@
   # ── IPv4 LAN path: the "custom DNS server" from the vision. ─────
   networking.hosts = {
     "127.0.0.1" = [
-      "jellyfin.example123.interdim.net"
-      "auth.example123.interdim.net"
-      "cryptpad.example123.interdim.net"
+      "jellyfin.example123.proletariat.tech"
+      "auth.example123.proletariat.tech"
+      "cryptpad.example123.proletariat.tech"
     ];
   };
 

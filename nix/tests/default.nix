@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — test suite.
+# Fortress v2 — test suite.
 #
 # Test layers:
 #   L0: `cargo test` on the Rust workspace. No /dev/kvm,
 #       no QEMU. Catches forwarder regressions in seconds.
 #   L1: pure option-tree evaluation. No VM, no QEMU. Catches
 #       derivation bugs and contract-conformance drift.
-#   L2: full nixosTest. Boots a QEMU/KVM VM with the cococoir
+#   L2: full nixosTest. Boots a QEMU/KVM VM with the fortress
 #       module loaded. Catches "doesn't build" and "doesn't boot"
 #       failures. Needs /dev/kvm.
 #
@@ -20,15 +20,15 @@ let
   # Built with crane (github:ipetkov/crane, injected into pkgs by the
   # flake): `buildDepsOnly` compiles the workspace deps once and caches
   # them, so a source change only rebuilds the crate itself.
-  cococoirPkg = pkgs.callPackage ../packages/cococoir {};
-  edgeTests = let raw = import ./edge {inherit pkgs cococoirPkg;}; in {
+  fortressPkg = pkgs.callPackage ../packages/fortress {};
+  edgeTests = let raw = import ./edge {inherit pkgs fortressPkg;}; in {
     edge-forward = raw.edge-forward.test;
   };
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
 in {
   # ── L0: forwarder Rust unit tests ────────────────────────────────
-  # `cargo test` on the cococoir crate. No /dev/kvm, no QEMU.
+  # `cargo test` on the fortress crate. No /dev/kvm, no QEMU.
   # Catches regressions in the forwarder (TCP/UDP forwarding,
   # retry-with-backoff, graceful shutdown, proto validation) plus the
   # control-plane (signup/DNS/auth) and dashboard suites.
@@ -39,11 +39,11 @@ in {
   forwarder-unit-tests = let
     craneLib = pkgs.crane.mkLib pkgs;
     commonArgs = {
-      src = cococoirPkg.src;
-      pname = "cococoir";
+      src = fortressPkg.src;
+      pname = "fortress";
       version = "0.1.0";
-      cargoLock = cococoirPkg.cargoLock;
-      cargoArtifacts = cococoirPkg.cargoArtifacts;
+      cargoLock = fortressPkg.cargoLock;
+      cargoArtifacts = fortressPkg.cargoArtifacts;
     };
   in
     craneLib.cargoTest commonArgs;
@@ -52,6 +52,6 @@ in {
   # 2-VM nixosTest. Exercises the control-plane edge's full
   # signup -> /128 -> WireGuard -> box path: a real POST /signup on the
   # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
-  # cocococoir-client (box) -> 127.0.0.1:80 (python http server, Caddy
+  # cofortress-client (box) -> 127.0.0.1:80 (python http server, Caddy
   # stand-in). See nix/tests/edge/default.nix for the full design.
 } // edgeTests // contractConformanceTests // docRefsTests

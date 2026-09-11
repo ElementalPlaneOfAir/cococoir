@@ -25,7 +25,7 @@ I create or update `.specify/memory/constitution.md` — the project's governing
 4. Write or update `.specify/memory/constitution.md` with YAML frontmatter:
 ```yaml
 ---
-project: cococoir
+project: fortress
 version: 1
 last_updated: <ISO date>
 status: reviewed

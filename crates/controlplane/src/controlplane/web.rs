@@ -26,8 +26,8 @@ use poem::{
 use serde::Deserialize;
 
 /// The account session cookie. Distinct from the client dashboard's
-/// `cococoir_session` (different service, different domain).
-pub const SESSION_COOKIE: &str = "cococoir_account_session";
+/// `fortress_session` (different service, different domain).
+pub const SESSION_COOKIE: &str = "fortress_account_session";
 
 /// The injected control plane, or a 500 when the web routes were mounted
 /// without one (a test-side bug — production always injects it). The
@@ -123,17 +123,45 @@ pub fn Landing(props: &LandingProps) -> Node {
         )
     };
     page_shell(
-        "Cococoir",
+        "Fortress",
         rsx!(
-            <div class="hero rounded-2xl bg-base-100 shadow-sm">
-                <div class="hero-content py-12 text-center">
-                    <div class="max-w-md flex flex-col gap-4">
-                        <h1 class="text-4xl font-bold">"Cococoir"</h1>
-                        <p class="text-base-content/60">"Remote access for your home servers."</p>
-                        {actions}
+            <>
+                <div class="hero rounded-2xl bg-base-100 shadow-sm">
+                    <div class="hero-content py-12 text-center">
+                        <div class="max-w-md flex flex-col gap-4">
+                            <h1 class="text-4xl font-bold">"Fortress"</h1>
+                            <p class="text-base-content/60">"Remote access for your home servers."</p>
+                            {actions}
+                        </div>
                     </div>
                 </div>
-            </div>
+                <div class="card rounded-2xl bg-base-100 shadow-sm">
+                <div class="card-body flex flex-col gap-4">
+                    <h2 class="card-title text-xl">"Install"</h2>
+                    <p class="text-sm text-base-content/70">
+                        "Fortress is a NixOS module. Point your flake at it, import the module, enable the services you want, and rebuild — no setup wizard, no app store."
+                    </p>
+                    <div class="flex flex-col gap-2 text-sm">
+                        <p class="font-mono text-xs text-base-content/50">"flake input + module import"</p>
+                        <pre class="rounded-xl bg-base-200 p-3 text-xs overflow-x-auto">{r#"{ inputs, ... }: {
+  inputs.fortress = {
+    url = "github:ElementalPlaneOfAir/fortress";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+  imports = [ inputs.fortress.nixosModules.default ];
+}"#}</pre>
+                        <p class="font-mono text-xs text-base-content/50">"enable a service"</p>
+                        <pre class="rounded-xl bg-base-200 p-3 text-xs overflow-x-auto">{r#"fortress.services.jellyfin = { enable = true; public = true; };
+fortress.services.dex      = { enable = true; public = true; };"#}</pre>
+                        <p class="font-mono text-xs text-base-content/50">"rebuild"</p>
+                        <pre class="rounded-xl bg-base-200 p-3 text-xs overflow-x-auto">{"sudo nixos-rebuild switch --flake .#mybox"}</pre>
+                    </div>
+                    <p class="text-sm text-base-content/70">
+                        "Each service gets its own Caddy vhost with auto-TLS, and enabling it alongside Dex gives you OIDC sign-in for free. The full service catalog is listed in the project README."
+                    </p>
+                </div>
+                </div>
+            </>
         ),
     )
 }
@@ -710,7 +738,7 @@ mod tests {
     #[test]
     fn cookie_helpers_produce_expected_headers() {
         let set = session_cookie_header("abc").to_str().unwrap().to_string();
-        assert!(set.contains("cococoir_account_session=abc"));
+        assert!(set.contains("fortress_account_session=abc"));
         assert!(set.contains("HttpOnly"));
         assert!(set.contains("SameSite=Lax"));
         assert!(set.contains("Path=/"));
@@ -811,17 +839,17 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(set_cookie.contains("cococoir_account_session="));
+        assert!(set_cookie.contains("fortress_account_session="));
 
         // The cookie makes the landing page show the signed-in user.
         let token = set_cookie
-            .split("cococoir_account_session=")
+            .split("fortress_account_session=")
             .nth(1)
             .and_then(|rest| rest.split(';').next())
             .expect("cookie value");
         let resp = client
             .get("/")
-            .header(header::COOKIE, format!("cococoir_account_session={token}"))
+            .header(header::COOKIE, format!("fortress_account_session={token}"))
             .send()
             .await;
         resp.assert_status(StatusCode::OK);
@@ -832,7 +860,7 @@ mod tests {
         // Logout clears the session.
         let resp = client
             .get("/auth/logout")
-            .header(header::COOKIE, format!("cococoir_account_session={token}"))
+            .header(header::COOKIE, format!("fortress_account_session={token}"))
             .send()
             .await;
         resp.assert_status(StatusCode::SEE_OTHER);
@@ -972,5 +1000,18 @@ mod tests {
             account_error_message(&AccountError::DuplicateEmail("x".into())),
             "An account with that email already exists."
         );
+    }
+
+    #[test]
+    fn landing_lists_install_instructions() {
+        let html = component::<Landing>(LandingProps {
+            logged_in: false,
+            email: None,
+        })
+        .to_html();
+        assert!(html.contains("Install"), "landing has an install section");
+        assert!(html.contains("github:ElementalPlaneOfAir/fortress"), "flake input documented");
+        assert!(html.contains("fortress.services.jellyfin"), "service enable documented");
+        assert!(html.contains("nixos-rebuild switch"), "rebuild command documented");
     }
 }

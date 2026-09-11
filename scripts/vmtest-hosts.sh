@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # vmtest-hosts.sh — temporary /etc/hosts entries for
-# the cococoir v2 dev VM (vmtest).
+# the fortress v2 dev VM (vmtest).
 #
 # The VM forwards host:4433 -> guest:443 (Caddy/TLS). Caddy
 # routes by hostname to the right service. Add the

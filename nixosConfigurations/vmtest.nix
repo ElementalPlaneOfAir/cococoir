@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir v2 — manual dev VM ("vmtest"). One VM hosts every
-# cococoir service under test, each behind its own Caddy vhost.
+# Fortress v2 — manual dev VM ("vmtest"). One VM hosts every
+# fortress service under test, each behind its own Caddy vhost.
 # Each service gets a subdomain of `vmtest.local` so the
 # wildcard cert covers the whole jar.
 #
@@ -36,7 +36,7 @@
 # The VM is hermetic: secrets and the TLS cert are generated at
 # build time, btrfs pool runs with two virtual disks, no sops-nix,
 # no real network. Production uses sops-nix with the user's age key and
-# a real ACME certificate (see cococoir.tls.mode = "acme").
+# a real ACME certificate (see fortress.tls.mode = "acme").
 {
   config,
   lib,
@@ -70,7 +70,7 @@
   # `*.vmtest.local` cookie-jar. The browser will warn
   # about it (it's a dev VM, the cert changes every build);
   # -k on curl / "Accept the risk" in the browser gets past it.
-  # In production, `cococoir.tls.mode = "acme"` makes Caddy
+  # In production, `fortress.tls.mode = "acme"` makes Caddy
   # issue a real cert.
   testCerts =
     pkgs.runCommand "vmtest-tls" {
@@ -113,11 +113,11 @@ in {
   #   - service `domain` options default to `<svc>.vmtest.local`
   #     (override per-service if you need a non-conventional name)
   #   - Caddy's `tls` directive is emitted automatically from
-  #     `cococoir.tls.{certFile, keyFile}` for every vhost
+  #     `fortress.tls.{certFile, keyFile}` for every vhost
   #   - `services.caddy.enable = true` and the per-service
-  #     `cococoir.services.<name>.enable = true` together drive
+  #     `fortress.services.<name>.enable = true` together drive
   #     vhost creation via the contract factory
-  cococoir = {
+  fortress = {
     tls = {
       mode = "self-signed";
       certFile = "/etc/vmtest-tls/cert.pem";
@@ -179,15 +179,15 @@ in {
     experimental-features = ["nix-command" "flakes"];
   };
 
-  # btrfs pool. cococoir.storage.enable defaults to true
+  # btrfs pool. fortress.storage.enable defaults to true
   # (always-on). Two virtual virtio drives (2 GiB each) form
   # a btrfs RAID1 pool. The jellyfin and cryptpad service modules
   # auto-declare their subvolumes.
-  cococoir.storage.btrfs.pool.devices = ["/dev/vdb" "/dev/vdc"];
+  fortress.storage.btrfs.pool.devices = ["/dev/vdb" "/dev/vdc"];
 
-  # Caddy: just enable. Every cococoir.services.<name> with
+  # Caddy: just enable. Every fortress.services.<name> with
   # enable = true registers a vhost via the contract factory,
-  # which pulls `tls` from cococoir.tls and `reverse_proxy` /
+  # which pulls `tls` from fortress.tls and `reverse_proxy` /
   # 403 from `public`. No per-vhost boilerplate here.
   #
   # The `email` option is left at its default (null) — Caddy
@@ -196,41 +196,41 @@ in {
   services.caddy.enable = true;
 
   # Jellyfin service. `enable` comes from dashboard.nix. Domain defaults
-  # to jellyfin.vmtest.local via cococoir.baseDomain. Datasets
+  # to jellyfin.vmtest.local via fortress.baseDomain. Datasets
   # auto-declared by the jellyfin module.
-  cococoir.services.jellyfin = {
+  fortress.services.jellyfin = {
     public = true;
   };
 
-  cococoir.services.cryptpad = {
+  fortress.services.cryptpad = {
     public = true;
   };
 
-  cococoir.services.radarr = {
+  fortress.services.radarr = {
     public = false;
   };
-  cococoir.services.sonarr = {
+  fortress.services.sonarr = {
     public = false;
   };
-  cococoir.services.lidarr = {
+  fortress.services.lidarr = {
     public = false;
   };
-  cococoir.services.prowlarr = {
+  fortress.services.prowlarr = {
     public = false;
   };
 
   # Dex: self-hosted OIDC provider with email+password auth.
-  # Domain defaults to auth.vmtest.local via cococoir.baseDomain.
+  # Domain defaults to auth.vmtest.local via fortress.baseDomain.
   # Users are declared in staticPasswords — no setup wizard, no
   # API provisioning. Groups flow through the `groups` OIDC scope
   # so Jellyfin picks them up as role claims.
-  cococoir.services.dex = {
+  fortress.services.dex = {
     public = true;
   };
 
   # Build-time secret files wired into Dex and jellarr.
   # The generated Jellyfin client secret lives in
-  # /etc/dex/clients/jellyfin-secret; the cococoir-jellyfin-oidc-secret
+  # /etc/dex/clients/jellyfin-secret; the fortress-jellyfin-oidc-secret
   # oneshot copies it there on first boot (idempotent within a VM
   # overlay). The bcrypt hash goes directly into staticPasswords.
   services.dex.settings = {
@@ -259,7 +259,7 @@ in {
     "${testDexSecrets}/cryptpad-client-secret";
 
   # Jellarr libraries for vmtest. Plain definitions merge with the
-  # cococoir modules: this overrides the jellyfin module's mkDefault
+  # fortress modules: this overrides the jellyfin module's mkDefault
   # virtualFolders, and the jellyfin-oidc integration's `plugins` /
   # `branding` merge in alongside. Do NOT wrap this in lib.mkForce —
   # mkForce on a submodule silently discards the OIDC plugin config.
@@ -292,19 +292,19 @@ in {
   virtualisation.emptyDiskImages = [2048 2048]; # 2 x 2 GiB for btrfs pool
 
   # Pre-seed the btrfs subvolume with a test file. The oneshot waits
-  # for cococoir-btrfs-subvolumes.service before writing.
-  systemd.services.cococoir-pre-seed-media = {
+  # for fortress-btrfs-subvolumes.service before writing.
+  systemd.services.fortress-pre-seed-media = {
     description = "Pre-seed the jellyfin subvolume with a test file";
     wantedBy = ["multi-user.target"];
-    after = ["cococoir-btrfs-subvolumes.service"];
-    requires = ["cococoir-btrfs-subvolumes.service"];
+    after = ["fortress-btrfs-subvolumes.service"];
+    requires = ["fortress-btrfs-subvolumes.service"];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = pkgs.writeShellScript "pre-seed-media" ''
         cat > /data/media/movies/welcome.txt <<'EOF'
-        Hello from cococoir v2!
-        This file was pre-seeded by the cococoir vmtest VM config.
+        Hello from fortress v2!
+        This file was pre-seeded by the fortress vmtest VM config.
         The v2 single-machine stack (btrfs pool + Jellyfin + Caddy)
         served it to you across the QEMU port forward.
         EOF

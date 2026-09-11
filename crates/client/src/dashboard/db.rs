@@ -55,8 +55,8 @@ pub struct Db {
 
 impl Db {
     /// Open the local database file and ensure the schema exists.
-    /// File lives at `$XDG_DATA_HOME/cococoir/dashboard.db`
-    /// (fallback: `$HOME/.local/share/cococoir/dashboard.db`).
+    /// File lives at `$XDG_DATA_HOME/fortress/dashboard.db`
+    /// (fallback: `$HOME/.local/share/fortress/dashboard.db`).
     pub async fn open() -> Result<Self, DbError> {
         let path = local_db_path();
         if let Some(parent) = path.parent() {
@@ -206,7 +206,7 @@ fn local_db_path() -> PathBuf {
             env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
         })
         .unwrap_or_else(|| PathBuf::from("."));
-    data_home.join("cococoir").join("dashboard.db")
+    data_home.join("fortress").join("dashboard.db")
 }
 
 fn parse_timestamp(raw: &str, table: &'static str) -> Result<DateTime<Utc>, DbError> {

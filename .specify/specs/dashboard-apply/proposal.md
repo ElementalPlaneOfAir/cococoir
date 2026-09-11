@@ -21,7 +21,7 @@ reasons:
    amon-sul → EADDRINUSE → the dashboard task exits (logged, non-fatal).
 2. **It is unreachable.** No Caddy vhost, no firewall port (22/80/443
    only), no TLS.
-3. **Its one feature consumes nothing.** `COCOCOIR_CONFIG_PATH` is
+3. **Its one feature consumes nothing.** `FORTRESS_CONFIG_PATH` is
    never set in `client.nix` → the editor falls back to a
    repo-relative path that does not exist on the box. Even with a
    writable file, nothing on the box applies an edit: the flake lives
@@ -31,7 +31,7 @@ reasons:
 
 Cost of not building: every customer config change (toggle a service,
 manage a user) routes through the operator over SSH forever — the
-exact bottleneck the BUISNESS-PLAN says cococoir exists to remove.
+exact bottleneck the BUISNESS-PLAN says fortress exists to remove.
 The dashboard remains a dev toy.
 
 This arc supersedes the config-editor proposal's "deliberately out of
@@ -41,7 +41,7 @@ sequenced next.
 
 ## Acceptance criteria
 
-- [ ] **L0** `cargo test -p cococoir-client` green. New tests: the
+- [ ] **L0** `cargo test -p fortress-client` green. New tests: the
       `-dashboard-addr` flag parses and defaults to `127.0.0.1:9091`;
       the demo routes (`/hello/:name`, `/update`, `/session*`) are gone
       (404); the apply runner against a mock `CommandRunner` covers
@@ -57,19 +57,19 @@ sequenced next.
         fail-closed exposure);
       - the vhost's `reverse_proxy` target equals the client unit's
         `-dashboard-addr` value (port drift fails the build);
-      - `cococoir-apply.service` exists when the client is enabled;
-      - client unit `ReadWritePaths` contains `/etc/cococoir` and
-        `Environment` carries `COCOCOIR_CONFIG_PATH=/etc/cococoir/nixosConfigurations/<host>/dashboard.nix`.
+      - `fortress-apply.service` exists when the client is enabled;
+      - client unit `ReadWritePaths` contains `/etc/fortress` and
+        `Environment` carries `FORTRESS_CONFIG_PATH=/etc/fortress/nixosConfigurations/<host>/dashboard.nix`.
 - [ ] **L2** `scripts/vmtest-e2e.sh` PASS including new bootstrap
       assertions: `https://dashboard.vmtest.local/` serves through Caddy
       with a cert that verifies against the VM trust store (the
       incident-6 check pattern); unauthenticated GET redirects to
       login; an authenticated session renders the editor; a POST save
-      mutates `/etc/cococoir/.../dashboard.nix` on disk (file diff) AND
+      mutates `/etc/fortress/.../dashboard.nix` on disk (file diff) AND
       the edit is visible to the flake (`nix eval` a probe option
       post-edit returns the new value — written ≠ evaluated is the
       silent-failure seam);
-      `cococoir-apply.service` is present (`systemctl cat` succeeds)
+      `fortress-apply.service` is present (`systemctl cat` succeeds)
       but NOT executed in the VM (no in-VM rebuild — hermeticity).
 - [ ] **Manual (the apply gate)** on amon-sul: `nix run
       .#box-sync -- amon-sul`, rebuild, log in at
@@ -80,18 +80,18 @@ sequenced next.
 
 ## Smallest version
 
-The box gets a flake checkout at `/etc/cococoir` (delivered by a new
+The box gets a flake checkout at `/etc/fortress` (delivered by a new
 `nix run .#box-sync -- <host>` app). The machine config imports a
 per-machine `dashboard.nix` (bare attrset — the exact file shape the
 editor already parses; zero parser changes). The editor edits that
 file in place (path from a default derived from `networking.hostName`,
 no new customer option). Apply is a dedicated oneshot systemd unit
-`cococoir-apply.service` running a FIXED argv
-(`nixos-rebuild switch --flake /etc/cococoir#<host>`); the dashboard
+`fortress-apply.service` running a FIXED argv
+(`nixos-rebuild switch --flake /etc/fortress#<host>`); the dashboard
 starts it via `systemctl start --no-block`, polls
 `systemctl is-active` + tails the unit journal, and renders an HTMX
 progress fragment ending in success/failure. The dashboard vhost
-(`dashboard.<baseDomain>`, TLS via `cococoir.tls`, loopback bind, proxied
+(`dashboard.<baseDomain>`, TLS via `fortress.tls`, loopback bind, proxied
 to the dashboard's loopback port) renders only when the admin password
 env file exists. The dashboard moves to `127.0.0.1:9091` (fixes the
 cryptpad collision), assets are vendored (no CDN), and the demo routes
@@ -112,7 +112,7 @@ Explicitly deferred: Dex-OIDC dashboard auth (named successor to the
 shared admin password), a rollback button (NixOS boot-menu generations
 cover it), offline-first rebuild hardening (first apply may fetch
 inputs; amon-sul has internet), observability content, signup UI, the
-customer-flake template + provisioning writes `/etc/cococoir` at
+customer-flake template + provisioning writes `/etc/fortress` at
 signup, the "system update" button (flake.lock bump + rebuild), and
 the fleet flake split (operator boxes → private flake inputting the
 product — required before this repo can be public; `amon-sul.nix`
@@ -121,25 +121,25 @@ holds LAN IPs, usernames, and edge endpoints).
 ## Config topology (two flakes)
 
 The apply mechanics are provenance-agnostic: they require a flake at
-`/etc/cococoir` exposing `nixosConfigurations.<host>`, plus a
+`/etc/fortress` exposing `nixosConfigurations.<host>`, plus a
 per-machine `dashboard.nix` inside it. Two producers:
 
 - **Product flake (this repo)** — `nix/nixos-modules`, the client +
   dashboard binaries, tests. Published; consumed as a flake input.
   Holds no customer machine config long-term (fleet split, deferred).
-- **Customer flake (box-local, `/etc/cococoir`)** — one per box:
-  `flake.nix` + `flake.lock` (cococoir pinned) +
+- **Customer flake (box-local, `/etc/fortress`)** — one per box:
+  `flake.nix` + `flake.lock` (fortress pinned) +
   `nixosConfigurations/<host>/{configuration.nix, dashboard.nix}`.
   `configuration.nix` is the customer's hand-wired config (imports
-  cococoir's modules, sets hardware/secrets/hostName); `dashboard.nix`
+  fortress's modules, sets hardware/secrets/hostName); `dashboard.nix`
   is the dashboard-editable bare attrset. The dashboard edits ONLY
   `dashboard.nix` (rnix-validated, atomic rename); apply rebuilds
-  `--flake /etc/cococoir#<host>` from the pinned input.
+  `--flake /etc/fortress#<host>` from the pinned input.
 
 Properties this buys:
 
 - Version consistency: the dashboard binary and the option tree it
-  writes come from the same pinned cococoir rev — no UI/schema skew.
+  writes come from the same pinned fortress rev — no UI/schema skew.
 - Failed eval → failed rebuild → old generation keeps running (switch
   is atomic). Rollback = boot menu.
 - Upstream updates are explicit: bump the input lock (deferred
@@ -147,7 +147,7 @@ Properties this buys:
 
 Producers, today vs later:
 
-- amon-sul (dogfood): `/etc/cococoir` is a box-sync mirror of the
+- amon-sul (dogfood): `/etc/fortress` is a box-sync mirror of the
   operator repo; `dashboard.nix` syncs back. box-sync is an operator
   tool, NOT the customer mechanism.
 - Real customers: OUT OF THIS ARC — the customer-flake template +
@@ -157,7 +157,7 @@ Producers, today vs later:
 - Fleet split (deferred): operator-owned boxes move to a private
   fleet flake inputting the product.
 
-Trap, and the tripwire it earns: if `/etc/cococoir` is a git repo,
+Trap, and the tripwire it earns: if `/etc/fortress` is a git repo,
 Nix evaluates the git tree — untracked files are invisible to eval
 and edits silently don't apply. box-sync therefore excludes `.git`
 (plain directory flake), and the e2e asserts the edit is *visible to
@@ -170,7 +170,7 @@ the flake* (`nix eval` a probe option post-edit), not merely on disk.
   the arc goal; a read-only dashboard still does nothing the customer
   can feel. Rejected by interview.
 - **JSON intermediate instead of editing Nix** (machine config does
-  `builtins.fromJSON (readFile /etc/cococoir/dashboard.json)`) — case
+  `builtins.fromJSON (readFile /etc/fortress/dashboard.json)`) — case
   for: no Nix syntax leakage. Case against: duplicates the config
   language (the factory owns the option tree, ADR-020), discards the
   built lossless parser, and JSON-in-/etc is a second source of truth
@@ -198,8 +198,8 @@ the flake* (`nix eval` a probe option post-edit), not merely on disk.
 
 - **New ADR-028 (lands in PLAN.md with the implementation): the
   dashboard is the box's control plane.** Box-local flake checkout at
-  `/etc/cococoir`; per-machine `nixosConfigurations/<host>/dashboard.nix`
-  is the customer-tunable surface; apply = dedicated `cococoir-apply`
+  `/etc/fortress`; per-machine `nixosConfigurations/<host>/dashboard.nix`
+  is the customer-tunable surface; apply = dedicated `fortress-apply`
   unit with fixed argv; the operator's repo stays canonical for
   machine wiring; `box-sync` reconciles (repo → box for everything,
   box → repo for dashboard.nix). This reconciles ADR-013 ("operator
@@ -207,19 +207,19 @@ the flake* (`nix eval` a probe option post-edit), not merely on disk.
   customer does, through the dashboard) with ADR-025 ("as much
   complexity as possible stays in the customer dashboard").
 - **No new customer-facing option.** Constitution §3/§4: the dashboard
-  activates with `services.cococoir-client.enable`; the vhost derives
-  from `cococoir.baseDomain`; the port is an internal default
-  (`services.cococoir-client.dashboardAddr`, defaulted to
+  activates with `services.fortress-client.enable`; the vhost derives
+  from `fortress.baseDomain`; the port is an internal default
+  (`services.fortress-client.dashboardAddr`, defaulted to
   `127.0.0.1:9091`, never set by a customer — one source of truth for
   both the unit flag and the vhost target).
 - **The dashboard vhost is platform-owned, not a factory service**
   (ADR-027 layer split): it has no storage/health/OIDC contract, so it
-  is not a `mkCococoirService` — same layer as `tls.nix`. It reuses
+  is not a `mkFortressService` — same layer as `tls.nix`. It reuses
   the vhost pattern (`tls` + `bind 127.0.0.1 ::1` + `reverse_proxy`)
-  and honors `cococoir.tls`.
+  and honors `fortress.tls`.
 - **Config topology is two flakes** — product flake (this repo,
   consumed as a pinned input) + box-local customer flake
-  (`/etc/cococoir`). The dashboard/apply stack is provenance-agnostic:
+  (`/etc/fortress`). The dashboard/apply stack is provenance-agnostic:
   it needs a flake exposing `nixosConfigurations.<host>` and a
   per-machine `dashboard.nix`; box-sync (dogfood) and provisioning
   (customers) are just producers. See "Config topology".
@@ -233,12 +233,12 @@ the flake* (`nix eval` a probe option post-edit), not merely on disk.
   "admin access ≈ root" where credentials are set.
 - **Admin-only auth, by construction (not a flaw to fix).** The
   dashboard is reachable ONLY through the single admin credential
-  (`COCOCOIR_ADMIN_PASSWORD_HASH` ← `AMON_SUL_MASTER_PASSWORD`),
+  (`FORTRESS_ADMIN_PASSWORD_HASH` ← `AMON_SUL_MASTER_PASSWORD`),
   deliberately NOT through Dex. The code says it (auth.rs): a Dex
   compromise must never grant box control. So there is no "household
   shared secret = root" problem — Dex users (nicole/brad/…) never
   reach the dashboard; only the box owner holds the admin credential,
-  and the owner is the admin. `cococoir.dashboard.adminPassword` is
+  and the owner is the admin. `fortress.dashboard.adminPassword` is
   not a thing; the env file is the sole gate. This is a deliberate,
   load-bearing separation — see the vhost tripwire that refuses to
   render without it.
@@ -269,9 +269,9 @@ corrected.
 **Depends on:** nothing. **Blocks:** T2, T3, T7 (any task that
 consumes the mechanism).
 Manual, no product code, no script — four SSH commands:
-1. rsync this repo → `amon-sul:/etc/cococoir`, excluding `.git`
+1. rsync this repo → `amon-sul:/etc/fortress`, excluding `.git`
    (plain directory flake — see the git-tree trap in Config topology).
-2. `nixos-rebuild switch --flake /etc/cococoir#amon-sul` → succeeds
+2. `nixos-rebuild switch --flake /etc/fortress#amon-sul` → succeeds
    (inputs fetch over network; first build may be slow).
 3. Hand-edit `nixosConfigurations/amon-sul/dashboard.nix`, flip one
    probe value → rebuild again → change live.
@@ -287,7 +287,7 @@ amended into this proposal and carried to docs/STATUS.md at T8.
 
 ### T1: `-dashboard-addr` flag + dead-route removal
 **Depends on:** none
-**Verification:** `cargo test -p cococoir-client` green; default addr
+**Verification:** `cargo test -p fortress-client` green; default addr
 `127.0.0.1:9091` asserted; unknown flags still rejected; demo routes
 404.
 **Files:** `crates/client/src/app.rs`,
@@ -312,17 +312,17 @@ vendored via `include_bytes!`).
 ### T4: client unit wiring
 **Depends on:** T1
 **Verification:** L1 eval — unit passes `-dashboard-addr`, sets
-`COCOCOIR_CONFIG_PATH` from `networking.hostName`, adds `/etc/cococoir`
+`FORTRESS_CONFIG_PATH` from `networking.hostName`, adds `/etc/fortress`
 to `ReadWritePaths`, systemd tools on `path`.
 **Files:** `nix/nixos-modules/client.nix`
 
 ### T5: dashboard platform module (vhost + apply unit)
 **Depends on:** T4
-**Verification:** eval assertions; imported from `cococoir.nix`; vhost
+**Verification:** eval assertions; imported from `fortress.nix`; vhost
 gated on client enable ∧ baseDomain ∧ adminPasswordEnvFile; apply
 unit `path` carries `nixos-rebuild` and a flakes-enabled `nix`.
 **Files:** `nix/nixos-modules/dashboard.nix` (new),
-`nix/nixos-modules/cococoir.nix`, `nix/nixos-modules/client.nix`
+`nix/nixos-modules/fortress.nix`, `nix/nixos-modules/client.nix`
 
 ### T6: vmtest-wiring tripwires (vmtest + amon-sul eval)
 **Depends on:** T5
@@ -334,7 +334,7 @@ assert fires when its condition is broken.
 **Depends on:** T0 (formalizes the spike's manual rsync), T5
 **Verification:** eval green; app dry-run (repo → box rsync excluding
 dashboard.nix, box → repo dashboard.nix pull). rsync excludes `.git`:
-`/etc/cococoir` must be a plain directory flake (a git-tracked tree
+`/etc/fortress` must be a plain directory flake (a git-tracked tree
 hides untracked files from eval — the silent-edit trap in "Config
 topology").
 **Files:** `flake.nix`, `nixosConfigurations/amon-sul.nix`,

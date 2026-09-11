@@ -25,10 +25,10 @@
         exec ${pkgs.util-linux}/bin/script -qec "${pkgs.bacon}/bin/bacon dashboard" /dev/null
       '';
       environment = [
-        "COCOCOIR_ADMIN_PASSWORD_HASH=${adminPasswordHash}"
+        "FORTRESS_ADMIN_PASSWORD_HASH=${adminPasswordHash}"
         # The workspace is at the repo root, so the dashboard-edited
         # Nix config sits at ./nixosConfigurations/dashboard.nix.
-        "COCOCOIR_CONFIG_PATH=./nixosConfigurations/dashboard.nix"
+        "FORTRESS_CONFIG_PATH=./nixosConfigurations/dashboard.nix"
       ];
     };
   };

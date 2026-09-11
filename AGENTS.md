@@ -7,11 +7,11 @@
 - **Customer-facing config stays under 50 lines total.** Every new option that requires the customer to set it is a design failure. Before adding a customer-facing option, exhaust these alternatives:
   1. Make it default to the right value.
   2. Auto-derive it from another option the customer already sets.
-  3. Auto-wire it from sops-nix secrets (with `lib.optionalAttrs` on `cococoir.secrets.sopsFile` — see the cycle note below).
+  3. Auto-wire it from sops-nix secrets (with `lib.optionalAttrs` on `fortress.secrets.sopsFile` — see the cycle note below).
   4. Make the service always-on if the platform requires it.
   If none of those work, expose the option — but flag the cost.
-- **Don't foist integration complexity on the customer.** "jellyfin + jellarr" is one thing from the customer's perspective. If they enable jellyfin, jellarr runs. Same for "jellyfin + OIDC integration with dex" — one toggle. Exposing a separate `cococoir.integrations.X.enable` toggle is a code smell; the integration should be auto-activated by the service it pairs with.
-- **Module-system cycle note:** any module whose `config` block reads `config.cococoir.secrets.sopsFile` (or any other path in `config` that gates a contribution to the same module) creates an infinite recursion. The NixOS module system can't break this. Workarounds:
+- **Don't foist integration complexity on the customer.** "jellyfin + jellarr" is one thing from the customer's perspective. If they enable jellyfin, jellarr runs. Same for "jellyfin + OIDC integration with dex" — one toggle. Exposing a separate `fortress.integrations.X.enable` toggle is a code smell; the integration should be auto-activated by the service it pairs with.
+- **Module-system cycle note:** any module whose `config` block reads `config.fortress.secrets.sopsFile` (or any other path in `config` that gates a contribution to the same module) creates an infinite recursion. The NixOS module system can't break this. Workarounds:
   - Move the gate to a different module (sibling, not child) and use `lib.optionalAttrs` — this is what the (currently-failed) `secrets-auto-wire.nix` attempted.
   - Use `config ? <attrset>.<key>` to check existence without reading the value. Tested: also recurses for paths inside `config`.
   - Have the customer set the option explicitly, in their config, gated on a non-`config` read.

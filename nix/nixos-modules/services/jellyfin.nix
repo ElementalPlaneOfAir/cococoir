@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/jellyfin — Jellyfin media server.
+# fortress/services/jellyfin — Jellyfin media server.
 #
 # 4-option contract (per PLAN.md "Services" + ADR-004; see
 # services/_contract.nix for the shared factory):
@@ -14,7 +14,7 @@
 #   - assertions (public → caddy, storageNeeded → storage,
 #     domain set)
 #   - the Caddy vhost with the right `tls` directive from
-#     cococoir.tls and the right `reverse_proxy` / 403
+#     fortress.tls and the right `reverse_proxy` / 403
 #
 # What this module adds:
 #   - activates nixpkgs' services.jellyfin
@@ -23,7 +23,7 @@
 #     "jellyfin + jellarr" is one toggle.
 #   - declares the jellyfin system user (with `render`/`video`
 #     extra groups for HW transcode)
-#   - auto-declares btrfs subvolumes under cococoir.storage.btrfs.*
+#   - auto-declares btrfs subvolumes under fortress.storage.btrfs.*
 #     so the user does not have to wire storage separately
 #   - unitConfig.RequiresMountsFor on subvolume paths so Jellyfin
 #     waits for the btrfs pool mount before starting
@@ -42,9 +42,9 @@
   options,
   ...
 }: let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  mkFortressService = import ./_contract.nix {inherit lib config pkgs options;};
 in
-  mkCococoirService {
+  mkFortressService {
     name = "jellyfin";
     description = "Jellyfin media server";
     defaultPort = 8096;
@@ -69,7 +69,7 @@ in
       config,
       ...
     }: let
-      dataRoot = config.cococoir.storage.btrfs.pool.mountpoint;
+      dataRoot = config.fortress.storage.btrfs.pool.mountpoint;
       mediaRoot =
         if cfg.mediaRoot == null
         then "${dataRoot}/media"
@@ -95,7 +95,7 @@ in
           extraGroups = ["render" "video"];
         };
 
-        cococoir.storage.btrfs.subvolumes = {
+        fortress.storage.btrfs.subvolumes = {
           "media-movies" = {
             mountpoint = lib.mkDefault mediaPaths.movies;
             quota = "2T";
@@ -135,8 +135,8 @@ in
         };
 
         systemd.services.jellyfin = {
-          after = ["cococoir-btrfs-subvolumes.service"];
-          requires = ["cococoir-btrfs-subvolumes.service"];
+          after = ["fortress-btrfs-subvolumes.service"];
+          requires = ["fortress-btrfs-subvolumes.service"];
           unitConfig.RequiresMountsFor = [
             mediaPaths.movies
             mediaPaths.shows
@@ -193,7 +193,7 @@ in
           };
         };
 
-        systemd.services.cococoir-jellarr-api-key = {
+        systemd.services.fortress-jellarr-api-key = {
           description = "Generate jellarr API key (idempotent)";
           wantedBy = ["multi-user.target"];
           before = ["jellarr-api-key-bootstrap.service" "jellarr.service"];
@@ -216,14 +216,14 @@ in
         };
 
         systemd.services.jellarr-api-key-bootstrap = {
-          after = ["cococoir-jellarr-api-key.service"];
-          requires = ["cococoir-jellarr-api-key.service"];
+          after = ["fortress-jellarr-api-key.service"];
+          requires = ["fortress-jellarr-api-key.service"];
         };
 
         systemd.services.jellarr = {
           wantedBy = ["multi-user.target"];
-          after = ["cococoir-jellarr-api-key.service"];
-          requires = ["cococoir-jellarr-api-key.service"];
+          after = ["fortress-jellarr-api-key.service"];
+          requires = ["fortress-jellarr-api-key.service"];
         };
       });
   }

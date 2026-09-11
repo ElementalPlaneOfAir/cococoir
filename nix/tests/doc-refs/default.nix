@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir doc-refs check.
+# fortress doc-refs check.
 #
 # L1: pure file-existence check. Catches the class of bug
 # where AGENTS.md, PLAN.md, or a README points at a path
@@ -35,7 +35,7 @@ let
     ../../../nix/nixos-modules/services/_contract.nix
     ../../../nix/nixos-modules/services/cryptpad.nix
     ../../../nix/nixos-modules/services/jellyfin.nix
-    ../../packages/cococoir/default.nix
+    ../../packages/fortress/default.nix
   ];
   adrRefsIn = file:
     lib.concatLists (builtins.filter (x: x != null) (
@@ -49,7 +49,7 @@ in
 assert lib.assertMsg (missingAdrs == [])
   "doc-refs: ADR(s) referenced from code but missing from PLAN.md: ${lib.concatStringsSep ", " missingAdrs}";
 {
-  doc-refs = pkgs.runCommand "cococoir-doc-refs" {
+  doc-refs = pkgs.runCommand "fortress-doc-refs" {
   inherit docFiles;
   passAsFile = ["docFiles"];
 } ''
@@ -84,12 +84,12 @@ assert lib.assertMsg (missingAdrs == [])
   done
 
   if [ "$fail" -ne 0 ]; then
-    echo "cococoir doc-refs: FAIL" >> $out_report
+    echo "fortress doc-refs: FAIL" >> $out_report
     cat $out_report >&2
     exit 1
   fi
 
-  echo "cococoir doc-refs: PASS" >> $out_report
+  echo "fortress doc-refs: PASS" >> $out_report
   echo "  docs: ${toString (lib.length docFiles)}" >> $out_report
 '';
 }

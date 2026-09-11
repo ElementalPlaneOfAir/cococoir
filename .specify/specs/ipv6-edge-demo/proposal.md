@@ -10,7 +10,7 @@ Session 2026-08-15: user interview. Decisions made:
   blind L4 forwarding over WireGuard, Caddy on the customer box doing
   real ACME certs.
 - Customer box = the existing **home machine, which runs NixOS**.
-  It will run `cococoir-client` + Caddy + Jellyfin + Dex (the v2 stack),
+  It will run `fortress-client` + Caddy + Jellyfin + Dex (the v2 stack),
   dialing out over WireGuard from behind CG-NAT. This is the "homelab
   server behind ipv4 cgnat" from the vision doc.
 - Edge box = **Hetzner cx22 @ nbg1 (~€4.4/mo)**. Hetzner gives every
@@ -49,7 +49,7 @@ traffic is forwarded along with everything else. Cellular (IPv6-native)
 clients reach the box directly; IPv4 LAN clients use a custom DNS server
 and get the same cert.
 
-The v0 `cococoir-edge` forwarder is **already protocol-agnostic**:
+The v0 `fortress-edge` forwarder is **already protocol-agnostic**:
 `listen_addr` is an opaque string handed to `TcpListener::bind(&str)` /
 `UdpSocket::bind(&str)` (retry.rs:73-89), which parses `[2001:db8::1]:443`
 bracket-notation IPv6 natively. No Rust changes are needed. The edge
@@ -66,9 +66,9 @@ or the customer-facing config surface.
 
 - [ ] **Live edge box** on Hetzner (cx22 @ nbg1) running NixOS, with:
       one public IPv4, a routed `/64` IPv6, a handful of `/128`s bound
-      to the interface, `cococoir-edge` running with one forward per
+      to the interface, `fortress-edge` running with one forward per
       customer `/128` (TCP `:80` + `:443`), and a WireGuard server.
-- [ ] **Live customer box** (home machine, NixOS) with `cococoir-client`
+- [ ] **Live customer box** (home machine, NixOS) with `fortress-client`
       listening on the WG tunnel, Caddy terminating TLS for
       `jellyfin.example123.interdim.net` etc., Jellyfin + Dex + the
       OIDC integration up, WG dial-out to the edge (works from CG-NAT).
@@ -96,15 +96,15 @@ An OpenTofu project in `remote-infra/` + two rendered NixOS configs:
    interdim.net zone + A/AAAA records, and the render step that turns
    `templates/edge.nix.tftpl` + `templates/example123.nix.tftpl` into
    the checked-in NixOS configs with real addressing.
-2. `remote-infra/nix/edge.nix` — imports the cococoir modules,
-   disables storage + services (edge-only), enables `cococoir-edge`,
+2. `remote-infra/nix/edge.nix` — imports the fortress modules,
+   disables storage + services (edge-only), enables `fortress-edge`,
    assigns a set of `/128` IPv6 addresses derived from the `/64` to the
    interface, defines the WireGuard server, and generates
-   `/etc/cococoir-edge.json` with one forward per customer `/128`
+   `/etc/fortress-edge.json` with one forward per customer `/128`
    (`:80` + `:443` tcp → customer WG IP).
 3. `remote-infra/nix/example123.nix` — the customer box: full v2
    stack (Caddy, Jellyfin, Dex, btrfs storage, sops-nix) + WireGuard
-   client + `cococoir-client` forwarding the tunnel's `:80`/`:443` to
+   client + `fortress-client` forwarding the tunnel's `:80`/`:443` to
    `127.0.0.1:80`/`127.0.0.1:443` (Caddy). TLS mode `acme`.
 4. Provisioning: `scripts/provision-edge.sh` — gen WG keys → `tofu
    apply` → `nixos-anywhere` → scp the edge WG private key.
@@ -184,7 +184,7 @@ An OpenTofu project in `remote-infra/` + two rendered NixOS configs:
   the cert is name-based, not address-based.
 - **No new customer-facing options.** The edge + customer configs live
   in `remote-infra/` as rendered NixOS configurations (referenced by
-  the flake like vmtest), not as new `cococoir.*` options. The v3
+  the flake like vmtest), not as new `fortress.*` options. The v3
   control plane stays the place where per-customer provisioning
   becomes a product feature.
 - **Secrets policy.** Token: env var only. WG private keys: generated
@@ -247,8 +247,8 @@ returns the customer `/128`; `dig A interdim.net` returns the edge IPv4.
 `[::1]:<port>` through `retry_bind_tcp`, plus a forwarder integration
 test over an IPv6 listen address; both prove the IPv6 bind path can't
 silently regress.
-**Files:** `nix/packages/cococoir/src/retry.rs`,
-`nix/packages/cococoir/src/forwarder.rs` (test modules)
+**Files:** `nix/packages/fortress/src/retry.rs`,
+`nix/packages/fortress/src/forwarder.rs` (test modules)
 - [x] DONE 2026-08-15: `bind_ipv6_loopback_works` (retry.rs) +
       `run_tcp_forward_ipv6_listen` (forwarder.rs). `cargo test` 98/98.
 
@@ -272,7 +272,7 @@ existing suspected-fix, verified here).
 against a real Redis; `GET /customers` lists; `DELETE` removes (404 on
 missing). The *routing* half (make the edge actually forward for a new
 customer without restart) is explicitly NOT in this task.
-**Files:** `nix/packages/cococoir/src/controlplane/`,
+**Files:** `nix/packages/fortress/src/controlplane/`,
 `src/bin/controlplane.rs`
 - [x] DONE 2026-08-15: Redis store (customers, atomic INCR alloc,
       list, delete), x25519-dalek WG keygen, poem routes. Proof:

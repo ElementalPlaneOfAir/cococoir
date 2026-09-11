@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# vmtest-bootstrap.sh — verify a cococoir vmtest VM: check that
+# vmtest-bootstrap.sh — verify a fortress vmtest VM: check that
 # Dex and Jellyfin are running, Dex OIDC discovery responds, and
 # the test admin user can authenticate.
 #
@@ -47,8 +47,8 @@ echo "─── Services ───"
 # (jellarr-api-key-bootstrap, jellarr) start late in boot; a
 # snapshot check would race them, so the dedicated wait loop
 # below owns their verification.
-for svc in dex cococoir-jellyfin-oidc-secret jellyfin \
-  cococoir-jellarr-api-key cococoir-cryptpad-oidc-secret cryptpad; do
+for svc in dex fortress-jellyfin-oidc-secret jellyfin \
+  fortress-jellarr-api-key fortress-cryptpad-oidc-secret cryptpad; do
   state=$(systemctl is-active $svc.service 2>/dev/null || true)
   [ -n "$state" ] || state=missing
   case "$state" in
@@ -79,9 +79,9 @@ jellarr_ok=0
 for i in $(seq 1 150); do
   if systemctl is-failed -q jellarr.service \
     || systemctl is-failed -q jellarr-api-key-bootstrap.service \
-    || systemctl is-failed -q cococoir-jellarr-api-key.service; then
+    || systemctl is-failed -q fortress-jellarr-api-key.service; then
     fail "jellarr pipeline" "FAILED"
-    journalctl -u cococoir-jellarr-api-key -u jellarr-api-key-bootstrap \
+    journalctl -u fortress-jellarr-api-key -u jellarr-api-key-bootstrap \
       -u jellarr --no-pager -n 30 >&2 || true
     break
   fi
@@ -210,7 +210,7 @@ echo "─── CryptPad SSO (fresh-boot bearer secret) ───"
 # Proves SSO_AUTH_CB returns a JWT. On a broken first boot cryptpad
 # never applies the generated SET_BEARER_SECRET decree to the running
 # process, so this fails with "secretOrPrivateKey must have a value"
-# and the /ssoauth page hangs. The cococoir-cryptpad-seed-bearer
+# and the /ssoauth page hangs. The fortress-cryptpad-seed-bearer
 # ExecStartPre must make it pass from the first boot.
 cp_node=$(readlink -f /proc/$(systemctl show cryptpad -p MainPID --value)/exe 2>/dev/null || echo "")
 if [ -n "$cp_node" ] && timeout 90 "$cp_node" /tmp/ssoauth-probe.js >/dev/null 2>&1; then
@@ -239,9 +239,9 @@ echo "─── Storage writability (service owns its subvolume) ───"
 # runtime user; any service that persists data breaks (cryptpad SSO
 # hung on mkdir EACCES; jellyfin could not init metadata). The btrfs
 # module chowns subvolumes to the declaring service's owner.
-for pair in "cococoir-cryptpad:/data/cryptpad/data" "jellyfin:/data/jellyfin/metadata"; do
+for pair in "fortress-cryptpad:/data/cryptpad/data" "jellyfin:/data/jellyfin/metadata"; do
   user="${pair%%:*}"; path="${pair#*:}"
-  if runuser -u "$user" -- sh -c "touch '$path/.cococoir-write-test' && rm '$path/.cococoir-write-test'" 2>/dev/null; then
+  if runuser -u "$user" -- sh -c "touch '$path/.fortress-write-test' && rm '$path/.fortress-write-test'" 2>/dev/null; then
     pass "$user -> $path" "writable"
   else
     fail "$user -> $path" "EACCES"

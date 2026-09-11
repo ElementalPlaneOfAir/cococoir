@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/integrations/cryptpad-oidc — auto-configure CryptPad
+# fortress/integrations/cryptpad-oidc — auto-configure CryptPad
 # SSO with the platform's OIDC provider (Dex).
 #
 # SSO is enforced — local passwords are disabled.
 { config, lib, pkgs, ... }:
 let
   inherit (lib) mkIf mkMerge;
-  cp = config.cococoir.services.cryptpad;
-  dx = config.cococoir.services.dex;
+  cp = config.fortress.services.cryptpad;
+  dx = config.fortress.services.dex;
   oidcEnabled = cp.enable && dx.enable;
   secretFile = "/etc/dex/clients/cryptpad-secret";
 in
@@ -37,7 +37,7 @@ mkIf oidcEnabled {
     "d /etc/dex/clients 0755 root root -"
   ];
 
-  systemd.services.cococoir-cryptpad-oidc-secret = {
+  systemd.services.fortress-cryptpad-oidc-secret = {
     description = "CryptPad OIDC client secret (Dex)";
     wantedBy = [ "multi-user.target" ];
     before = [ "dex.service" "cryptpad.service" ];
@@ -45,35 +45,35 @@ mkIf oidcEnabled {
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = pkgs.writeShellScript "cococoir-cryptpad-oidc-secret" ''
+      ExecStart = pkgs.writeShellScript "fortress-cryptpad-oidc-secret" ''
         set -euo pipefail
         if [ ! -f "${secretFile}" ]; then
           openssl rand -hex -out "${secretFile}" 32
           chmod 0440 "${secretFile}"
         fi
-        DST="/var/lib/cococoir/cryptpad-config.js"
+        DST="/var/lib/fortress/cryptpad-config.js"
         mkdir -p "$(dirname "$DST")"
         cp ${builtins.toFile "cryptpad_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings}")} "$DST" || exit 1
-        cp ${builtins.toFile "cryptpad_sso_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings.sso}")} "/var/lib/cococoir/cryptpad-sso-config.js" || exit 1
+        cp ${builtins.toFile "cryptpad_sso_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings.sso}")} "/var/lib/fortress/cryptpad-sso-config.js" || exit 1
         SECRET="$(${pkgs.coreutils}/bin/cat "${secretFile}")"
         ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "$DST" || exit 1
-        ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "/var/lib/cococoir/cryptpad-sso-config.js" || exit 1
+        ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "/var/lib/fortress/cryptpad-sso-config.js" || exit 1
         if ${pkgs.gnugrep}/bin/grep -q '@CRYPTPAD_SSO_SECRET@' "$DST"; then
-          echo "cococoir-cryptpad-oidc: unreplaced placeholder in $DST" >&2
+          echo "fortress-cryptpad-oidc: unreplaced placeholder in $DST" >&2
           exit 1
         fi
-        if ${pkgs.gnugrep}/bin/grep -q '@CRYPTPAD_SSO_SECRET@' "/var/lib/cococoir/cryptpad-sso-config.js"; then
-          echo "cococoir-cryptpad-oidc: unreplaced placeholder in cryptpad-sso-config.js" >&2
+        if ${pkgs.gnugrep}/bin/grep -q '@CRYPTPAD_SSO_SECRET@' "/var/lib/fortress/cryptpad-sso-config.js"; then
+          echo "fortress-cryptpad-oidc: unreplaced placeholder in cryptpad-sso-config.js" >&2
           exit 1
         fi
         chmod 0444 "$DST"
-        chmod 0444 "/var/lib/cococoir/cryptpad-sso-config.js"
+        chmod 0444 "/var/lib/fortress/cryptpad-sso-config.js"
       '';
     };
   };
 
   systemd.services.dex = {
-    after = [ "cococoir-cryptpad-oidc-secret.service" ];
+    after = [ "fortress-cryptpad-oidc-secret.service" ];
     serviceConfig.BindReadOnlyPaths = [ secretFile ];
   };
 
@@ -87,15 +87,15 @@ mkIf oidcEnabled {
   ];
 
   systemd.services.cryptpad = {
-    after = [ "cococoir-cryptpad-oidc-secret.service" ];
+    after = [ "fortress-cryptpad-oidc-secret.service" ];
     serviceConfig = {
       Environment = lib.mkAfter [
-        "CRYPTPAD_CONFIG=/var/lib/cococoir/cryptpad-config.js"
-        "CRYPTPAD_SSO_CONFIG=/var/lib/cococoir/cryptpad-sso-config.js"
+        "CRYPTPAD_CONFIG=/var/lib/fortress/cryptpad-config.js"
+        "CRYPTPAD_SSO_CONFIG=/var/lib/fortress/cryptpad-sso-config.js"
       ];
       BindReadOnlyPaths = lib.mkAfter [
-        "/var/lib/cococoir/cryptpad-config.js"
-        "/var/lib/cococoir/cryptpad-sso-config.js"
+        "/var/lib/fortress/cryptpad-config.js"
+        "/var/lib/fortress/cryptpad-sso-config.js"
       ];
     };
   };

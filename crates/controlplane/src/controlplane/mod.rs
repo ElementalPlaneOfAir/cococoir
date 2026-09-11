@@ -67,7 +67,7 @@ use std::net::Ipv6Addr;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use cococoir_core::health::{HealthApi, StatusFunc};
+use fortress_core::health::{HealthApi, StatusFunc};
 use poem::web::Data;
 use poem::{Endpoint, EndpointExt, Response, Route};
 use poem_openapi::param::Path;
@@ -77,14 +77,14 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use cococoir_core::forwarder::{Config, Forward, Forwarder, Proto};
+use fortress_core::forwarder::{Config, Forward, Forwarder, Proto};
 
 /// Redis key namespace for the control plane.
-const CUST_KEY: &str = "cococoir:customer:";
+const CUST_KEY: &str = "fortress:customer:";
 /// Redis key holding the next free host index within the box subnet.
-const ALLOC_COUNTER: &str = "cococoir:alloc:next";
+const ALLOC_COUNTER: &str = "fortress:alloc:next";
 /// Redis key holding the list of customer ids.
-const CUST_INDEX: &str = "cococoir:customers";
+const CUST_INDEX: &str = "fortress:customers";
 
 /// The process's two singletons: the control plane (Redis-backed) and
 /// the live forwarder. Both are process-lifetime — built once at boot,
@@ -228,7 +228,7 @@ pub type WgSubnet = Subnet<std::net::Ipv4Addr>;
 pub struct Customer {
     /// The customer's username — their identity. Is the unique primary key on a per user basis.
     pub username: String,
-    /// The customer's DNS hostname, e.g. `bob.interdim.net`.
+    /// The customer's DNS hostname, e.g. `bob.proletariat.tech`.
     pub hostname: String,
     pub ipv6: String,
     /// The customer's WG tunnel address (dest for the edge's forwards).
@@ -704,10 +704,10 @@ impl ControlPlane {
 /// Generate a WireGuard keypair. WireGuard keys are Curve25519
 /// (x25519); the private key is a random 32-byte scalar, the public
 /// key is the x25519 base-point multiplication. Delegates to the shared
-/// `cococoir_core::wg` helper so the crypto lives in one place (the
+/// `fortress_core::wg` helper so the crypto lives in one place (the
 /// client uses the same code).
 pub fn generate_wg_keypair() -> (String, String) {
-    cococoir_core::wg::generate_keypair()
+    fortress_core::wg::generate_keypair()
 }
 
 /// Validate a signup username as a DNS label, because the username
@@ -1236,7 +1236,7 @@ pub fn app_with(
 ) -> impl Endpoint<Output = Response> {
     let service = OpenApiService::new(
         (UsersApi, WireguardApi, HealthApi::new(status_func)),
-        "cococoir edge API",
+        "fortress edge API",
         "0.1.0",
     )
     .server("/api");
@@ -1353,7 +1353,7 @@ mod tests {
         let dns: &'static crate::controlplane::dns::MockDnsApiClient =
             Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
         let cp_owned =
-            ControlPlane::with_deps(&url, subnet, wg_subnet, "interdim.net", TEST_EDGE_WG_PRIV, wg, dns).unwrap();
+            ControlPlane::with_deps(&url, subnet, wg_subnet, "proletariat.tech", TEST_EDGE_WG_PRIV, wg, dns).unwrap();
         let forwarder_owned = Forwarder::new_live(Config::default()).unwrap();
 
         // Pre-seed the process globals (the test seam: set() bypasses
@@ -1411,7 +1411,7 @@ mod tests {
         assert_eq!(second.customer.wg_ip, "10.10.0.3");
         // Username is the id: DNS records were provisioned for both.
         assert_eq!(first.customer.username, "alice");
-        assert_eq!(first.customer.hostname, "alice.interdim.net");
+        assert_eq!(first.customer.hostname, "alice.proletariat.tech");
         assert_eq!(dns.upserts.lock().unwrap().len(), 4); // 2 customers × 2 records
 
         // The edge's public key is stable across signups (from the shared

@@ -51,7 +51,7 @@ device" → shows 5-word code
     │
     ├─ GET /api/pair/:code ────► 200: claimed + {tunnel config,
     │   → claimed                    device_token, hostname}
-    ├─ write /var/lib/cococoir/tunnel.json + device-token
+    ├─ write /var/lib/fortress/tunnel.json + device-token
     ├─ bring up wg0, forwarder binds
     └─ dashboard: "Paired — main.alice.interdim.net"
 ```
@@ -207,7 +207,7 @@ SMTP honest (provider swappable by secret, mockable tests); unifying on
   long-lived `device_token` the box persists; `POST /api/device/register`
   accepts it (instead of AdminKey) to rotate the box's pubkey on the
   same route. Stored hashed (SHA-256), same discipline as `AdminKey`.
-- **Sessions live in Redis** (`cococoir:session:{token}` → account,
+- **Sessions live in Redis** (`fortress:session:{token}` → account,
   TTL 7d, 32-byte random token, HttpOnly + SameSite=Lax cookie). CSRF is
   mitigated by SameSite=Lax for now; flagged as hardening, not shipped.
 - **Email via a `Mailer` trait to an off-the-shelf transactional
@@ -287,7 +287,7 @@ SMTP honest (provider swappable by secret, mockable tests); unifying on
 
 ### T1: Mailer (SmtpMailer + MockMailer) + SMTP secrets
 **Depends on:** none
-**Verification:** `cargo test -p cococoir-controlplane` green; MockMailer
+**Verification:** `cargo test -p fortress-controlplane` green; MockMailer
 asserts recipient + magic-link token; SmtpMailer builds a lettre message
 with STARTTLS+AUTH; `secretspec.toml` declares SMTP_* (optional =
 dev-mailer fallback) and the secret contract test updated. L0.
@@ -345,10 +345,10 @@ No QR.
 
 ### T7: Client pairing module (box side)
 **Depends on:** T5
-**Verification:** `cargo test -p cococoir-client` green: the dashboard
+**Verification:** `cargo test -p fortress-client` green: the dashboard
 `/pair` screen generates + persists a 5-word code (idempotent across
 restarts), posts `POST /api/pair`, polls until claimed, then writes
-`/var/lib/cococoir/tunnel.json` + `device-token` (0600), brings up wg0,
+`/var/lib/fortress/tunnel.json` + `device-token` (0600), brings up wg0,
 and reloads the forwarder; boot prefers persisted tunnel state over the
 Nix `tunnel` section. Mock the edge API (no live network in L0).
 **Files:** `crates/client/src/pairing.rs`,
@@ -374,7 +374,7 @@ records are no longer created.
 ### T10: Single-VM edge+client wiring in vmtest (foundation)
 **Depends on:** none
 **Verification:** `nix flake check` green; `vmtest.nix` enables the real
-`services.cococoir-client` module + an in-VM edge unit (mirror the
+`services.fortress-client` module + an in-VM edge unit (mirror the
 `nix/tests/edge/` edge node: Redis, wg0, secrets env, admin key =
 sha256("test-admin-key")); client forwards `10.10.0.x:80/443 →
 127.0.0.1:80/443`; a `/signup` inside the VM allocates + forwards to the
@@ -429,7 +429,7 @@ Diagnostic only; no code changed. Ground truth refreshed before the arc.
 
 ### Drift detected
 - **T10 foundation missing.** `vmtest.nix` does NOT enable
-  `services.cococoir-client` and has no in-VM edge unit — STATUS "Next
+  `services.fortress-client` and has no in-VM edge unit — STATUS "Next
   move 7" planned it but it never landed. The onboarding e2e (T11)
   depends on it. Added as T10.
 - **amon-sul is gone.** `nixosConfigurations/amon-sul.nix` + custom/

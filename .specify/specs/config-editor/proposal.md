@@ -12,7 +12,7 @@ Session 2026-08-13: user interview. Decisions made:
   optional later feature.
 - The editor runs **locally now** (`nix run .#dashboard-dev` against the
   repo's `dashboard.nix`), not as a NixOS module service yet.
-- Config path comes from an env var (`COCOCOIR_CONFIG_PATH`).
+- Config path comes from an env var (`FORTRESS_CONFIG_PATH`).
 - vmtest.nix **refactors to import `dashboard.nix`** so the bare-attrset
   shape is proven by a real boot, not just by eval.
 
@@ -30,7 +30,7 @@ and still `imports` function modules that get `pkgs` — so the customer's
 editable file is just `{ ... }` (no header, no `let`, no `pkgs`), and the
 machine config composes it. The parser's `ConfigSchema::default()` paths
 already match that shape exactly (`networking.hostName`,
-`cococoir.baseDomain`, `cococoir.services.<name>.enable`,
+`fortress.baseDomain`, `fortress.services.<name>.enable`,
 `users.users.<name>`), so the editor is schema-driven with zero parser
 changes.
 
@@ -42,7 +42,7 @@ Deliberately out of scope:
   the UI must say so, not fake it.
 - **Observability spine** (probes/journald/consent, htmx-dashboard T3–T7).
   Separate arc, still deferred. The standalone `bin/dashboard.rs` is the
-  editor's host; the `cococoir-client` embedding is untouched.
+  editor's host; the `fortress-client` embedding is untouched.
 - **`public` / `tls` / storage as editable fields.** Schema expansion, later.
 
 ## Acceptance criteria
@@ -63,7 +63,7 @@ Deliberately out of scope:
       manual proof: `nix run .#dashboard-dev` against the repo's
       `dashboard.nix`, edit + save, `git diff` shows only the changed spans.
       Maps to T1, T6.
-- [ ] The config path is read from `COCOCOIR_CONFIG_PATH` (dev default:
+- [ ] The config path is read from `FORTRESS_CONFIG_PATH` (dev default:
       the repo's `nixosConfigurations/dashboard.nix`); a missing/unparseable
       file fails the editor with a clear message, never a panic. Maps to T3.
 - [ ] Save is all-or-nothing: every edit in the form applies to one
@@ -140,8 +140,8 @@ surviving). L1.
 **Files:** `nixosConfigurations/dashboard.nix` (new),
 `nixosConfigurations/vmtest.nix`
 
-Move `cococoir.baseDomain`, `networking.hostName`, and the six
-`cococoir.services.<name>.enable` declarations into `dashboard.nix` as a
+Move `fortress.baseDomain`, `networking.hostName`, and the six
+`fortress.services.<name>.enable` declarations into `dashboard.nix` as a
 bare attrset. vmtest.nix adds `imports = [ ./dashboard.nix ]` and keeps
 the harness fields (`public`, tls, storage devices, qemu, dex settings,
 users.users.root — those are infra/harness, not customer-tunable in this
@@ -156,28 +156,28 @@ transparent to the rendered config.
 **Files:** `nix/tests/vmtest-wiring/default.nix`
 
 Add asserts that each of the six service enables in the rendered
-`vmtestConfig.cococoir.services` is `true`, with messages naming
+`vmtestConfig.fortress.services` is `true`, with messages naming
 `dashboard.nix` as the source. This is the tripwire (constitution §7)
 for the cross-file extraction: a silent drop now fails the build.
 
 ### T3: config path wiring in the dashboard binary
-- [x] DONE 2026-08-13. `ConfigPath::resolve()` reads `COCOCOIR_CONFIG_PATH`
+- [x] DONE 2026-08-13. `ConfigPath::resolve()` reads `FORTRESS_CONFIG_PATH`
       (fallback repo-relative dashboard.nix); `read_config` returns
       `ConfigReadError::{NotFound,Io,Parse}`; path threaded through `app`
       as poem Data; process-compose passes the env var (repo-root path,
       accounting for the crate-relative cwd). `cargo test` 80/80,
       `nix flake check` green.
 **Depends on:** none
-**Verification:** `COCOCOIR_CONFIG_PATH` is read once; missing → a clear
+**Verification:** `FORTRESS_CONFIG_PATH` is read once; missing → a clear
 editor error page, unparseable file → parse error surfaced in the UI, no
 panic. Dev default points at `nixosConfigurations/dashboard.nix`. L0.
-**Files:** `nix/packages/cococoir/src/bin/dashboard.rs`,
-`nix/packages/cococoir/src/dashboard/mod.rs`,
+**Files:** `nix/packages/fortress/src/bin/dashboard.rs`,
+`nix/packages/fortress/src/dashboard/mod.rs`,
 `nix/dev/process-compose.nix`
 
 The binary resolves the path from the env var (fallback: repo-relative
 `nixosConfigurations/dashboard.nix`), and the editor routes hold it in
-poem app state. process-compose passes `COCOCOIR_CONFIG_PATH` for the dev
+poem app state. process-compose passes `FORTRESS_CONFIG_PATH` for the dev
 loop.
 
 ### T4: value→source serialization + atomic save
@@ -194,8 +194,8 @@ round-trip tests prove serialize→splice→reparse is lossless. Save applies
 all form edits to one candidate `NixConfigFile`, re-validates, and writes
 via temp-file + rename only on full success; any failure leaves the file
 byte-identical. L0.
-**Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`,
-`nix/packages/cococoir/src/dashboard/mod.rs`
+**Files:** `nix/packages/fortress/src/dashboard/nix_config_parser.rs`,
+`nix/packages/fortress/src/dashboard/mod.rs`
 
 ### T5a: parser `attrset_keys` under a dotted prefix (T5 blocker)
 - [x] DONE 2026-08-13. `collect_child_keys` walks each entry's attrpath,
@@ -208,7 +208,7 @@ byte-identical. L0.
 for `users.users.nicole = { groups = [...] };` (dotted), for
 `users.users = { nicole = {...}; };` (nested), and `None` when the path is
 absent. `find_attrpath` unchanged. `cargo test` green. L0.
-**Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+**Files:** `nix/packages/fortress/src/dashboard/nix_config_parser.rs`
 
 The editor's user listing exposed a silent gap: `attrset_keys` matched
 entries only by exact attrpath name count, so a dotted key
@@ -230,8 +230,8 @@ past the target path, recursing on prefix matches otherwise.
 inputs, six toggle switches, users' groups, Save button, status flash);
 `POST /` applies edits and re-renders with "saved" or the named error.
 Route tests cover render, save, and the no-fields-found empty state. L0.
-**Files:** `nix/packages/cococoir/src/dashboard/mod.rs`,
-`nix/packages/cococoir/src/dashboard/components.rs`
+**Files:** `nix/packages/fortress/src/dashboard/mod.rs`,
+`nix/packages/fortress/src/dashboard/components.rs`
 
 The editor is the index route, behind the existing auth gate. Users with
 no editable groups render read-only; services with no `enable` binding
@@ -288,7 +288,7 @@ hit the "not declared — add manually" state and be stuck. Strongest
 defense: the 90% case (toggle the catalog services, set hostname/domain,
 manage users) needs zero `pkgs`, and the extraction is the honest
 definition of the customer surface. When the editor ships as a real NixOS
-module service, the escape-hatch option (e.g. `cococoir.extraImports`)
+module service, the escape-hatch option (e.g. `fortress.extraImports`)
 can be added deliberately, gated on the same schema — but shipping it
 before there's a customer who needs it would be weight on the airplane.
 Second-order risk: the vmtest refactor touches the v2 gate while it's

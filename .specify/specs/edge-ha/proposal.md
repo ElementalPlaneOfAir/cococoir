@@ -70,7 +70,7 @@ address binds — serves the same addresses within seconds.
       move to B → a live customer `/128` **and a provisioned `/32`** both
       return 200 and follow the failover → `interdim.net` + the WG dial-out
       endpoint stay up → DNS zone records (A and AAAA) are byte-identical
-      before and after → RTO < 10s. Maps to T7. This is the gate; an
+      before and after → RTO < 15s. Maps to T7. This is the gate; an
       untested failover is fiction.
 
 ## Smallest version
@@ -114,8 +114,8 @@ script is the gate. Everything else explicitly deferred:
 - **keepalived/VRRP as the failover driver** — case for: sub-second,
   Hetzner-blessed recipe. Case against: a new subsystem that does one
   thing and cannot be exercised in vmtest (VRRP in QEMU), and its
-  split-brain class does not exist when the coordination point is a
-  shared Redis lease. Deferred as an upgrade path.
+  split-brain class is no harder to bound than the lease's (both yield to
+  the float-ownership tiebreaker). Deferred as an upgrade path.
 - **Shared-IP/L7 demux (HAProxy SNI, NAT64, managed anycast fronts)** —
   case for: one cheap IPv4 serves everyone. Case against: a shared front
   must demux by SNI/Host, which forces the edge to learn customer traffic
@@ -149,11 +149,17 @@ against the float driver.
   (ADR-014). No container orchestrator — k8s/Nomad/WASM rejected (see
   Alternatives). This is a deliberate "no new substrate" decision.
 - **Coordination = Redis leader lease, not keepalived.** Key
-  `cococoir:edge:lease` (node id + TTL heartbeat) in the replicated store.
+  `fortress:edge:lease` (node id + TTL heartbeat) in the replicated store.
   The lease holder is Redis primary + active; the standby reconciles to
-  replica + ready. Detection = heartbeat interval (5–10s), inside the RTO
-  budget. Redis is the single coordination point, so there is no
-  split-brain class.
+  replica + ready. Detection = heartbeat interval (TTL 8s, renew 2s),
+  inside the RTO budget (relaxed from 10s → **15s**, decided 2026-09-07).
+  **Split-brain is bounded, not eliminated:** with one primary + one
+  replica, a partition lets the standby's lease copy go stale and both can
+  briefly believe they're active. The float assignment at Hetzner is the
+  globally-reachable tiebreaker: the active node polls every tick that its
+  floats are still assigned to it, and on discovering a loss it **stops
+  serving and never re-assigns**. The loser of the last reassignment
+  yields; the switchover is bounded and self-healing without a quorum.
 - **Shared `wg0` identity.** The edge WG private key becomes a
   store-held secret provisioned to both nodes (security-posture change:
   it replaces per-node self-generation). Both nodes must present the same
@@ -248,13 +254,87 @@ Redis generation), `secretspec.toml` (operator: `wg genkey` generator),
 ### T4: Redis primary/replica + leader lease + promote + float-move
 **Depends on:** T1
 **Verification:** L0 (live Valkey, like `redis_store_round_trip`): lease
-acquire / expiry / promote-on-expiry; on promotion the reconcile calls
-the float driver to move the `/64` + `/32`s to the promoted node; the
-standby rejoins as replica when the original returns; RTO budget
-asserted.
-**Files:** `crates/controlplane/src/controlplane/lease.rs`,
+acquire / renew / expiry / promote-on-expiry; on promotion the reconcile
+calls the float driver to move the `/64` + `/32`s to the promoted node;
+the standby rejoins as replica when the original returns; the
+float-ownership reconcile yields when a float is lost; RTO budget
+asserted (< 15s). **Design decided 2026-09-07** (sub-spec below).
+**Files:** `crates/controlplane/src/controlplane/lease.rs` (new),
 `crates/controlplane/src/controlplane/mod.rs`,
+`crates/controlplane/src/bin/fortress-edge.rs` (fast lease loop),
 `remote-infra/system-manager/edge.nix` (Redis replica config)
+
+#### T4 design
+- **Lease.** Key `fortress:edge:lease`, value = node id, TTL **8s**,
+  renewed every **2s** by the active node on its own (primary) Redis.
+  `lease.rs`: acquire (`SET NX EX 8`), renew (`SET XX EX 8`), release
+  (`DEL` guarded by `GET == self`); every op compares against the node id.
+- **Detection.** The standby observes the lease through replication: its
+  local replica copy stops renewing when the primary dies → expires after
+  TTL → promote. No separate heartbeat channel.
+- **Promotion.** `REPLICAOF NO ONE`, acquire the lease locally, then the
+  reconcile moves the cluster `/64` + shared `/32` to self via the float
+  driver (`list` → assign drift), and starts serving.
+- **Rejoin.** The original, on return, sees the peer holds the lease +
+  floats → `REPLICAOF <peer>`, discards its stale primary data (fresh
+  re-sync), becomes standby.
+- **Self-configuring boot.** First-to-acquire is primary; the other
+  replicates from it. No per-node roles in provisioning — any boot order
+  works.
+- **Anti-split-brain.** With one primary + one replica, a partition lets
+  the standby's lease copy go stale and both can briefly believe they're
+  active. The float assignment at Hetzner is the globally-reachable
+  tiebreaker: the active node polls every tick (2s) that its floats are
+  still assigned to it, and on discovering a loss it **stops serving and
+  never re-assigns**. The loser of the last reassignment yields; the
+  switchover is bounded and self-healing without a quorum.
+- **Loop integration.** `bin/fortress-edge.rs` gains a fast interval
+  (2s) driving the lease reconcile; the 2h DNS reconcile is unchanged.
+  Each tick: lease held → renew + verify float ownership; expired →
+  promote; peer holds it → standby (rejoin/replicate).
+
+#### T4 alternatives considered
+- **Sentinel / managed Redis failover** — needs 3 nodes for quorum; the
+  pair has 2. Rejected.
+- **Deterministic primary at boot** (tofu designates edge-a) — case for:
+  predictability. Case against: edge-a-down-at-boot stalls the pair until
+  a forced promote; self-configuring handles any order. Rejected.
+- **External lock service as fence** — no shared external store exists
+  (zero-substrate ethos); the float assignment itself IS the fence —
+  whichever node the float is assigned to is authoritative.
+
+#### T4 tasks
+- **T4.1** `lease.rs`: acquire/renew/release/is_held, node-id guarded.
+  **Verification:** L0 unit tests (SET NX/XX semantics, expiry,
+  wrong-owner release refused). **Files:** `lease.rs` (new).
+- **T4.2** promote + rejoin orchestration in `mod.rs`: on expiry →
+  `REPLICAOF NO ONE` + acquire + reconcile floats; on return → `REPLICAOF
+  peer`. **Verification:** L0 with live Valkey (two instances) + mock
+  float client. **Files:** `mod.rs`, `lease.rs`.
+- **T4.3** float-ownership reconcile: each tick, if active, verify the
+  floats are assigned to self via `list`; on loss → degrade (stop serving,
+  never re-assign). **Verification:** L0 (mock moves the float away →
+  node yields and does not fight back). **Files:** `mod.rs`, `float.rs`.
+- **T4.4** fast loop in `bin/fortress-edge.rs` (2s interval) + Redis
+  replica config in `edge.nix` (`replicaof` the peer's primary IP — a
+  per-node provision value). **Verification:** L1 tripwire (rendered
+  configs carry the Redis replica pair — the arc's L1 AC).
+  **Files:** `bin/fortress-edge.rs`,
+  `remote-infra/system-manager/edge.nix`.
+- **T4.5** L0 live-Valkey lease lifecycle test (acquire/renew/expiry/
+  promote/rejoin) + RTO assertion (detect ≤ TTL + poll, move ≤ API budget,
+  sum < 15s). **Files:** test module in `lease.rs`/`mod.rs`.
+
+#### T4 strongest objection
+A **wedged** primary (network stuck, process alive) is indistinguishable
+from a dead primary by lease expiry alone: the standby promotes and
+reassigns the floats, but the wedged primary still holds the real float
+until the reassignment lands, and if the wedge heals mid-move, both fight
+— a window where customer traffic flaps. The ownership poll bounds the
+yield side but not the promotion side in this case; the honest guarantee
+is "promote within TTL + poll" only while replication is healthy. The
+gate test (T7) must therefore include a wedged-primary case, not just a
+hard kill.
 
 ### T5: Two-node provisioning (tofu + system-manager + Cloud Network)
 **Depends on:** T2, T3
@@ -263,6 +343,15 @@ Cloud Network with per-node primary IPs + shared floats; the single `edge`
 resource is replaced and the `hel1` box retired; both `system-manager
 switch` clean; `nix flake check` green including the new tripwires;
 `example123` re-provisioned on the pair.
+**No Redis data migration (decided):** the hel1 Redis (customers, `/128`
+alloc counter) is deliberately NOT carried over — it holds demo/test data
+only, so the pair starts fresh in `hil`, the alloc counter resets, and
+existing customers re-register (new `/128` + new keypair). Consequence
+accepted: the "same address, no DNS" mobility promise applies to failovers
+*after* cutover, not to this one-time migration (fresh `/128`s for
+everyone). If real (non-demo) customers land on the old edge before T5,
+this decision must be revisited (a dump/restore of the Redis store is the
+fallback).
 **Files:** `remote-infra/tofu/main.tf`, `remote-infra/tofu/render.tf`,
 `remote-infra/tofu/variables.tf`
 
@@ -305,10 +394,10 @@ natural fit (same provider, S3 API), but rclone + client-side encryption
 make the target provider-agnostic. **Client-side encrypt before upload**
 (zero-knowledge: the store holds account emails, hashed passwords, and —
 until T3 — the wg0 key). Restore: load the RDB into a fresh Redis,
-**scrub the transient keys** (`cococoir:edge:lease` + heartbeat state —
+**scrub the transient keys** (`fortress:edge:lease` + heartbeat state —
 restoring a stale lease would confuse the pair), restart the control
 plane. What's preserved: accounts, pairing, wg peers, and the `/128` alloc
-counter (`cococoir:alloc:next`) — restore must never re-allocate customer
+counter (`fortress:alloc:next`) — restore must never re-allocate customer
 addresses. Runbook in `remote-infra/README.md`.
 **Files:** `remote-infra/system-manager/edge.nix` (timer + rclone),
 `crates/controlplane/secretspec.toml` (S3 creds),

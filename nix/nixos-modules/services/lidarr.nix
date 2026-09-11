@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/lidarr — Music management.
+# fortress/services/lidarr — Music management.
 #
 # 3-option contract (metadata-only service, no bucket).
 {config, lib, pkgs, options, ...}:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  mkFortressService = import ./_contract.nix {inherit lib config pkgs options;};
 in
-mkCococoirService {
+mkFortressService {
   name = "lidarr";
   description = "Lidarr music management";
   defaultPort = 8686;

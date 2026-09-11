@@ -128,7 +128,7 @@ impl HealthServer {
     /// OpenAPI spec and its bundled swagger UI.
     fn router(&self) -> Route {
         let api = HealthApi::new(self.status_func.clone());
-        let service = OpenApiService::new(api, "cococoir", "0.1.0");
+        let service = OpenApiService::new(api, "fortress", "0.1.0");
         let ui = service.swagger_ui();
         let spec = service.spec_endpoint();
         Route::new()
@@ -215,7 +215,7 @@ mod tests {
     fn status_func_bound() -> StatusFunc {
         Arc::new(|| {
             serde_json::json!({
-                "component": "cococoir-edge",
+                "component": "fortress-edge",
                 "forwards": [{"bound": true, "listen_addr": "1.2.3.4:80"}]
             })
         })
@@ -224,7 +224,7 @@ mod tests {
     fn status_func_unbound() -> StatusFunc {
         Arc::new(|| {
             serde_json::json!({
-                "component": "cococoir-edge",
+                "component": "fortress-edge",
                 "forwards": [{"bound": false, "last_error": "boom"}]
             })
         })
@@ -270,7 +270,7 @@ mod tests {
         let router = s.router();
         let (status, body) = get_body(router, "/status").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("\"component\": \"cococoir-edge\""));
+        assert!(body.contains("\"component\": \"fortress-edge\""));
         assert!(body.contains("\"bound\": true"));
     }
 

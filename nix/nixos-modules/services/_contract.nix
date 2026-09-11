@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/_contract — the 4-option service contract
+# fortress/services/_contract — the 4-option service contract
 # factory. Per PLAN.md "Services" and ADR-004.
 #
-# Every cococoir service module (jellyfin.nix, dex.nix, ...)
+# Every fortress service module (jellyfin.nix, dex.nix, ...)
 # imports this factory and only adds its own specifics — system
 # user, systemd unit, btrfs subvolume, env vars, etc. The factory owns:
 #
@@ -12,7 +12,7 @@
 #   - the standard assertions (public → caddy, storageNeeded →
 #     storage, baseDomain or explicit domain)
 #   - the Caddy vhost with the right `tls` directive from
-#     cococoir.tls and the right `reverse_proxy` / 403 from
+#     fortress.tls and the right `reverse_proxy` / 403 from
 #     `public`
 #
 # What the service adds (via `extraOptions` and `extraConfig`):
@@ -42,26 +42,26 @@
 let
   inherit (lib) mkOption mkEnableOption types literalMD;
 in
-# mkCococoirService :: Attrs -> Module
-# Returns a NixOS module that adds cococoir.services.<name>.* and
+# mkFortressService :: Attrs -> Module
+# Returns a NixOS module that adds fortress.services.<name>.* and
 # the standard Caddy vhost + assertions. The caller composes
 # this with per-service config (extraOptions + extraConfig).
 args:
 let
-  cfg = config.cococoir.services.${args.name};
+  cfg = config.fortress.services.${args.name};
   hasBucket = args.storageNeeded or false;
   requires = args.requires or [];
-  baseDomain = config.cococoir.baseDomain;
+  baseDomain = config.fortress.baseDomain;
   sub = args.conventionalSubdomain or args.name;
-  # Platform-owned bind list (cococoir.network.caddyBindAddresses):
-  # localhost, plus the LAN address when cococoir.network.lanAddress
+  # Platform-owned bind list (fortress.network.caddyBindAddresses):
+  # localhost, plus the LAN address when fortress.network.lanAddress
   # is set — so LAN devices that resolve a service domain via the
   # box's dnsmasq (ADR-028) terminate TLS on the box directly. Never
   # 0.0.0.0: the forwarder owns the tunnel IP.
-  bindAddrs = lib.concatStringsSep " " config.cococoir.network.caddyBindAddresses;
+  bindAddrs = lib.concatStringsSep " " config.fortress.network.caddyBindAddresses;
 in
 {
-  options.cococoir.services.${args.name} =
+  options.fortress.services.${args.name} =
     let
       defaultEnable = args.defaultEnable or false;
     in
@@ -88,19 +88,19 @@ in
         default =
           if baseDomain == null
           then throw ''
-            cococoir.services.${args.name}.domain: set `cococoir.baseDomain`
+            fortress.services.${args.name}.domain: set `fortress.baseDomain`
             at the top of the customer's config.nix, or override
-            `cococoir.services.${args.name}.domain` explicitly.
+            `fortress.services.${args.name}.domain` explicitly.
           ''
           else "${sub}.${baseDomain}";
         defaultText = literalMD ''
           `` `${sub}.<baseDomain>` ``, where ``<baseDomain>`` is
-          `cococoir.baseDomain`.
+          `fortress.baseDomain`.
         '';
         description = ''
           External FQDN for the Caddy vhost. Defaults to
           ``${sub}`` + ``.`` + ``<baseDomain>`` when
-          `cococoir.baseDomain` is set. Override per service for
+          `fortress.baseDomain` is set. Override per service for
           non-conventional names.
         '';
       };
@@ -132,7 +132,7 @@ in
         default =
           "http://127.0.0.1:${toString args.defaultPort}${args.defaultHealthPath or "/health"}";
         description = ''
-          URL the cococoir-client prober GETs for liveness
+          URL the fortress-client prober GETs for liveness
           (v2.4). Defaults to a localhost health endpoint.
         '';
         internal = true;
@@ -142,7 +142,7 @@ in
         type = types.listOf types.str;
         default = ["${args.name}.service"];
         description = ''
-          systemd units the cococoir-client journald tailer
+          systemd units the fortress-client journald tailer
           watches for OTEL log records (v2.5).
         '';
         internal = true;
@@ -156,12 +156,12 @@ in
         assertions = [
           {
             assertion = cfg.domain != "";
-            message = "cococoir.services.${args.name}.domain is empty.";
+            message = "fortress.services.${args.name}.domain is empty.";
           }
           {
             assertion = cfg.public -> config.services.caddy.enable;
             message = ''
-              cococoir.services.${args.name}: `public = true` requires
+              fortress.services.${args.name}: `public = true` requires
               `services.caddy.enable = true`. The Caddy vhost is
               the security boundary.
             '';
@@ -169,7 +169,7 @@ in
           {
             assertion = !cfg.public || (builtins.match ".*bind 127.0.0.1.*" config.services.caddy.virtualHosts."${cfg.domain}".extraConfig != null);
             message = ''
-              cococoir.services.${args.name}: the public Caddy vhost must
+              fortress.services.${args.name}: the public Caddy vhost must
               `bind 127.0.0.1` (localhost). The client forwarder owns the
               tunnel IP as the external ingress and forwards to Caddy; a
               wildcard Caddy bind would collide with it (EADDRINUSE) and
@@ -178,18 +178,18 @@ in
           }
         ]
 ++ lib.optional hasBucket {
-          assertion = hasBucket -> config.cococoir.storage.enable;
+          assertion = hasBucket -> config.fortress.storage.enable;
           message = ''
-            cocococoir.services.${args.name}: `cococoir.storage.enable`
+            cofortress.services.${args.name}: `fortress.storage.enable`
             is not set. ${args.name} requires the storage layer
             (btrfs pool + subvolumes).
           '';
         }
         ++ map (req: {
-          assertion = cfg.enable -> config.cococoir.services.${req}.enable;
+          assertion = cfg.enable -> config.fortress.services.${req}.enable;
           message = ''
-            cocococoir.services.${args.name}: requires
-            `cococoir.services.${req}.enable`. Enable ${req} (or the
+            cofortress.services.${args.name}: requires
+            `fortress.services.${req}.enable`. Enable ${req} (or the
             ${req} service group) to use ${args.name}.
           '';
         }) requires;
@@ -202,18 +202,18 @@ in
         # that doesn't exist (compositions without the client) is a
         # systemd no-op.
         systemd.services.caddy = lib.mkIf config.services.caddy.enable {
-          after = ["cococoir-client.service"];
+          after = ["fortress-client.service"];
         };
 
         services.caddy.virtualHosts."${cfg.domain}".extraConfig =
           lib.mkDefault (let
-            tls = config.cococoir.tls;
+            tls = config.fortress.tls;
             tlsLine =
               if tls.mode == "self-signed"
               then "tls ${tls.certFile} ${tls.keyFile}\n"
               else "";
           in
-            # Bind to cococoir.network.caddyBindAddresses (localhost +
+            # Bind to fortress.network.caddyBindAddresses (localhost +
             # LAN address when set). The client forwarder owns the
             # tunnel IP (10.10.0.<n>:80/443) as the external ingress and
             # forwards to Caddy on 127.0.0.1; a wildcard Caddy bind would

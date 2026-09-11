@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir remote infra — input variables.
+# Fortress remote infra — input variables.
 #
 # Public/derived values only. The single secret (Hetzner API token)
 # comes from HCLOUD_TOKEN (resolved by provision-edge.sh via
@@ -25,7 +25,7 @@ variable "location" {
 }
 
 variable "bootstrap_image" {
-  description = "Stock OS image for the edge box. system-manager applies the cococoir config on top; no first-party NixOS image exists on Hetzner (confirmed via changelog 2026-08)."
+  description = "Stock OS image for the edge box. system-manager applies the fortress config on top; no first-party NixOS image exists on Hetzner (confirmed via changelog 2026-08)."
   type        = string
   default     = "debian-12"
 }
@@ -37,7 +37,7 @@ variable "ipv4_gateway" {
 }
 
 variable "domain" {
-  description = "Apex domain the customer services live under (e.g. interdim.net)."
+  description = "Apex domain the customer services live under (e.g. proletariat.tech)."
   type        = string
 }
 

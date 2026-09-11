@@ -40,7 +40,7 @@ absorb the noise. This proposal adopts that.
       compile; `edge.rs` sets them in `main()` before serving)
 - [x] The `app.rs` **client** binary is untouched — it keeps its local
       `Forwarder`, which is correct because the client is a separate
-      single-tenant process, not the edge. (L0: `cococoir-client` still
+      single-tenant process, not the edge. (L0: `fortress-client` still
       builds + runs)
 - [x] No behavior change: the edge's signup→list→delete round trip
       still allocates `/128`s, adds WG peers, binds forwards, and the
@@ -89,7 +89,7 @@ constraint. No `#[cfg(test)]` branch in the accessor, no unsafe override.
 `AppState` deleted. `signup`/`delete`/`rehydrate` drop their
 table/forwarder params and read the globals. Handlers drop their
 `Data<&AppState>` and call the control plane directly. `app()` takes no
-state. The `cococoir-controlplane` entry (`controlplane_entry`) is
+state. The `fortress-controlplane` entry (`controlplane_entry`) is
 updated to set the same globals. DNS-on-signup is **deferred** to the
 next arc and will add a `DnsClient` on top of this.
 
@@ -160,7 +160,7 @@ updated to call `init_globals()`
 ### T4: ✔ Wire `init_globals()` in `edge.rs::main()`; leave `app.rs` untouched
 **Depends on:** T3
 **Verification:** `edge.rs` calls `init_globals()` (forwarder → control
-plane → table/rehydrate) before serving; `cococoir-client` (via
+plane → table/rehydrate) before serving; `fortress-client` (via
 `app.rs`) still builds + runs its local forwarder
 **Files:** `src/bin/edge.rs` (only)
 

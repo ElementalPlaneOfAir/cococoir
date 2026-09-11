@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/integrations/jellyfin-oidc — auto-configure the OIDC
+# fortress/integrations/jellyfin-oidc — auto-configure the OIDC
 # RBAC plugin bridge between Jellyfin and Dex.
 #
 # When both Jellyfin and Dex are enabled, this module:
@@ -18,8 +18,8 @@
 {config, lib, pkgs, options, ...}:
 let
   inherit (lib) mkIf;
-  jf = config.cococoir.services.jellyfin;
-  dx = config.cococoir.services.dex;
+  jf = config.fortress.services.jellyfin;
+  dx = config.fortress.services.dex;
   oidcEnabled = jf.enable && dx.enable;
 
   oidcPlugin = pkgs.stdenv.mkDerivation {
@@ -48,7 +48,7 @@ mkIf oidcEnabled (lib.mkMerge [
       "d /etc/dex/clients 0755 root root -"
     ];
 
-    systemd.services.cococoir-jellyfin-oidc-secret = {
+    systemd.services.fortress-jellyfin-oidc-secret = {
       description = "Generate Jellyfin OIDC client secret";
       wantedBy = ["multi-user.target"];
       before = ["dex.service"];
@@ -69,7 +69,7 @@ mkIf oidcEnabled (lib.mkMerge [
     };
 
     systemd.services.dex = {
-      after = ["cococoir-jellyfin-oidc-secret.service"];
+      after = ["fortress-jellyfin-oidc-secret.service"];
       serviceConfig.BindReadOnlyPaths = [secretFile];
     };
 

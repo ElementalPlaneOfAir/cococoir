@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — L2 test: cocococoir-edge control plane + forwarder over WG.
+# Fortress v2 — L2 test: cofortress-edge control plane + forwarder over WG.
 #
 # Two-VM nixosTest exercising the *current* edge model (ADR-025):
 # the edge box is Redis-driven, binds per-customer IPv6 /128s with
 # IPV6_FREEBIND, and has no config file. The edge binary runs via a
 # systemd unit mirroring remote-infra/system-manager/edge.nix (the box
 # in production is a stock Debian host managed by system-manager, not a
-# NixOS `services.cococoir-edge` module — that module was deleted).
+# NixOS `services.fortress-edge` module — that module was deleted).
 #
 # The full path under test:
 #
 #   curl (inside edge, to its own customer /128 via a lo route)
-#     -> cocococoir-edge forwarder, [2001:db8:1::2]:80 (IPV6_FREEBIND)
+#     -> cofortress-edge forwarder, [2001:db8:1::2]:80 (IPV6_FREEBIND)
 #       -> WireGuard tunnel (10.10.0.0/24)
-#         -> cocococoir-client forwarder, 10.10.0.2:80 (wg0)
+#         -> cofortress-client forwarder, 10.10.0.2:80 (wg0)
 #           -> 127.0.0.1:80 (python3 -m http.server, Caddy stand-in)
 #
 # The customer is created by a real `POST /api/wireguard/new` on the
@@ -37,7 +37,7 @@
 # The L1 tripwire (vmtest-wiring) and L0 unit tests cover wiring and the
 # forwarder in isolation; this test is the only check that proves the
 # real signup -> /128 -> WG -> box data path end to end.
-{pkgs, cococoirPkg, ...}:
+{pkgs, fortressPkg, ...}:
 let
   fixtures = ./fixtures;
   # The edge's wg0 identity: the shared store-held key (ADR-029), the
@@ -56,7 +56,7 @@ let
   # deterministic (= edgePublic) and the client config can trust it.
   edgeSecretspec = ''
     [project]
-    name = "cococoir-edge"
+    name = "fortress-edge"
     revision = "1.0"
 
     [profiles.default]
@@ -87,12 +87,12 @@ let
   subnet = "2001:db8:1::/64";
 in {
   edge-forward = pkgs.testers.nixosTest {
-    name = "cococoir-edge-forward";
+    name = "fortress-edge-forward";
 
     nodes = {
       edge = {lib, ...}: {
         # The edge box in production is stock Debian + system-manager. We
-        # don't have a NixOS `services.cococoir-edge` module, so this node
+        # don't have a NixOS `services.fortress-edge` module, so this node
         # reproduces the edge.nix unit shape directly: the binary, Redis,
         # wg0, and the boot secrets.
 
@@ -118,22 +118,22 @@ in {
         # Accept WG handshakes from the customer box.
         networking.firewall.allowedUDPPorts = [51820];
 
-        # Boot secrets (secret.rs resolves them from /etc/cococoir/).
-        environment.etc."cococoir/secretspec.toml".text = edgeSecretspec;
-        environment.etc."cococoir/edge.env".text = edgeEnv;
+        # Boot secrets (secret.rs resolves them from /etc/fortress/).
+        environment.etc."fortress/secretspec.toml".text = edgeSecretspec;
+        environment.etc."fortress/edge.env".text = edgeEnv;
 
         # The edge service, mirroring edge.nix's unit. WorkingDirectory
         # + EnvironmentFile mirror the SDK's resolution path.
-        systemd.services.cococoir-edge = {
-          description = "cococoir edge (L2 test) — forwarder + control plane";
+        systemd.services.fortress-edge = {
+          description = "fortress edge (L2 test) — forwarder + control plane";
           after = ["network-online.target" "wireguard-wg0.service" "redis.service"];
           wants = ["network-online.target" "wireguard-wg0.service" "redis.service"];
           wantedBy = ["multi-user.target"];
           serviceConfig = {
             Type = "simple";
-            ExecStart = "${cococoirPkg}/bin/cococoir-edge --subnet ${subnet} --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
-            WorkingDirectory = "/etc/cococoir";
-            EnvironmentFile = "/etc/cococoir/edge.env";
+            ExecStart = "${fortressPkg}/bin/fortress-edge --subnet ${subnet} --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
+            WorkingDirectory = "/etc/fortress";
+            EnvironmentFile = "/etc/fortress/edge.env";
             # NixOS systemd units don't inherit environment.systemPackages
             # PATH (unlike the Debian box edge.nix targets). The edge
             # shells out to `wg set wg0 ...`, so put wireguard-tools on
@@ -149,8 +149,8 @@ in {
 
       client = {lib, pkgs, ...}: {
         # The customer box. wg0 is brought up by the CLIENT process itself
-        # (client-owned tunnel, ADR-025): cocococoir-client generates +
-        # persists its own keypair under /var/lib/cococoir, configures the
+        # (client-owned tunnel, ADR-025): cofortress-client generates +
+        # persists its own keypair under /var/lib/fortress, configures the
         # interface, then the forwarder binds. No NixOS wireguard module.
 
         environment.systemPackages = with pkgs; [
@@ -172,7 +172,7 @@ in {
         # handshake to that IPv6 never gets through to the edge's wg0
         # (pre-existing, reproduced with the original test too). The
         # vlan IPv4 is stable per node order (edge = node 2).
-        environment.etc."cococoir-client.json".text = builtins.toJSON {
+        environment.etc."fortress-client.json".text = builtins.toJSON {
           tunnel = {
             ip = "10.10.0.2";
             prefix = 24;
@@ -192,11 +192,11 @@ in {
         # Stand-in for Caddy: a python3 http.server bound to 127.0.0.1:80,
         # serving a fixed HTML file. Auto-started at boot.
         systemd.services.test-http = let
-          responseDir = pkgs.runCommand "cococoir-test-response" {} ''
+          responseDir = pkgs.runCommand "fortress-test-response" {} ''
             mkdir -p $out
             cat > $out/index.html <<'EOF'
             <!DOCTYPE html>
-            <html><body><h1>cococoir test response</h1></body></html>
+            <html><body><h1>fortress test response</h1></body></html>
             EOF
           '';
         in {
@@ -208,10 +208,10 @@ in {
 
         # The client process — owns wg0 + the forwarder. The client brings
         # the tunnel up before the forwarder binds, so no bind race.
-        # StateDirectory=cococoir creates the writable key dir;
+        # StateDirectory=fortress creates the writable key dir;
         # path gives `wg`/`ip` on the unit's PATH.
-        systemd.services.cococoir-client = {
-          description = "cococoir client (L2 test) — tunnel + forwarder";
+        systemd.services.fortress-client = {
+          description = "fortress client (L2 test) — tunnel + forwarder";
           after = ["network-online.target"];
           wants = ["network-online.target"];
           wantedBy = ["multi-user.target"];
@@ -219,10 +219,10 @@ in {
           path = [pkgs.iproute2 pkgs.wireguard-tools];
           serviceConfig = {
             Type = "simple";
-            ExecStart = "${cococoirPkg}/bin/cococoir-client -config /etc/cococoir-client.json -log-format text -health-addr 127.0.0.1:9090";
+            ExecStart = "${fortressPkg}/bin/fortress-client -config /etc/fortress-client.json -log-format text -health-addr 127.0.0.1:9090";
             Restart = "on-failure";
             RestartSec = 5;
-            StateDirectory = "cococoir";
+            StateDirectory = "fortress";
           };
         };
       };
@@ -233,28 +233,28 @@ in {
 
       # Boot order: both VMs up; edge needs wg0 + Redis + the edge
       # binary; client needs the local HTTP stand-in. The client's wg0 is
-      # brought up by cocococoir-client itself (client-owned tunnel).
+      # brought up by cofortress-client itself (client-owned tunnel).
       edge.wait_for_unit("multi-user.target")
       client.wait_for_unit("multi-user.target")
       edge.wait_for_unit("wireguard-wg0.service")
       edge.wait_for_unit("redis.service")
-      edge.wait_for_unit("cococoir-edge.service")
-      client.wait_for_unit("cococoir-client.service")
+      edge.wait_for_unit("fortress-edge.service")
+      client.wait_for_unit("fortress-client.service")
       client.wait_for_unit("test-http.service")
       # The client brought wg0 up with its own persisted keypair.
       client.wait_until_succeeds("ip link show wg0")
 
       # Sanity: the python server is up and serves the fixture.
-      client.succeed("curl -sf http://127.0.0.1:80/ | grep -q 'cococoir test response'")
+      client.succeed("curl -sf http://127.0.0.1:80/ | grep -q 'fortress test response'")
 
       # The edge's control-plane API is up.
       edge.wait_for_open_port(8081)
 
       # The client owns wg0: it generated + persisted its own keypair at
-      # boot (under /var/lib/cococoir) and brought wg0 up. Read back the
+      # boot (under /var/lib/fortress) and brought wg0 up. Read back the
       # persisted public key — the client holds the private key and sends
       # only the public key to the edge (ADR-025).
-      client_pub = client.succeed("wg pubkey < /var/lib/cococoir/wg-private.key").strip()
+      client_pub = client.succeed("wg pubkey < /var/lib/fortress/wg-private.key").strip()
 
       # Real device-route creation via the control-plane API (bearer
       # admin key) with the client's public key. Allocates the /128, adds
@@ -314,7 +314,7 @@ in {
       # -> WireGuard tunnel -> customer box forwarder -> local http. The
       # HTML body is the assertion.
       output = edge.succeed("curl -g -sf http://[{}]:80/".format(customer_ipv6))
-      assert "cococoir test response" in output, "unexpected response: {!r}".format(output)
+      assert "fortress test response" in output, "unexpected response: {!r}".format(output)
 
       # Health endpoints respond on both boxes (edge on the merged 8081
       # handler; the client still has its own on 9090).

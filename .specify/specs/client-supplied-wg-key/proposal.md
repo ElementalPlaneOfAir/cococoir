@@ -24,7 +24,7 @@ gate.
 
 ## Acceptance criteria
 
-- [x] **L0** `cargo test -p cococoir-controlplane` green, including new
+- [x] **L0** `cargo test -p fortress-controlplane` green, including new
       tests: idempotent same-key re-signup returns the same `/128`+`wg_ip`
       and does **not** increment the alloc counter; different-key re-signup
       removes the old WG peer, adds the new one with the same `/128`+`wg_ip`,
@@ -95,7 +95,7 @@ runs `INCR` *before* the duplicate check, so a repeat signup wasted a
 
 ### T1: make `/signup` accept a client public key + drop the private key
 **Depends on:** none — DONE
-**Verification:** `cargo test -p cococoir-controlplane` green; `SignupResponse`
+**Verification:** `cargo test -p fortress-controlplane` green; `SignupResponse`
 has no `wg_private_key`; signup rejects an invalid pubkey. L0.
 **Files:** `crates/controlplane/src/controlplane/mod.rs`,
 `crates/controlplane/src/controlplane/wg.rs`

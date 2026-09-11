@@ -130,7 +130,7 @@ pub struct ConsoleMailer;
 impl Mailer for ConsoleMailer {
     async fn send(&self, to: &str, subject: &str, body: &str) -> Result<(), MailerError> {
         tracing::info!(to, subject, "console mailer");
-        println!("[cococoir-mailer] to={to} subject={subject}\n{body}");
+        println!("[fortress-mailer] to={to} subject={subject}\n{body}");
         Ok(())
     }
 }

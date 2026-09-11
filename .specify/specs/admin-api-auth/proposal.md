@@ -44,14 +44,14 @@ change.
   (`find_config_file` → `find_config_file_from(current_dir)`). So the
   box needs the toml on disk, discoverable from the process working
   directory. Fix: the edge systemd unit sets
-  `WorkingDirectory=/etc/cococoir` (both `secretspec.toml` and
+  `WorkingDirectory=/etc/fortress` (both `secretspec.toml` and
   `edge.env` live there). The dotenv provider URI is the absolute path
-  `dotenv:/etc/cococoir/edge.env`.
+  `dotenv:/etc/fortress/edge.env`.
 - **All five edge values flow through secretspec** (zone_id, zone_name,
   token, root_domain, admin_key_hash) — one secret layer, no
   `std::env::var` dual mechanism. The process resolves once at boot.
-  Secret names dropped the `COCOCOIR_` prefix (`DNS_TOKEN`, not
-  `COCOCOIR_DNS_TOKEN`) — these names are the toml names, the Rust
+  Secret names dropped the `FORTRESS_` prefix (`DNS_TOKEN`, not
+  `FORTRESS_DNS_TOKEN`) — these names are the toml names, the Rust
   fields, AND the dotenv keys in `edge.env`.
 - **One `std::sync::LazyLock<Resolved<SecretSpec>>` global** (`secret.rs`),
   sync, resolving file IO, **panic-on-failure** (a missing secret is
@@ -102,7 +102,7 @@ change.
 - [ ] The env file is renamed `dns.env` → `edge.env` (DNS + admin
       auth); `provision-edge.sh` generates the 128-bit admin key (if
       absent), echoes it once, writes hash + plaintext to `edge.env`
-      (0600); the unit sets `WorkingDirectory=/etc/cococoir` and
+      (0600); the unit sets `WorkingDirectory=/etc/fortress` and
       `secretspec.toml` is deployed alongside. (T6)
 - [x] The control plane serves a bundled swagger UI at `/docs` (and
       `/openapi.json`), mirroring `health.rs`; the spec declares the
@@ -138,17 +138,17 @@ change.
   `get_dns_api()` first.
 - `app()` returns the `OpenApiService`-nesting `Route`. `edge.rs`
   unchanged (still calls `app()`).
-- `nix/packages/cococoir/secretspec.toml` (new, committed): the five
+- `nix/packages/fortress/secretspec.toml` (new, committed): the five
   required secrets under `[profiles.default]`, value-free. (Must live
   next to the crate — `CARGO_MANIFEST_DIR` for compile time; and be
-  deployed to `/etc/cococoir/` for runtime CWD discovery.)
+  deployed to `/etc/fortress/` for runtime CWD discovery.)
 - `provision-edge.sh`: generate 128-bit key into gitignored
   `.secrets/admin.key` if absent; write `ADMIN_KEY_HASH` (sha256sum) +
   `ADMIN_KEY` (the convenience plaintext) + the DNS values into
-  `/etc/cococoir/edge.env` (0600); echo the key once to the operator.
+  `/etc/fortress/edge.env` (0600); echo the key once to the operator.
 - Rename `dns.env` → `edge.env` in the tofu template + rendered
   `edge.nix`; deploy `secretspec.toml`; set
-  `WorkingDirectory=/etc/cococoir`.
+  `WorkingDirectory=/etc/fortress`.
 
 Deferred: rotating keys, multi-admin keys, per-customer scoping, rate
 limiting, the OpenBao/BWS/SOPS provider swap (the seam is the point;
@@ -216,7 +216,7 @@ same shape as the DNS `LazyLock`s it feeds, all derived from one
 source. `declare_secrets!` gives compile-time typing: field names are
 the lowercase secret names, a renamed secret is a compile error. The
 toml is read at runtime too (CWD-walk), so the unit sets
-`WorkingDirectory=/etc/cococoir`. The plaintext-in-file is a documented
+`WorkingDirectory=/etc/fortress`. The plaintext-in-file is a documented
 convenience: the process reads only the hash, and the plaintext is
 *undeclared* so it cannot migrate to a future store. Hash crypto is
 SHA-256 + constant-time compare (`sha2` + `subtle`), correct for a
@@ -288,10 +288,10 @@ not (the tripwire against silently opening a handler)
 **Depends on:** T1
 **Verification:** script writes `edge.env` with hash + convenience
 plaintext, mode 0600, key echoed once; `secretspec.toml` deployed to
-`/etc/cococoir/`; unit sets `WorkingDirectory=/etc/cococoir` +
-`EnvironmentFile=/etc/cococoir/edge.env`; `tofu validate`; re-render
+`/etc/fortress/`; unit sets `WorkingDirectory=/etc/fortress` +
+`EnvironmentFile=/etc/fortress/edge.env`; `tofu validate`; re-render
 `edge.nix`; edge systemConfig evals
-**Files:** `nix/packages/cococoir/secretspec.toml` (new),
+**Files:** `nix/packages/fortress/secretspec.toml` (new),
 `remote-infra/scripts/provision-edge.sh`,
 `remote-infra/tofu/templates/edge.nix.tftpl`,
 `remote-infra/tofu/outputs.tf` (if needed),

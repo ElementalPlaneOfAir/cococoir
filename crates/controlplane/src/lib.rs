@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! cococoir-controlplane — the remote-access provisioning service
+//! fortress-controlplane — the remote-access provisioning service
 //! that runs on the edge box (which *is* the control plane). Owns the
-//! `cococoir-edge` binary and the `[profiles.edge]` secret contract.
+//! `fortress-edge` binary and the `[profiles.edge]` secret contract.
 
 pub mod controlplane;
 

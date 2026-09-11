@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/storage — btrfs pool + subvolume management.
+# fortress/storage — btrfs pool + subvolume management.
 #
-# Always-on (cococoir.storage.enable defaults to true). Every
+# Always-on (fortress.storage.enable defaults to true). Every
 # service that needs storage auto-declares its subvolumes via
-# cococoir.storage.btrfs.subvolumes.<name>; the customer only
+# fortress.storage.btrfs.subvolumes.<name>; the customer only
 # sets pool name + devices in their top-level config.
 #
 # Per ADR-023: btrfs replaces Garage+FUSE for v2. Single-node
@@ -19,11 +19,11 @@
 #   - Per-subvolume profiles possible via metadata block groups
 #
 # Pool lifecycle:
-#   1. cococoir-btrfs-pool (oneshot) formats the btrfs on first
+#   1. fortress-btrfs-pool (oneshot) formats the btrfs on first
 #      boot (idempotent -- checks blkid before mkfs).
 #   2. fileSystems entry mounts the pool by LABEL at /data, with
 #      x-systemd.requires/after on the pool creation service.
-#   3. cococoir-btrfs-subvolumes (oneshot) creates per-service
+#   3. fortress-btrfs-subvolumes (oneshot) creates per-service
 #      subvolumes idempotently after the mount is ready.
 #   4. Services use unitConfig.RequiresMountsFor on their subvolume
 #      paths so they wait for the mountpoint before starting.
@@ -36,7 +36,7 @@ let
   inherit (lib) mkOption types optionalString concatMapStringsSep
     mapAttrsToList escapeShellArg;
 
-  cfg = config.cococoir.storage;
+  cfg = config.fortress.storage;
   label = cfg.btrfs.pool.name;
   devices = cfg.btrfs.pool.devices;
   layout = cfg.btrfs.pool.layout;
@@ -52,25 +52,25 @@ let
     stripe = "raid1";
   }.${layout};
 
-  poolCreate = pkgs.writeShellScript "cococoir-btrfs-pool-create" ''
+  poolCreate = pkgs.writeShellScript "fortress-btrfs-pool-create" ''
     set -euo pipefail
     found=0
     for dev in ${concatMapStringsSep " " escapeShellArg devices}; do
       if ${pkgs.util-linux}/bin/blkid -s TYPE -o value "$dev" 2>/dev/null | grep -qx btrfs; then
-        echo "[cococoir-btrfs] pool already exists on $dev; ensuring label ${label}"
+        echo "[fortress-btrfs] pool already exists on $dev; ensuring label ${label}"
         # An existing pool that lacks the expected label silently breaks the
         # LABEL=<label> mount (media.mount fails -> subvolumes fail -> the
         # dependent service fails). Ensure the label rather than exiting 0.
         current=$(${pkgs.btrfs-progs}/bin/btrfs filesystem label "$dev" 2>/dev/null || true)
         if [ "$current" != "${label}" ]; then
-          echo "[cococoir-btrfs] relabeling $dev: ''${current}' -> '${label}'"
+          echo "[fortress-btrfs] relabeling $dev: ''${current}' -> '${label}'"
           ${pkgs.btrfs-progs}/bin/btrfs filesystem label "$dev" "${label}"
         fi
         found=1
       fi
     done
     if [ "$found" = 0 ]; then
-      echo "[cococoir-btrfs] creating pool ${label} on ${toString devices}"
+      echo "[fortress-btrfs] creating pool ${label} on ${toString devices}"
       ${pkgs.btrfs-progs}/bin/mkfs.btrfs -f \
         -L ${escapeShellArg label} \
         -d ${dataProfile} \
@@ -86,7 +86,7 @@ let
   }) cfg.btrfs.subvolumes;
 
   subvolumeCreateLine = sv: ''
-    echo "[cococoir-btrfs] subvolume ${sv.path}"
+    echo "[fortress-btrfs] subvolume ${sv.path}"
     if ${pkgs.btrfs-progs}/bin/btrfs subvolume show ${escapeShellArg sv.path} >/dev/null 2>&1; then
       echo "  -> already a subvolume"
     elif [ -e ${escapeShellArg sv.path} ]; then
@@ -107,20 +107,20 @@ let
     ''}
   '';
 
-  subvolumeCreate = pkgs.writeShellScript "cococoir-btrfs-subvolume-create" ''
+  subvolumeCreate = pkgs.writeShellScript "fortress-btrfs-subvolume-create" ''
     set -euo pipefail
     ${pkgs.btrfs-progs}/bin/btrfs quota enable ${escapeShellArg mountpoint} 2>/dev/null || true
     ${concatMapStringsSep "\n" subvolumeCreateLine subvolumeEntries}
   '';
 in
 {
-  options.cococoir.storage = {
+  options.fortress.storage = {
     enable = mkOption {
       type = types.bool;
       default = true;
       defaultText = "true";
       description = ''
-        Enable the cococoir storage layer (btrfs pool + subvolumes).
+        Enable the fortress storage layer (btrfs pool + subvolumes).
         **Always on** -- the platform requires storage for every
         service that has data. Customers do not need to set this
         option; it is `true` by default. Set to `false` only in
@@ -235,11 +235,11 @@ in
       {
         assertion = devices != [];
         message = ''
-          cococoir.storage: btrfs.pool.devices is empty.
+          fortress.storage: btrfs.pool.devices is empty.
           Set block device paths (use /dev/disk/by-id for
           stable identification).
           Example:
-            cococoir.storage.btrfs.pool.devices = [
+            fortress.storage.btrfs.pool.devices = [
               "/dev/disk/by-id/ata-WDC_WD40EFRX-68WT0N0_WD-XXXX"
               "/dev/disk/by-id/ata-WDC_WD40EFRX-68WT0N0_WD-YYYY"
             ];
@@ -263,12 +263,12 @@ in
       options = "defaults,compress=zstd";
       wantedBy = ["local-fs.target"];
       before = ["local-fs.target"];
-      after = ["cococoir-btrfs-pool.service"];
-      requires = ["cococoir-btrfs-pool.service"];
+      after = ["fortress-btrfs-pool.service"];
+      requires = ["fortress-btrfs-pool.service"];
     }];
 
-    systemd.services.cococoir-btrfs-pool = {
-      description = "cococoir btrfs pool creation (idempotent)";
+    systemd.services.fortress-btrfs-pool = {
+      description = "fortress btrfs pool creation (idempotent)";
       wantedBy = ["local-fs.target"];
       before = ["local-fs.target"];
       unitConfig.DefaultDependencies = false;
@@ -280,8 +280,8 @@ in
       path = [pkgs.btrfs-progs pkgs.util-linux pkgs.coreutils];
     };
 
-    systemd.services.cococoir-btrfs-subvolumes = {
-      description = "cococoir btrfs subvolume creation (idempotent)";
+    systemd.services.fortress-btrfs-subvolumes = {
+      description = "fortress btrfs subvolume creation (idempotent)";
       wantedBy = ["multi-user.target"];
       after = ["local-fs.target"];
       unitConfig.RequiresMountsFor = mountpoint;

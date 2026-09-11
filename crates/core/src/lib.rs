@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! cococoir-core — the shared L4 TCP/UDP forwarder engine.
+//! fortress-core — the shared L4 TCP/UDP forwarder engine.
 //!
-//! The two product systems (`cococoir-edge`, `cococoir-client`) are
+//! The two product systems (`fortress-edge`, `fortress-client`) are
 //! built on this crate: it holds the forwarder, the health/status
 //! server, and the small shared plumbing (logger, bind retry). It has
 //! no binaries and consumes no secrets.

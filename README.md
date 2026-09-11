@@ -1,4 +1,4 @@
-# Cococoir
+# Fortress
 
 A home server in a box. NixOS + a small catalog of services,
 shipped as a complete product to non-technical customers.
@@ -6,20 +6,20 @@ AGPL-3.0-or-later.
 
 ## What it is
 
-Cococoir is a worker cooperative that builds and sells home servers
+Fortress is a worker cooperative that builds and sells home servers
 to residential customers. The product is a plug-and-play box that
 replaces Google Docs, Netflix, Dropbox, and Ring with self-hosted
 alternatives — no configuration, no technical knowledge required.
 
 The core thesis: digital sovereignty is increasingly important, the
-tools exist, but the setup friction excludes 95% of people. Cococoir
+tools exist, but the setup friction excludes 95% of people. Fortress
 removes the friction by shipping pre-configured hardware with
 deterministic, reproducible NixOS builds.
 
 ## Current status
 
-- **v0 (shipped):** Go L4 TCP/UDP forwarder (`cococoir-edge` +
-  `cococoir-client`), health endpoints, bbolt store, 2-VM nixosTest.
+- **v0 (shipped):** Go L4 TCP/UDP forwarder (`fortress-edge` +
+  `fortress-client`), health endpoints, bbolt store, 2-VM nixosTest.
 - **v2 (target):** Single-machine home server. btrfs storage,
   Jellyfin + Dex OIDC, Caddy reverse proxy with auto-TLS,
   sops-nix for secrets. `scripts/vmtest-e2e.sh` gate.
@@ -50,7 +50,7 @@ in place.
   dashboards, no app stores, no configuration wizards.
 - **Factory-enforced service contract.** Every service exposes
   `enable / domain / public` (plus service-specific options) via
-  the `mkCococoirService` factory, which owns the Caddy vhost,
+  the `mkFortressService` factory, which owns the Caddy vhost,
   systemd wiring, and btrfs subvolume declaration. See
   `nix/nixos-modules/services/_contract.nix`.
 - **TLS keys never leave the box.** Caddy on the customer device
@@ -67,10 +67,10 @@ in place.
 ## Project structure
 
 ```
-cococoir/
+fortress/
 ├── nix/
 │   ├── nixos-modules/         # NixOS modules (the product)
-│   │   ├── cococoir.nix       #   top-level import
+│   │   ├── fortress.nix       #   top-level import
 │   │   ├── tls.nix            #   TLS posture (acme / self-signed)
 │   │   ├── base-domain.nix    #   apex domain
 │   │   ├── secrets.nix        #   sops-nix secret inventory
@@ -83,7 +83,7 @@ cococoir/
 │   │   ├── edge.nix           #   Go forwarder (VPS side)
 │   │   └── client.nix         #   Go forwarder (customer side)
 │   ├── packages/
-│   │   └── cocococoir/        # Go module (2 binaries)
+│   │   └── cofortress/        # Go module (2 binaries)
 │   └── tests/
 │       ├── edge/              # 2-VM nixosTest (v0 gate)
 │       ├── contract-conformance/  # Factory usage check

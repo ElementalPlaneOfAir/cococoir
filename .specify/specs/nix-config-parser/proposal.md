@@ -17,14 +17,14 @@ Session 2026-08-13: user interview. Three decisions made:
 
 ## Premise
 
-The dashboard (`cococoir-client` embedded UI, `src/dashboard/`) will
+The dashboard (`fortress-client` embedded UI, `src/dashboard/`) will
 eventually edit the customer's Nix config file: read it, let the user
 change fields the dashboard knows about, write it back. The hard part is
 the round-trip: a config file is full of things the dashboard does not
 model (comments, other NixOS options, `let` bindings, imports, formatting),
 and a naive "parse into my struct, re-emit my struct" destroys all of it.
 The existing scaffold at `src/dashboard/nix_config_parser.rs` sketches the
-target model (`CococoirConfig` with `hostname`, `root_domain`,
+target model (`FortressConfig` with `hostname`, `root_domain`,
 `services_enabled`, `users`, `extra_config`) but has no parser behind it.
 
 This arc delivers that parser as a pure-Rust module, learning-grade
@@ -61,13 +61,13 @@ string:
 1. parse it into a lossless CST, failing with a typed `NixParseError`
    on malformed input;
 2. navigate the CST to find a known field by attribute path
-   (`cococoir.services.jellyfin.enable`), returning its value and its
+   (`fortress.services.jellyfin.enable`), returning its value and its
    byte span;
 3. replace that value in place, producing a new string where only the
    target span changed;
 4. serialize with no edits = identical input (round-trip law).
 
-The `CococoirConfig` struct from the scaffold becomes the *schema layer*:
+The `FortressConfig` struct from the scaffold becomes the *schema layer*:
 it declares which attrpaths are "known" and reads/writes them. The
 `extra_config` field is the *whole CST outside the known-field spans* —
 it survives by construction, not by being copied into a String. This
@@ -116,12 +116,12 @@ a round trip (see Alternatives).
   `ast::Literal`). The same machinery nixpkgs-fmt uses, so the
   round-trip law is trusted upstream.
 - **Schema is separate from parser.** The parser is shape-agnostic: it
-  walks the CST and finds attrpaths. The `CococoirConfig` schema decides
+  walks the CST and finds attrpaths. The `FortressConfig` schema decides
   *which* attrpaths are known. When the config language changes, only
   the schema's path list changes, not the parser. This is the
   "decouple UI fields from file syntax" requirement.
 - **Known fields are addressed by attrpath**, not by regex or line
-  number: `cococoir.services.<name>.enable`, `cococoir.baseDomain`,
+  number: `fortress.services.<name>.enable`, `fortress.baseDomain`,
   etc. Handles both dotted attrpaths (`a.b.c = v`) and nested attrsets
   (`a = { b = { c = v; }; }`), plus `inherit`, via CST navigation.
 
@@ -134,20 +134,20 @@ NixParseError>`; `to_string()` returns the exact input when no edits are
 made; round-trip identity asserted on a vmtest.nix-style fixture (function
 header + `let` + nested attrsets) and on empty/garbage input (typed error,
 no panic). L0 + flake build.
-**Files:** `nix/packages/cococoir/Cargo.toml`,
-`nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+**Files:** `nix/packages/fortress/Cargo.toml`,
+`nix/packages/fortress/src/dashboard/nix_config_parser.rs`
 - [x] DONE 2026-08-13. `rnix 0.14` + `rowan 0.16` added; `NixConfigFile`
       with `parse`/`to_source`; `rejects_malformed_input_without_panicking`
-      passes on `""`, `"{"`, `"}{"`, `"cococoir = "`, garbage. Round-trip
+      passes on `""`, `"{"`, `"}{"`, `"fortress = "`, garbage. Round-trip
       identity green.
 
 ### T2: attrpath navigation over the CST
 **Depends on:** T1
-**Verification:** `find_attrpath(&self, &["cococoir", "services",
+**Verification:** `find_attrpath(&self, &["fortress", "services",
 "jellyfin", "enable"])` resolves dotted and nested forms, returns value
 node + `TextRange`; `inherit` handled; missing path → `None`; a path that
 lands mid-expression (not a value) → `None`, not a panic. L0.
-**Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+**Files:** `nix/packages/fortress/src/dashboard/nix_config_parser.rs`
 - [x] DONE 2026-08-13. `find_attrpath` handles dotted keys
       (`services.radarr.enable = false;`), nested attrsets, `let ... in`,
       function headers, `inherit` (skipped → `None`), mid-expression
@@ -155,17 +155,17 @@ lands mid-expression (not a value) → `None`, not a panic. L0.
 
 ### T3: known-field extraction into the schema
 **Depends on:** T2
-**Verification:** given the `CococoirConfig` schema (attrpath list),
+**Verification:** given the `FortressConfig` schema (attrpath list),
 extract a read-only snapshot of known fields (hostname, root_domain,
 services_enabled, users) with their spans; unknown content is untouched.
 Field values parsed from CST nodes: string literals (plain and
 interpolated), booleans (`true`/`false`), string lists. L0.
-**Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+**Files:** `nix/packages/fortress/src/dashboard/nix_config_parser.rs`
 - [x] DONE 2026-08-13. `ConfigSchema` (default paths match vmtest.nix
-      shape) + `CococoirConfig::extract`. Strings, bools, string lists
+      shape) + `FortressConfig::extract`. Strings, bools, string lists
       parsed; interpolated strings fall back to `NixValue::Other` (raw).
       SERVICE_LIST aligned to shipped services (dropped scaffold's
-      vaultwarden — not a real cococoir service; PLAN lists jellyfin,
+      vaultwarden — not a real fortress service; PLAN lists jellyfin,
       cryptpad, radarr, sonarr, lidarr, prowlarr, dex).
 
 ### T4: in-place value replacement (the write path)
@@ -177,7 +177,7 @@ string with a bool and vice versa works; after any single edit,
 re-parsing the output round-trips (edit is idempotent and lossless).
 Missing attrpath → `SetError::NotFound`, no insertion in this task
 (insertion is the UI arc). L0.
-**Files:** `nix/packages/cococoir/src/dashboard/nix_config_parser.rs`
+**Files:** `nix/packages/fortress/src/dashboard/nix_config_parser.rs`
 - [x] DONE 2026-08-13. `set_attrpath` splices exactly the value span and
       validates the result re-parses before committing (failed edits leave
       the file untouched). `SetError::{NotFound, InvalidValue}`;

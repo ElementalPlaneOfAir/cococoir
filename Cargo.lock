@@ -395,79 +395,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
-name = "cococoir-client"
-version = "0.1.0"
-dependencies = [
- "bcrypt",
- "chrono",
- "cococoir-core",
- "momenta",
- "poem",
- "rnix",
- "rowan",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cococoir-controlplane"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bcrypt",
- "cococoir-core",
- "dashmap",
- "hex",
- "hickory-resolver",
- "lettre",
- "momenta",
- "poem",
- "poem-openapi",
- "rand_core 0.6.4",
- "redis",
- "reqwest",
- "secrecy",
- "secretspec",
- "secretspec-derive",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "subtle",
- "thiserror",
- "tokio",
- "tracing",
- "x25519-dalek",
-]
-
-[[package]]
-name = "cococoir-core"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "libc",
- "poem",
- "poem-openapi",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "x25519-dalek",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,6 +924,79 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fortress-client"
+version = "0.1.0"
+dependencies = [
+ "bcrypt",
+ "chrono",
+ "fortress-core",
+ "momenta",
+ "poem",
+ "rnix",
+ "rowan",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "fortress-controlplane"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bcrypt",
+ "dashmap",
+ "fortress-core",
+ "hex",
+ "hickory-resolver",
+ "lettre",
+ "momenta",
+ "poem",
+ "poem-openapi",
+ "rand_core 0.6.4",
+ "redis",
+ "reqwest",
+ "secrecy",
+ "secretspec",
+ "secretspec-derive",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "fortress-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "libc",
+ "poem",
+ "poem-openapi",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "socket2 0.5.10",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "x25519-dalek",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir contract-conformance check.
+# fortress contract-conformance check.
 #
 # L1: pure-Nix check (no VM, no QEMU). Catches contract-conformance
 # drift across the service catalog: when a service module is
@@ -14,7 +14,7 @@
 #
 # Strategy: parse each service module's source as a string
 # and look for the factory call signature. We require:
-#   - `mkCococoirService {` (the factory is invoked)
+#   - `mkFortressService {` (the factory is invoked)
 #   - `name = "<service>";` (factory receives the right name)
 #   - `defaultPort = <number>;` (port contract honored)
 #   - `defaultHealthPath = "...";` (prober contract honored)
@@ -29,46 +29,46 @@ let
   # a row here.
   expected = {
     jellyfin = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"jellyfin\";"
       "defaultPort = 8096;"
       "defaultHealthPath = "
     ];
     dex = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"dex\";"
       "defaultPort = 5556;"
       "defaultHealthPath = "
     ];
     cryptpad = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"cryptpad\";"
       "defaultPort = 3000;"
       "defaultHealthPath = "
     ];
     radarr = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"radarr\";"
       "defaultPort = 7878;"
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
     sonarr = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"sonarr\";"
       "defaultPort = 8989;"
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
     lidarr = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"lidarr\";"
       "defaultPort = 8686;"
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
     prowlarr = [
-      "mkCococoirService {"
+      "mkFortressService {"
       "name = \"prowlarr\";"
       "defaultPort = 9696;"
       "defaultHealthPath = "
@@ -89,9 +89,9 @@ in
 assert lib.assertMsg (!(lib.hasInfix "MISSING" report))
   "contract-conformance failed:\n${report}";
 {
-  contract-conformance = pkgs.runCommand "cococoir-contract-conformance" {} ''
+  contract-conformance = pkgs.runCommand "fortress-contract-conformance" {} ''
     cat > $out <<EOF
-    cococoir contract-conformance: PASS
+    fortress contract-conformance: PASS
     ${report}
     EOF
   '';

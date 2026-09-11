@@ -7,10 +7,10 @@ use crate::dashboard::db::Db;
 /// Browser session cookie. The value is the opaque token from the
 /// `sessions` table; the browser re-sends it automatically on every
 /// same-origin request, so htmx never handles auth itself.
-pub const SESSION_COOKIE: &str = "cococoir_session";
+pub const SESSION_COOKIE: &str = "fortress_session";
 
 /// Admin login configuration. The only credential is a bcrypt hash of
-/// the admin password (set by `COCOCOIR_ADMIN_PASSWORD_HASH`; production
+/// the admin password (set by `FORTRESS_ADMIN_PASSWORD_HASH`; production
 /// sources it from the box's secret store). The dashboard is the control
 /// plane of the box, so it must NOT be reachable through the user-facing
 /// OIDC provider — a compromise of Dex (or another provider) must never
@@ -23,7 +23,7 @@ pub struct AdminConfig {
 impl AdminConfig {
     fn from_env() -> Option<Self> {
         Some(Self {
-            password_hash: std::env::var("COCOCOIR_ADMIN_PASSWORD_HASH").ok()?,
+            password_hash: std::env::var("FORTRESS_ADMIN_PASSWORD_HASH").ok()?,
         })
     }
 }

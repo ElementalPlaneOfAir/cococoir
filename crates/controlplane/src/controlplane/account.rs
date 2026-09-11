@@ -8,11 +8,11 @@
 //! Passwords are bcrypt-hashed, never plaintext (T2 acceptance).
 //!
 //! Redis keys (all live in the same Redis as the customers/devices):
-//!   cococoir:account:{email}     → AccountRecord JSON (permanent)
-//!   cococoir:username:{username} → email (SETNX: username uniqueness)
-//!   cococoir:verify:{token}      → email (24h TTL, GETDEL single-use)
-//!   cococoir:reset:{token}       → email (24h TTL, GETDEL single-use)
-//!   cococoir:session:{token}     → email (7d TTL)
+//!   fortress:account:{email}     → AccountRecord JSON (permanent)
+//!   fortress:username:{username} → email (SETNX: username uniqueness)
+//!   fortress:verify:{token}      → email (24h TTL, GETDEL single-use)
+//!   fortress:reset:{token}       → email (24h TTL, GETDEL single-use)
+//!   fortress:session:{token}     → email (7d TTL)
 //!
 //! The methods live on `impl ControlPlane` so they share the process's
 //! Redis client + `root_domain`; the mailer is injected (`&dyn Mailer`)
@@ -32,19 +32,19 @@ const RESET_TOKEN_TTL_SECS: u64 = 24 * 60 * 60;
 const SESSION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 fn account_key(email: &str) -> String {
-    format!("cococoir:account:{email}")
+    format!("fortress:account:{email}")
 }
 fn username_key(username: &str) -> String {
-    format!("cococoir:username:{username}")
+    format!("fortress:username:{username}")
 }
 fn verify_key(token: &str) -> String {
-    format!("cococoir:verify:{token}")
+    format!("fortress:verify:{token}")
 }
 fn reset_key(token: &str) -> String {
-    format!("cococoir:reset:{token}")
+    format!("fortress:reset:{token}")
 }
 fn session_key(token: &str) -> String {
-    format!("cococoir:session:{token}")
+    format!("fortress:session:{token}")
 }
 
 /// Account lifecycle + auth failure surface. Generic where it must be
@@ -129,12 +129,12 @@ pub fn reset_link(domain: &str, token: &str) -> String {
 
 fn verify_body(link: &str) -> String {
     format!(
-        "Verify your cococoir account:\n\n{link}\n\nThis link expires in 24 hours."
+        "Verify your fortress account:\n\n{link}\n\nThis link expires in 24 hours."
     )
 }
 
 fn reset_body(link: &str) -> String {
-    format!("Reset your cococoir password:\n\n{link}\n\nThis link expires in 24 hours.")
+    format!("Reset your fortress password:\n\n{link}\n\nThis link expires in 24 hours.")
 }
 
 fn validate_email(email: &str) -> Result<(), AccountError> {
@@ -218,7 +218,7 @@ impl ControlPlane {
         // exists, and leaving it would dangle for 24h.
         let link = verify_link(self.root_domain, &token);
         if let Err(err) = mailer
-            .send(&email, "Verify your cococoir account", &verify_body(&link))
+            .send(&email, "Verify your fortress account", &verify_body(&link))
             .await
         {
             let _: Result<(), redis::RedisError> = conn.del(account_key(&email)).await;
@@ -311,7 +311,7 @@ impl ControlPlane {
             .await?;
         let link = reset_link(self.root_domain, &token);
         mailer
-            .send(&email, "Reset your cococoir password", &reset_body(&link))
+            .send(&email, "Reset your fortress password", &reset_body(&link))
             .await?;
         Ok(())
     }
@@ -400,12 +400,12 @@ mod tests {
     #[test]
     fn link_builders_produce_expected_urls() {
         assert_eq!(
-            verify_link("interdim.net", "abc"),
-            "https://interdim.net/verify?token=abc"
+            verify_link("proletariat.tech", "abc"),
+            "https://proletariat.tech/verify?token=abc"
         );
         assert_eq!(
-            reset_link("interdim.net", "abc"),
-            "https://interdim.net/reset?token=abc"
+            reset_link("proletariat.tech", "abc"),
+            "https://proletariat.tech/reset?token=abc"
         );
     }
 
@@ -556,7 +556,7 @@ mod tests {
         // pending token for the email.)
         let mut conn = cp.conn().await.unwrap();
         let keys: Vec<String> = redis::cmd("KEYS")
-            .arg("cococoir:verify:*")
+            .arg("fortress:verify:*")
             .query_async(&mut conn)
             .await
             .unwrap();

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir vmtest-wiring check.
+# fortress vmtest-wiring check.
 #
 # L1: pure option-tree evaluation against the *actual* vmtest
 # nixosConfiguration. No VM, no QEMU. Catches the regression
@@ -10,7 +10,7 @@
 #
 # Why evaluate vmtest instead of a synthetic config: the bug
 # this guards against lived in the composition of vmtest.nix
-# with the cococoir modules, not in any single module. Only
+# with the fortress modules, not in any single module. Only
 # the real composition is a faithful tripwire.
 {pkgs, vmtestConfig}:
 let
@@ -22,7 +22,7 @@ let
   # would disable a service with no trace — assert they all render.
   dashboardServices = ["jellyfin" "cryptpad" "radarr" "sonarr" "lidarr" "prowlarr"];
   dashboardServiceEnabled = name:
-    vmtestConfig.cococoir.services.${name}.enable or false;
+    vmtestConfig.fortress.services.${name}.enable or false;
 
   # ── jellyfin OIDC ────────────────────────────────────────────
   jellarrCfg = vmtestConfig.services.jellarr;
@@ -37,7 +37,7 @@ let
   dexProvider = lib.findFirst (p: p.name == "dex") null cpSsoProviders;
   dexStaticClients = vmtestConfig.services.dex.settings.staticClients or [];
   cryptpadDexClient = lib.findFirst (c: c.id == "cryptpad") null dexStaticClients;
-  cryptpadSecretSvc = vmtestConfig.systemd.services.cococoir-cryptpad-oidc-secret;
+  cryptpadSecretSvc = vmtestConfig.systemd.services.fortress-cryptpad-oidc-secret;
   cryptpadSvcEnv = vmtestConfig.systemd.services.cryptpad.serviceConfig.Environment or [];
   hasCryptpadConfigEnv = lib.any (e: lib.hasPrefix "CRYPTPAD_CONFIG=" e) cryptpadSvcEnv;
   hasCryptpadSSOConfigEnv = lib.any (e: lib.hasPrefix "CRYPTPAD_SSO_CONFIG=" e) cryptpadSvcEnv;
@@ -49,7 +49,7 @@ let
   # challenges traverse the tunnel. If caddy.service doesn't order
   # after the client, a fresh boot races the tunnel and ACME backoff
   # leaves domains certless (auth/cryptpad incident, 2026-08-28).
-  caddyOrdersAfterClient = builtins.elem "cococoir-client.service"
+  caddyOrdersAfterClient = builtins.elem "fortress-client.service"
     (vmtestConfig.systemd.services.caddy.after or []);
 
   # ── LAN access plane (ADR-028) ───────────────────────────────
@@ -58,11 +58,11 @@ let
   # (hardcoded `bind 127.0.0.1 ::1` again), LAN traffic hits a
   # closed port — correct DNS, dead ingress, invisible in DNS-only
   # checks. Assert BOTH sides render, from the real composition.
-  lanAddress = vmtestConfig.cococoir.network.lanAddress;
-  lanDnsEnabled = vmtestConfig.cococoir.network.dns.enable;
+  lanAddress = vmtestConfig.fortress.network.lanAddress;
+  lanDnsEnabled = vmtestConfig.fortress.network.dns.enable;
   dnsmasqAddresses = vmtestConfig.services.dnsmasq.settings.address or [];
   enabledServiceCfgs = lib.filterAttrs (_: s: s.enable or false)
-    vmtestConfig.cococoir.services;
+    vmtestConfig.fortress.services;
   enabledDomains = lib.mapAttrsToList (_: s: s.domain) enabledServiceCfgs;
   everyDomainAnswered = builtins.all
     (d: builtins.elem "/${d}/${lanAddress}" dnsmasqAddresses)
@@ -107,10 +107,10 @@ assert lib.assertMsg (dexProvider != null && dexProvider.url != null)
   "vmtest-wiring: cryptpad OIDC provider URL is null";
 assert lib.assertMsg (cryptpadDexClient != null)
   "vmtest-wiring: dex staticClients has no 'cryptpad' entry — client registration was dropped";
-assert lib.assertMsg (cryptpadDexClient != null && builtins.elem "https://${vmtestConfig.cococoir.services.cryptpad.domain}/ssoauth" (cryptpadDexClient.redirectURIs or []))
+assert lib.assertMsg (cryptpadDexClient != null && builtins.elem "https://${vmtestConfig.fortress.services.cryptpad.domain}/ssoauth" (cryptpadDexClient.redirectURIs or []))
   "vmtest-wiring: cryptpad dex client redirect URI mismatch";
 assert lib.assertMsg (cryptpadSecretSvc.wantedBy != null && builtins.elem "multi-user.target" cryptpadSecretSvc.wantedBy)
-  "vmtest-wiring: cococoir-cryptpad-oidc-secret has no boot activation";
+  "vmtest-wiring: fortress-cryptpad-oidc-secret has no boot activation";
 assert lib.assertMsg hasCryptpadConfigEnv
   "vmtest-wiring: cryptpad.service has no CRYPTPAD_CONFIG env var — the oidc config is not wired";
 assert lib.assertMsg hasCryptpadSSOConfigEnv
@@ -120,11 +120,11 @@ assert lib.assertMsg cryptpadPkgHasSSO
 
 # ── ingress ordering assertion ────────────────────────────────
 assert lib.assertMsg caddyOrdersAfterClient
-  "vmtest-wiring: caddy.service does not order after cococoir-client.service — fresh boots race the tunnel and ACME backoff leaves customer domains certless";
+  "vmtest-wiring: caddy.service does not order after fortress-client.service — fresh boots race the tunnel and ACME backoff leaves customer domains certless";
 
 # ── LAN access plane assertions (ADR-028) ─────────────────────
 assert lib.assertMsg (lanAddress == "10.0.2.15" && lanDnsEnabled)
-  "vmtest-wiring: vmtest does not set cococoir.network.lanAddress — the LAN DNS plane is not exercised by the suite";
+  "vmtest-wiring: vmtest does not set fortress.network.lanAddress — the LAN DNS plane is not exercised by the suite";
 assert lib.assertMsg everyDomainAnswered
   "vmtest-wiring: dnsmasq does not answer every enabled service domain with the LAN address (got: ${builtins.toJSON dnsmasqAddresses}) — the LAN DNS enumeration dropped a service";
 assert lib.assertMsg canaryAnswered
@@ -134,12 +134,12 @@ assert lib.assertMsg (vmtestConfig.services.dnsmasq.resolveLocalQueries == false
 assert lib.assertMsg everyVhostBindsLan
   "vmtest-wiring: an enabled vhost does not bind the LAN address — dnsmasq answers with a closed port (correct DNS, dead ingress)";
 {
-  vmtest-wiring = pkgs.runCommand "cococoir-vmtest-wiring" {} ''
+  vmtest-wiring = pkgs.runCommand "fortress-vmtest-wiring" {} ''
     cat > $out <<EOF
-    cococoir vmtest-wiring: PASS
+    fortress vmtest-wiring: PASS
       jellyfin: OIDC wired (plugins + branding), jellarr boot-activated
       cryptpad: OIDC wired (SSO enabled + enforced, dex client registered, secret oneshot boot-activated, CRYPTPAD_CONFIG env set, SSO plugin bundled in package)
-      ingress: caddy.service orders after cococoir-client.service (ACME over the tunnel)
+      ingress: caddy.service orders after fortress-client.service (ACME over the tunnel)
       LAN DNS: dnsmasq answers every enabled service domain with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
     EOF
   '';

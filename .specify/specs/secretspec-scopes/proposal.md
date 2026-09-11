@@ -2,9 +2,9 @@
 
 ## Premise
 
-Today `secretspec.toml` is consumed only by the `cococoir-edge` Rust binary
+Today `secretspec.toml` is consumed only by the `fortress-edge` Rust binary
 (`declare_secrets!`, typed loader, `[profiles.default]`), resolved at runtime
-from `/etc/cococoir/edge.env` on the box. The provisioning scripts
+from `/etc/fortress/edge.env` on the box. The provisioning scripts
 (`provision-edge.sh`) run on the operator's laptop and source their secrets
 ad-hoc: the Hetzner token from `HCLOUD_TOKEN` / a file, the admin key generated
 inside the script. They never touch secretspec.
@@ -68,9 +68,9 @@ public keys.
   tofu render. The edge box keeps its throwaway-key `wg0.conf` bootstrap (the
   binary owns the real key at runtime — that's not provisioning cruft).
 - **One toml, real file in the crate, symlinked at repo root.** The real
-  `secretspec.toml` lives at `packages/cococoir/secretspec.toml` (the crate
-  moved from `nix/packages/cococoir/` — see T0); the repo root has a symlink
-  `secretspec.toml -> packages/cococoir/secretspec.toml`. The real file must
+  `secretspec.toml` lives at `packages/fortress/secretspec.toml` (the crate
+  moved from `nix/packages/fortress/` — see T0); the repo root has a symlink
+  `secretspec.toml -> packages/fortress/secretspec.toml`. The real file must
   stay in the crate: `declare_secrets!` reads it at compile time from
   `CARGO_MANIFEST_DIR`, and in the Nix build that is a **store path** — a
   symlink there resolves to `/nix/...` (dangling, tested), while a real file
@@ -142,14 +142,14 @@ the profile per consumer per the secretspec scopes spec.
 
 ## Tasks
 
-### T0: Move the crate to `packages/cococoir/` + establish the toml layout
+### T0: Move the crate to `packages/fortress/` + establish the toml layout
 **Depends on:** none
 **Verification:** `nix flake check` (edge systemConfig builds); `cargo test`.
 **Files:** repo-wide (flake, devenv, doc-refs, scripts, comments)
-- [x] DONE 2026-08-22 (operator moved `nix/packages/cococoir` →
-      `packages/cococoir` + committed root toml; agent corrected the
+- [x] DONE 2026-08-22 (operator moved `nix/packages/fortress` →
+      `packages/fortress` + committed root toml; agent corrected the
       symlink to real-file-in-crate + root-symlink, removed the orphaned
-      `nix/packages/cococoir/secretspec.toml`, fixed stale paths, added
+      `nix/packages/fortress/secretspec.toml`, fixed stale paths, added
       `apps.secretspec` (devenv's 0.18 lacked the `file` backend), removed
       `secretspec` from devenv packages. Edge systemConfig **builds** —
       proves `declare_secrets!` resolves the real toml in the store.)
@@ -159,7 +159,7 @@ the profile per consumer per the secretspec scopes spec.
 **Verification:** `secretspec export -P provisioning -S token` and `-S provision`
 resolve the right subsets from a scratch file store; `[profiles.default]`
 unchanged.
-**Files:** `packages/cococoir/secretspec.toml`
+**Files:** `packages/fortress/secretspec.toml`
 - [x] DONE 2026-08-22 — scopes resolve correct subsets from a scratch store;
       ADMIN_KEY generates once and persists stably; `[profiles.default]`
       byte-identical. Note: every CLI call needs `--reason` (require_reason

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `cococoir-client` entry point — the customer box's single process.
+//! `fortress-client` entry point — the customer box's single process.
 //!
 //! Runs the L4 forwarder (receiving traffic from the edge) and the
 //! embedded config dashboard as concurrent tasks on one shared
-//! shutdown signal. `cococoir-edge` has its own control-plane main in
-//! the `cococoir-controlplane` crate, so this module is client-only.
+//! shutdown signal. `fortress-edge` has its own control-plane main in
+//! the `fortress-controlplane` crate, so this module is client-only.
 //!
 //! Flow: parse flags, init logger, read the JSON config, build the
 //! forwarder, open the dashboard db + config path + auth mode, start
@@ -20,9 +20,9 @@ use tracing::span;
 
 use crate::dashboard;
 use crate::tunnel::{self, TunnelConfig};
-use cococoir_core::forwarder::{Config, Forward, Forwarder};
-use cococoir_core::health::{HealthServer, StatusFunc};
-use cococoir_core::logger;
+use fortress_core::forwarder::{Config, Forward, Forwarder};
+use fortress_core::health::{HealthServer, StatusFunc};
+use fortress_core::logger;
 
 /// The on-disk config file shape. Matches the Go binaries'
 /// `configFile` struct; `deny_unknown_fields` rejects a typo'd key
@@ -58,7 +58,7 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
         }
     };
     logger::init(flags.log_format);
-    let span = span!(tracing::Level::INFO, "cococoir", component = component);
+    let span = span!(tracing::Level::INFO, "fortress", component = component);
     let _entered = span.enter();
 
     let data = match std::fs::read(&flags.config_path) {
@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn parse_flags_defaults() {
-        let flags = parse_flag_args("cococoir-edge", "/etc/cococoir-edge.json", args(&[])).unwrap();
-        assert_eq!(flags.config_path, "/etc/cococoir-edge.json");
+        let flags = parse_flag_args("fortress-edge", "/etc/fortress-edge.json", args(&[])).unwrap();
+        assert_eq!(flags.config_path, "/etc/fortress-edge.json");
         assert_eq!(flags.log_format, logger::Format::Text);
         assert_eq!(flags.health_addr, "127.0.0.1:9090");
     }
@@ -247,8 +247,8 @@ mod tests {
     #[test]
     fn parse_flags_custom() {
         let flags = parse_flag_args(
-            "cococoir-edge",
-            "/etc/cococoir-edge.json",
+            "fortress-edge",
+            "/etc/fortress-edge.json",
             args(&["-config", "/tmp/x.json", "-log-format", "json", "-health-addr", "0.0.0.0:9090"]),
         )
         .unwrap();
@@ -259,13 +259,13 @@ mod tests {
 
     #[test]
     fn parse_flags_rejects_unknown_flag() {
-        let err = parse_flag_args("cococoir-edge", "/etc/cococoir-edge.json", args(&["-bogus", "1"])).unwrap_err();
+        let err = parse_flag_args("fortress-edge", "/etc/fortress-edge.json", args(&["-bogus", "1"])).unwrap_err();
         assert!(err.contains("unknown flag"));
     }
 
     #[test]
     fn parse_flags_rejects_unknown_format() {
-        let err = parse_flag_args("cococoir-edge", "/etc/cococoir-edge.json", args(&["-log-format", "yaml"])).unwrap_err();
+        let err = parse_flag_args("fortress-edge", "/etc/fortress-edge.json", args(&["-log-format", "yaml"])).unwrap_err();
         assert!(err.contains("unknown format"));
     }
 

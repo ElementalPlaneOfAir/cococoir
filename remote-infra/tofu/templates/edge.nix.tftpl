@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir edge box — system-manager config.
+# Fortress edge box — system-manager config.
 #
 # Rendered by tofu from remote-infra/tofu/main.tf — do not hand-edit.
 # The addressing (edge_ipv6_subnet, wg_subnet, wg_listen_port) flows
@@ -9,14 +9,14 @@
 #
 # The edge runs on a stock Debian image (Hetzner), so disk + networking
 # + NIC are handled by the OS out of the box. system-manager applies
-# only what cococoir needs: the merged edge binary, its systemd unit,
+# only what fortress needs: the merged edge binary, its systemd unit,
 # local Redis, WireGuard, and the operator SSH key. No disko, no
 # fstab, no bootloader — nothing that can break the boot.
 {
   config,
   lib,
   pkgs,
-  cococoirEdgePkg,
+  fortressEdgePkg,
   ...
 }: {
   nixpkgs.hostPlatform = "x86_64-linux";
@@ -37,14 +37,14 @@
     '';
     # Redis config: AOF + appendfsync always (ADR-025 deliberate
     # durability, not default).
-    "cococoir/redis.conf".text = ''
+    "fortress/redis.conf".text = ''
       bind 127.0.0.1
       port 6379
       appendonly yes
       appendfsync always
       dir /var/lib/redis
     '';
-    # Caddy fronts the edge's own control plane at https://interdim.net
+    # Caddy fronts the edge's own control plane at https://proletariat.tech
     # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
     # handler on 0.0.0.0:8081 — the control-plane API plus the /healthz
     # /readyz /status endpoints (the edge serves both from one poem app),
@@ -54,7 +54,7 @@
     # edge's own addresses (IPv4 + ::1) so it never shadows the
     # forwarder's customer /128 listeners (e.g. ::3:80/443).
     "caddy/Caddyfile".text = ''
-      interdim.net {
+      proletariat.tech {
         bind ${edge_ipv4} ${edge_primary_v6}
         reverse_proxy 127.0.0.1:8081
       }
@@ -63,7 +63,7 @@
 
   # ── WireGuard server ─────────────────────────────────────────────
   # wg-quick brings wg0 up; the interface's real identity (its private
-  # key) is the SHARED store-held key (ADR-029): cocococoir-edge reads
+  # key) is the SHARED store-held key (ADR-029): cofortress-edge reads
   # WG_PRIVATE_KEY from edge.env (identical on both nodes) and installs
   # it into wg0 on boot. wg0.conf carries only a throwaway key so the
   # interface can come up; PEERS are added at runtime by the control
@@ -71,7 +71,7 @@
   # port are assembled by provision-edge.sh from tofu's single source of
   # truth.
   systemd.services.wg-quick-wg0 = {
-    description = "WireGuard tunnel for cococoir edge";
+    description = "WireGuard tunnel for fortress edge";
     enable = true;
     after = ["network-online.target"];
     wants = ["network-online.target"];
@@ -86,12 +86,12 @@
 
   # ── Redis (control-plane store) ──────────────────────────────────
   systemd.services.redis = {
-    description = "Redis for cococoir control plane";
+    description = "Redis for fortress control plane";
     enable = true;
     wantedBy = ["multi-user.target"];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "$${pkgs.redis}/bin/redis-server /etc/cococoir/redis.conf";
+      ExecStart = "$${pkgs.redis}/bin/redis-server /etc/fortress/redis.conf";
       Restart = "on-failure";
       RestartSec = 5;
       # redis.conf sets `dir /var/lib/redis`; StateDirectory creates it
@@ -103,12 +103,12 @@
   };
 
   # ── Caddy (public HTTPS for the control plane) ──────────────────
-  # Serves https://interdim.net over the edge's own IPv4 + ::1 and
+  # Serves https://proletariat.tech over the edge's own IPv4 + ::1 and
   # proxies to the control-plane API. Binds only the edge's addresses
   # (per the Caddyfile) so it never collides with the forwarder's
   # customer /128 listeners. StateDirectory persists ACME certs/state.
   systemd.services.caddy = {
-    description = "Caddy reverse proxy — cococoir control plane at https://interdim.net";
+    description = "Caddy reverse proxy — fortress control plane at https://proletariat.tech";
     enable = true;
     after = ["network-online.target"];
     wants = ["network-online.target"];
@@ -123,15 +123,15 @@
   };
 
   # ── The merged edge: forwarder + control plane ──────────────────
-  # Unit name is `edge-control-plane`, NOT `cococoir-edge`: the systemd
-  # NAME PREFIX `cococoir-edge` is corrupted on the edge box — systemd
+  # Unit name is `edge-control-plane`, NOT `fortress-edge`: the systemd
+  # NAME PREFIX `fortress-edge` is corrupted on the edge box — systemd
   # starts such a unit at boot but un-tracks it on the first daemon-reload
   # (is-active/cat/start all report "not found"), so no system-manager
   # switch could ever restart it. Verified: identical unit content loads
-  # fine under any other name (e.g. zzz-edge-a), only `cococoir-edge*`
-  # is refused. A non-`cococoir-edge` name sidesteps it.
+  # fine under any other name (e.g. zzz-edge-a), only `fortress-edge*`
+  # is refused. A non-`fortress-edge` name sidesteps it.
   systemd.services.edge-control-plane = {
-    description = "Cococoir edge — forwarder + control plane";
+    description = "Fortress edge — forwarder + control plane";
     enable = true;
     after = ["network-online.target" "wg-quick-wg0.service" "redis.service"];
     wants = ["network-online.target" "wg-quick-wg0.service" "redis.service"];
@@ -142,17 +142,17 @@
     path = [ pkgs.wireguard-tools ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "$${cococoirEdgePkg}/bin/cococoir-edge --subnet ${edge_ipv6_subnet} --wg-subnet ${wg_subnet} --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
+      ExecStart = "$${fortressEdgePkg}/bin/fortress-edge --subnet ${edge_ipv6_subnet} --wg-subnet ${wg_subnet} --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081";
       # The edge secrets (DNS zone + token, root domain, admin key
-      # hash) are resolved by the secretspec SDK from /etc/cococoir/
+      # hash) are resolved by the secretspec SDK from /etc/fortress/
       # (secretspec.toml + edge.env, written by provision-edge.sh, mode
-      # 0600, never in the repo). WorkingDirectory=/etc/cococoir so the
+      # 0600, never in the repo). WorkingDirectory=/etc/fortress so the
       # SDK's CWD-walk finds secretspec.toml; EnvironmentFile lands the
       # dotenv values in the process env as a belt-and-suspenders. The
       # service fails at boot — not on first signup — if either file is
       # missing (SECRETS is a panic-on-fail LazyLock).
-      WorkingDirectory = "/etc/cococoir";
-      EnvironmentFile = "/etc/cococoir/edge.env";
+      WorkingDirectory = "/etc/fortress";
+      EnvironmentFile = "/etc/fortress/edge.env";
       Restart = "on-failure";
       RestartSec = 5;
       # Runs as root to bind privileged ports (80, 443) with

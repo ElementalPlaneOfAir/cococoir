@@ -1,10 +1,10 @@
 # Project Plan
 
-Project repo: https://github.com/ElementalPlaneOfAir/cococoir
+Project repo: https://github.com/ElementalPlaneOfAir/fortress
 
 ## Nicole's Background
 
-This project is born out of my homelab setup at /home/nicole/cococoir. Our previous startup produced AI enabled tools for extracting government data, and we predominately targeted companies that interface w/ utility companies, and nonprofits that do advocacy work with state PUC's. It produced a ton of really cool technology, but really faltered on the consumer demand angle, mostly because 1) it's really good to sell to customers who have money, and 2) I sucked at running a business when I started it 2 years ago. So this is a newer thing that is hopefully going to fare better in that area.
+This project is born out of my homelab setup at /home/nicole/fortress. Our previous startup produced AI enabled tools for extracting government data, and we predominately targeted companies that interface w/ utility companies, and nonprofits that do advocacy work with state PUC's. It produced a ton of really cool technology, but really faltered on the consumer demand angle, mostly because 1) it's really good to sell to customers who have money, and 2) I sucked at running a business when I started it 2 years ago. So this is a newer thing that is hopefully going to fare better in that area.
 
 ## What we are building and why
 

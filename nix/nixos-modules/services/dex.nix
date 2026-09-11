@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/dex — Dex OIDC provider.
+# fortress/services/dex — Dex OIDC provider.
 #
 # 3-option contract (infra, no per-tenant bucket):
 #   enable  — opt-in toggle (always-on; the platform requires OIDC)
@@ -13,12 +13,12 @@
 #     `journald.units` options
 #   - assertions (public → caddy, domain set)
 #   - the Caddy vhost with the right `tls` directive from
-#     cococoir.tls and the right `reverse_proxy` / 403
+#     fortress.tls and the right `reverse_proxy` / 403
 #
 # This module wraps nixpkgs' services.dex. The nixpkgs module
 # handles the systemd unit, config YAML generation, and secret-file
 # substitution via replace-secret. This module adds:
-#   - the cococoir contract (domain / port / Caddy)
+#   - the fortress contract (domain / port / Caddy)
 #   - SQLite persistence under StateDirectory
 #   - a DynamicUser override so the DB is writable
 #
@@ -33,9 +33,9 @@
   ...
 }:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  mkFortressService = import ./_contract.nix {inherit lib config pkgs options;};
 in
-mkCococoirService {
+mkFortressService {
   name = "dex";
   description = "Dex OIDC provider";
   defaultEnable = true;
@@ -47,7 +47,7 @@ mkCococoirService {
       enable = true;
       settings = lib.mkMerge [
         {
-          issuer = "https://${config.cococoir.services.dex.domain}/dex";
+          issuer = "https://${config.fortress.services.dex.domain}/dex";
           web.http = "127.0.0.1:${toString cfg.port}";
           storage.type = "sqlite3";
           storage.config.file = "/var/lib/dex/dex.db";

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 {
-  description = "Cococoir v2: NixOS + btrfs + services for the home-server product. AGPL-3.0-or-later.";
+  description = "Fortress v2: NixOS + btrfs + services for the home-server product. AGPL-3.0-or-later.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -38,7 +38,7 @@
 
   outputs = inputs: let
     # nixpkgs with the crane flake injected as an attribute, so any
-    # `pkgs.callPackage ./nix/packages/cococoir {}` (in the NixOS
+    # `pkgs.callPackage ./nix/packages/fortress {}` (in the NixOS
     # modules, the tests, the edge systemConfig) resolves the `crane`
     # arg it now needs, without threading the flake input through every
     # call site.
@@ -83,19 +83,19 @@
 
       # The edge box is managed by system-manager on a stock Debian
       # image (not NixOS). systemConfigs.edge is the system-manager
-      # config; the merged cococoir-edge binary is injected via
+      # config; the merged fortress-edge binary is injected via
       # extraSpecialArgs. Deploy with:
       #   nix run .#system-manager -- switch --flake .#edge
       flake.systemConfigs.edge = inputs.system-manager.lib.makeSystemConfig {
         modules = [./remote-infra/system-manager/edge.nix];
         specialArgs = {
-          cococoirEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/cococoir {
+          fortressEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/fortress {
             crane = inputs.crane;
           };
         };
       };
 
-      # Manual v2 dev VM: every cococoir service under test, each
+      # Manual v2 dev VM: every fortress service under test, each
       # behind its own Caddy vhost in the `vmtest.local`
       # cookie-jar. Today that includes Jellyfin and Dex;
       # nextcloud, gitea, etc. land here as the service modules

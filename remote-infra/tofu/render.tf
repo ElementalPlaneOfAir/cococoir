@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir remote infra — render the machine configs.
+# Fortress remote infra — render the machine configs.
 #
 # The configs are RENDERED from templates so the deployed addressing
 # (edge IPv4, /64, customer /128, WG subnet, WG listen port) has

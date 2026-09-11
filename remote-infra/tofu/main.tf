@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Cococoir remote infra — the edge's addressing.
+# Fortress remote infra — the edge's addressing.
 #
 # Per-customer addresses live on a cluster-owned Hetzner Floating IPv6
 # /64 (ADR-029): customer /128s carve from it, and a shared Floating
@@ -23,7 +23,7 @@
 # is still NixOS, rendered from templates below. IPs and the WG subnet
 # flow from tofu so there is exactly one source of truth for the
 # deployed addressing. WG identities are owned at runtime by the
-# cococoir-edge binary (self-generates + serves its public key at
+# fortress-edge binary (self-generates + serves its public key at
 # GET /pubkey) — no key material is provisioned or stored here.
 
 locals {
@@ -43,7 +43,7 @@ locals {
 }
 
 resource "hcloud_ssh_key" "operator" {
-  name       = "cococoir-operator"
+  name       = "fortress-operator"
   public_key = var.ssh_public_key
 }
 
@@ -53,13 +53,13 @@ resource "hcloud_ssh_key" "operator" {
 # hands out a routed /64 (customers carve /128s from it); the IPv4 float
 # is the one universal address (WG dial-out + control-plane website).
 resource "hcloud_floating_ip" "cluster_v6" {
-  name          = "cococoir-cluster-v6"
+  name          = "fortress-cluster-v6"
   type          = "ipv6"
   home_location = var.location
 }
 
 resource "hcloud_floating_ip" "shared_v4" {
-  name          = "cococoir-shared-v4"
+  name          = "fortress-shared-v4"
   type          = "ipv4"
   home_location = var.location
 }

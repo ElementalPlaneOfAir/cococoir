@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/services/radarr — Movie management.
+# fortress/services/radarr — Movie management.
 #
 # 3-option contract (metadata-only service, no bucket):
 #   enable  — opt-in toggle
@@ -14,9 +14,9 @@
   ...
 }:
 let
-  mkCococoirService = import ./_contract.nix {inherit lib config pkgs options;};
+  mkFortressService = import ./_contract.nix {inherit lib config pkgs options;};
 in
-mkCococoirService {
+mkFortressService {
   name = "radarr";
   description = "Radarr movie management";
   defaultPort = 7878;

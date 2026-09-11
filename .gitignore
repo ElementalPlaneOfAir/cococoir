@@ -20,7 +20,7 @@ terraform.tfvars
 *.tfplan
 
 # Runtime state — these belong in deployment repos (amon-sul, tunnel),
-# never in the cococoir source tree.
+# never in the fortress source tree.
 sops/
 vars/
 inventory.json

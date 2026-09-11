@@ -11,7 +11,7 @@
 //! comments, formatting, and every other binding survive byte-for-byte.
 //!
 //! The parser is shape-agnostic: it finds values by attribute path
-//! (`cococoir.services.jellyfin.enable`) inside the lossless CST from
+//! (`fortress.services.jellyfin.enable`) inside the lossless CST from
 //! `rnix`. The [`ConfigSchema`] decides which paths are "known" — when the
 //! config language changes, only the schema's path list changes.
 
@@ -376,8 +376,8 @@ impl Default for ConfigSchema {
     fn default() -> Self {
         Self {
             hostname: vec!["networking", "hostName"],
-            root_domain: vec!["cococoir", "baseDomain"],
-            services_root: vec!["cococoir", "services"],
+            root_domain: vec!["fortress", "baseDomain"],
+            services_root: vec!["fortress", "services"],
             users_root: vec!["users", "users"],
         }
     }
@@ -446,14 +446,14 @@ impl CocoUser {
 /// not covered by a known span is "extra config" and survives any edit
 /// because [`NixConfigFile`] splices, never regenerates.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CococoirConfig {
+pub struct FortressConfig {
     pub hostname: Option<String>,
     pub root_domain: Option<String>,
     pub services_enabled: BTreeMap<&'static str, bool>,
     pub users: BTreeMap<String, CocoUser>,
 }
 
-impl CococoirConfig {
+impl FortressConfig {
     /// Extract the known fields from a file using `schema`'s paths.
     pub fn extract(file: &NixConfigFile, schema: &ConfigSchema) -> Self {
         let hostname = file
@@ -540,7 +540,7 @@ in {
   imports = [ (import ../nix/nixos-modules) ];
 
   # The platform domain. Services derive subdomains from it.
-  cococoir = {
+  fortress = {
     baseDomain = "vmtest.local";
     services.jellyfin = {
       enable = true;
@@ -573,7 +573,7 @@ in {
 
     #[test]
     fn rejects_malformed_input_without_panicking() {
-        for garbage in ["", "{", "}{", "cococoir = ", "not nix at all !!!", "}"] {
+        for garbage in ["", "{", "}{", "fortress = ", "not nix at all !!!", "}"] {
             assert!(NixConfigFile::parse(garbage).is_err(), "should reject {garbage:?}");
         }
     }
@@ -589,17 +589,17 @@ in {
         assert_eq!(hostname.raw, "\"vmtest\"");
 
         let domain = file
-            .find_attrpath(&["cococoir", "baseDomain"])
+            .find_attrpath(&["fortress", "baseDomain"])
             .expect("domain present");
         assert_eq!(domain.value, NixValue::Str("vmtest.local".to_string()));
 
         let jellyfin = file
-            .find_attrpath(&["cococoir", "services", "jellyfin", "enable"])
+            .find_attrpath(&["fortress", "services", "jellyfin", "enable"])
             .expect("jellyfin enable present");
         assert_eq!(jellyfin.value, NixValue::Bool(true));
 
         let radarr = file
-            .find_attrpath(&["cococoir", "services", "radarr", "enable"])
+            .find_attrpath(&["fortress", "services", "radarr", "enable"])
             .expect("radarr enable present");
         assert_eq!(radarr.value, NixValue::Bool(false));
 
@@ -615,9 +615,9 @@ in {
     #[test]
     fn find_missing_path_is_none() {
         let file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        assert!(file.find_attrpath(&["cococoir", "nope"]).is_none());
+        assert!(file.find_attrpath(&["fortress", "nope"]).is_none());
         assert!(file.find_attrpath(&["nope"]).is_none());
-        assert!(file.find_attrpath(&["cococoir", "services", "sonarr", "enable"]).is_none());
+        assert!(file.find_attrpath(&["fortress", "services", "sonarr", "enable"]).is_none());
         assert!(file.find_attrpath(&[]).is_none());
     }
 
@@ -625,12 +625,12 @@ in {
     fn path_landing_mid_expression_is_none() {
         let file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
         assert!(
-            file.find_attrpath(&["cococoir", "services", "jellyfin"])
+            file.find_attrpath(&["fortress", "services", "jellyfin"])
                 .is_some(),
             "an attrset at a path is still a value"
         );
         assert!(
-            file.find_attrpath(&["cococoir", "services", "jellyfin", "enable", "deeper"])
+            file.find_attrpath(&["fortress", "services", "jellyfin", "enable", "deeper"])
                 .is_none(),
             "descending past a scalar value is not found"
         );
@@ -652,7 +652,7 @@ in {
     #[test]
     fn set_replaces_only_the_target_span() {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        file.set_attrpath(&["cococoir", "services", "jellyfin", "enable"], "false")
+        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "false")
             .expect("edit succeeds");
 
         let updated = file.to_source();
@@ -669,7 +669,7 @@ in {
 
         let reparse = NixConfigFile::parse(updated.to_string()).expect("edit stays valid nix");
         let jellyfin = reparse
-            .find_attrpath(&["cococoir", "services", "jellyfin", "enable"])
+            .find_attrpath(&["fortress", "services", "jellyfin", "enable"])
             .expect("still findable");
         assert_eq!(jellyfin.value, NixValue::Bool(false));
     }
@@ -689,8 +689,8 @@ in {
     #[test]
     fn set_missing_path_is_not_found_error() {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        let result = file.set_attrpath(&["cococoir", "nonexistent"], "true");
-        assert!(matches!(result, Err(SetError::NotFound(path)) if path == "cococoir.nonexistent"));
+        let result = file.set_attrpath(&["fortress", "nonexistent"], "true");
+        assert!(matches!(result, Err(SetError::NotFound(path)) if path == "fortress.nonexistent"));
         assert_eq!(file.to_source(), VMTEST_STYLE, "failed edit must not touch the file");
     }
 
@@ -705,15 +705,15 @@ in {
     #[test]
     fn set_then_set_back_round_trips() {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        file.set_attrpath(&["cococoir", "services", "jellyfin", "enable"], "false").unwrap();
-        file.set_attrpath(&["cococoir", "services", "jellyfin", "enable"], "true").unwrap();
+        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "false").unwrap();
+        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "true").unwrap();
         assert_eq!(file.to_source(), VMTEST_STYLE);
     }
 
     #[test]
     fn extract_known_fields() {
         let file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        let config = CococoirConfig::extract(&file, &ConfigSchema::default());
+        let config = FortressConfig::extract(&file, &ConfigSchema::default());
 
         assert_eq!(config.hostname.as_deref(), Some("vmtest"));
         assert_eq!(config.root_domain.as_deref(), Some("vmtest.local"));
@@ -732,7 +732,7 @@ in {
     #[test]
     fn extract_missing_fields_are_none() {
         let file = NixConfigFile::parse("{}").unwrap();
-        let config = CococoirConfig::extract(&file, &ConfigSchema::default());
+        let config = FortressConfig::extract(&file, &ConfigSchema::default());
         assert_eq!(config.hostname, None);
         assert_eq!(config.root_domain, None);
         assert!(config.services_enabled.is_empty());
@@ -769,7 +769,7 @@ in {
             "{ users.users.nicole = { groups = [ \"wheel\" \"storage\" ]; }; }",
         )
         .expect("dotted users parse");
-        let config = CococoirConfig::extract(&file, &ConfigSchema::default());
+        let config = FortressConfig::extract(&file, &ConfigSchema::default());
         let nicole = config.users.get("nicole").expect("nicole present");
         assert!(nicole.groups_declared);
         assert!(nicole.groups.contains("wheel"));

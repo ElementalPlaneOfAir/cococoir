@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Cococoir v2 — Rust workspace, built with crane.
+# Fortress v2 — Rust workspace, built with crane.
 #
 # Three crates, two binaries:
 #   crates/core           — shared L4 forwarder engine (no binaries)
-#   crates/controlplane   — cocococoir-edge (the edge box's single process)
-#   crates/client         — cocococoir-client (forwarder + embedded dashboard)
+#   crates/controlplane   — cofortress-edge (the edge box's single process)
+#   crates/client         — cofortress-client (forwarder + embedded dashboard)
 #
 # Built with crane (github:ipetkov/crane): `buildDepsOnly` compiles the
 # workspace deps once (cached in the store), `buildPackage` recompiles
@@ -22,7 +22,7 @@
 }:
 let
   craneLib = crane.mkLib pkgs;
-  # The workspace root (this file lives at nix/packages/cococoir/, so
+  # The workspace root (this file lives at nix/packages/fortress/, so
   # the root is three levels up). `cleanCargoSource` keeps only what
   # cargo needs (Cargo.toml/lock + src) but drops `secretspec.toml` (an
   # unknown extension) — and `declare_secrets!` reads that toml at
@@ -36,7 +36,7 @@ let
   };
   commonArgs = {
     inherit src;
-    pname = "cococoir";
+    pname = "fortress";
     version = "0.1.0";
     cargoLock = ../../../Cargo.lock;
     # Cap cargo's parallelism so the first full dependency build fits
@@ -58,13 +58,13 @@ let
       inherit cargoLock;
 
       # buildPackage names binaries after each src/bin basename; the
-      # bins are already `cococoir-edge` and `cococoir-client`, so the
+      # bins are already `fortress-edge` and `fortress-client`, so the
       # systemd units find a single, predictable name with no rename.
       meta = with lib; {
-        description = "Cococoir v2 — L4 TCP/UDP forwarder (edge and client binaries)";
-        homepage = "https://github.com/ElementalPlaneOfAir/cococoir";
+        description = "Fortress v2 — L4 TCP/UDP forwarder (edge and client binaries)";
+        homepage = "https://github.com/ElementalPlaneOfAir/fortress";
         license = licenses.agpl3Plus;
-        mainProgram = "cococoir-edge";
+        mainProgram = "fortress-edge";
         platforms = platforms.linux;
       };
     }

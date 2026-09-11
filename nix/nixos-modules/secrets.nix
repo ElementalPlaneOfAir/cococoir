@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# cococoir/secrets — the platform's sops-nix secret inventory.
+# fortress/secrets — the platform's sops-nix secret inventory.
 #
 # The customer-facing surface is one option:
 #
-#   cococoir.secrets.sopsFile = ./secrets.yaml;
+#   fortress.secrets.sopsFile = ./secrets.yaml;
 #
 # When set, the customer is expected to import sops-nix and
 # declare `sops.secrets.<key>` for each key in the inventory
@@ -14,7 +14,7 @@
 # options on each service from `config.sops.secrets.<key>.path`.
 #
 # Why not auto-wire? The auto-wiring pattern (this module
-# reading `config.cococoir.secrets.sopsFile` in its `config`
+# reading `config.fortress.secrets.sopsFile` in its `config`
 # block to conditionally declare `sops.secrets.<key>` and
 # wire the *File options) creates an evaluation cycle in
 # the NixOS module system — the gate depends on the same
@@ -56,7 +56,7 @@
         at build time.
       '';
     };
-    "cococoir-admin-password-hash" = {
+    "fortress-admin-password-hash" = {
       owner = "root";
       group = "root";
       mode = "0400";
@@ -64,18 +64,18 @@
         A bcrypt hash (cost >= 10) of the box's dashboard admin
         password — the control plane that edits global settings
         and users. The client service loads it via
-        `services.cococoir-client.adminPasswordEnvFile` as
-        `COCOCOIR_ADMIN_PASSWORD_HASH`; without it the dashboard
+        `services.fortress-client.adminPasswordEnvFile` as
+        `FORTRESS_ADMIN_PASSWORD_HASH`; without it the dashboard
         runs in Dev mode (no auth), which must never be the case
         on a reachable box. Wire a sops template rendering
-        `COCOCOIR_ADMIN_PASSWORD_HASH=''${cococoir-admin-password-hash}`
+        `FORTRESS_ADMIN_PASSWORD_HASH=''${fortress-admin-password-hash}`
         to this secret for T7.
       '';
     };
   };
 in
 {
-  options.cococoir.secrets.sopsFile = lib.mkOption {
+  options.fortress.secrets.sopsFile = lib.mkOption {
     type = lib.types.nullOr lib.types.path;
     default = null;
     example = "./secrets.yaml";
@@ -84,7 +84,7 @@ in
       secrets. Set by the customer in their config.nix. When
       non-null, the customer also imports sops-nix
       (`sops-nix.nixosModules.sops`) and wires the *File
-      options on each cococoir service from
+      options on each fortress service from
       `config.sops.secrets.<key>.path`. See the inventory
       below for the list of keys. The `nix run .#init` tool
       (v2.8) generates the YAML with random values for every
@@ -98,11 +98,11 @@ in
   };
 
   # The inventory is exposed for tooling (`nix eval
-  # .#nixosConfigurations.<x>.config.cococoir.secrets._inventory`).
+  # .#nixosConfigurations.<x>.config.fortress.secrets._inventory`).
   # Internal — customers do not set or read this; the
   # `nix run .#init` / `nix run .#add-secret` tools are the
   # customer-facing interface.
-  options.cococoir.secrets._inventory = lib.mkOption {
+  options.fortress.secrets._inventory = lib.mkOption {
     type = lib.types.attrsOf lib.types.attrs;
     default = inventory;
     internal = true;
