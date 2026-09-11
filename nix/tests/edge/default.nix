@@ -31,8 +31,9 @@
 #     customer box forwarder, and the local HTTP handoff.
 #   - DNS is throwaway (non-fatal): signup's AAAA upsert + the reconcile
 #     loop fail loudly and are logged; they cannot take the edge down.
-#   - Redis is nixpkgs `services.redis`, not the edge.nix custom AOF
-#     unit; the edge connects to the same 127.0.0.1:6379 either way.
+#   - The coordination store is nixpkgs `services.redis` standing in
+#     for the external managed store (ADR-029: prod has no local redis
+#     unit); the edge connects to the same 127.0.0.1:6379 either way.
 #
 # The L1 tripwire (vmtest-wiring) and L0 unit tests cover wiring and the
 # forwarder in isolation; this test is the only check that proves the
@@ -66,6 +67,7 @@ let
     ROOT_DOMAIN = { description = "Root domain", required = true }
     ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
     WG_PRIVATE_KEY = { description = "Shared edge wg0 private key", required = true }
+    REDIS_URL = { description = "Shared external coordination store URL", required = true }
   '';
   edgeEnv = ''
     DNS_ZONE_ID=test-zone
@@ -74,6 +76,7 @@ let
     ROOT_DOMAIN=edge-test.local
     ADMIN_KEY_HASH=944650a7cd0f9e14d5c4fb15edbffb7fa45fb9ed36a4fa9be3d7e5476ae51bd9
     WG_PRIVATE_KEY=${edgePrivate}
+    REDIS_URL=redis://127.0.0.1:6379
   '';
 
   # The edge box's routed subnet. 2001:db8::/32 is the documentation
@@ -103,8 +106,9 @@ in {
           iproute2
         ];
 
-        # Redis — the edge's store. nixpkgs services.redis binds
-        # 127.0.0.1:6379, matching the edge's default --redis-url.
+        # The coordination store is the LOCAL stand-in for the external
+        # managed Redis (nixpkgs services.redis binds 127.0.0.1:6379);
+        # the edge binary takes --redis-url like a dev/test override.
         services.redis.servers."".enable = true;
 
         # wg0 up at boot with the shared identity; the edge re-installs

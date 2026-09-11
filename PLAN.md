@@ -626,16 +626,31 @@ revisited.
     the float driver built here is their foundation.
   - **Failover = reassign floats, never DNS.** On node death the active
     node's floats are reassigned to the standby via the Hetzner API; the
-    standby is already hot (all wg peers, forwards, local binds from the
-    replicated store), so customers reconnect at the SAME addresses
-    within seconds, DNS untouched. No cache-staleness class. In-flight
-    TCP blips once (stateless forwarder, ADR-014) — accepted by design.
-  - **Coordination = Redis leader lease** (`fortress:edge:lease`), not
-    keepalived/VRRP: the lease holder is Redis primary + active; the
-    standby reconciles to replica + ready. Redis is the single
-    coordination point, so there is no VRRP split-brain class; detection
-    (5–10s heartbeat) is inside the RTO budget. keepalived is a deferred
-    sub-second upgrade, not the shipped driver.
+  standby is already hot (all wg peers, forwards, local binds from the
+  store — rehydrated at boot), so customers reconnect at the SAME addresses
+  within seconds, DNS untouched. No cache-staleness class. In-flight
+  TCP blips once (stateless forwarder, ADR-014) — accepted by design.
+  The data plane never consults the store per-packet: forwarders hold live
+  listeners in memory, mutate at signup/delete, rehydrate once at boot.
+  **Amended 2026-09-11:**
+  - **Coordination = a leader lease on ONE external shared managed
+    Redis** (`rediss://` URL in the operator secret store), not
+    keepalived/VRRP and not in-pair replication. Both nodes `SET NX` the
+    same key (`fortress:edge:lease`) on the same store — genuine mutual
+    exclusion; first-to-acquire is active, boot arbitrates itself. An
+    in-pair primary/replica design was built first (mid-T4) and rejected:
+    the coordinator lived inside one node it arbitrates, forcing ~330
+    lines of hand-rolled Redis-HA state machine (REPLICAOF orchestration,
+    promote/rejoin, a 2-node-only tiebreak) whose shape made a third node
+    a redesign. Split-brain is bounded by the float-ownership tiebreaker
+    (poll + never-grabs-back) and a leader that cannot reach the Hetzner
+    API self-fences by releasing the lease. Detection (TTL 8s, renew 2s)
+    is inside the RTO budget (< 15s). keepalived stays a deferred
+    sub-second upgrade. Honest trade: the store is a third-party
+    dependency for control-plane state + failover (data plane
+    unaffected); no SLA on free tiers; the store holds no private keys
+    (ADR-025), a wipe means customers re-register, and the URL-in-sops
+    swappability + store backups are the mitigation.
   - **The edge `wg0` private key becomes a store-held shared secret**
     rendered to both nodes (replaces per-node self-generation) so a
     re-handshake to the survivor works with the same peer identity.

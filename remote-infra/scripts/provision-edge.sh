@@ -103,14 +103,14 @@ ADMIN_KEY_HASH=$(printf '%s' "$ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "mkdir -p /etc/fortress && \
    cat > /etc/fortress/secretspec.toml && \
-   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nWG_PRIVATE_KEY=%s\n' \
-     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' '$WG_PRIVATE_KEY' > /etc/fortress/edge.env && \
+   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nWG_PRIVATE_KEY=%s\nREDIS_URL=%s\n' \
+     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' '$WG_PRIVATE_KEY' '$REDIS_URL' > /etc/fortress/edge.env && \
    chmod 0600 /etc/fortress/edge.env && chmod 0644 /etc/fortress/secretspec.toml" \
   < "$REPO_ROOT/crates/controlplane/secretspec.toml"
 
 echo "==> [6/6] wire the WG tunnel interface"
 # The edge's WG identity is the shared store-held key (ADR-029): both
-# nodes read the same WG_PRIVATE_KEY from edge.env and cofortress-edge
+# nodes read the same WG_PRIVATE_KEY from edge.env and fortress-edge
 # installs it into wg0 on boot (install_edge_identity), so a re-handshake
 # to the survivor just works. wg0.conf only needs *a* key for `wg-quick
 # up` to bring the interface up; the edge overrides it on boot, so we

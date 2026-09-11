@@ -10,7 +10,8 @@
 # The edge runs on a stock Debian image (Hetzner), so disk + networking
 # + NIC are handled by the OS out of the box. system-manager applies
 # only what fortress needs: the merged edge binary, its systemd unit,
-# local Redis, WireGuard, and the operator SSH key. No disko, no
+# WireGuard, and the operator SSH key. The store is the external shared
+# REDIS_URL secret — no local Redis. No disko, no
 # fstab, no bootloader — nothing that can break the boot.
 {
   config,
@@ -23,7 +24,6 @@
 
   # ── Packages ────────────────────────────────────────────────────
   environment.systemPackages = with pkgs; [
-    redis
     wireguard-tools
     caddy
     jq
@@ -34,15 +34,6 @@
     # Operator SSH key (root). Debian's openssh reads this directly.
     "ssh/authorized_keys.d/root".text = ''
       ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@vermissian
-    '';
-    # Redis config: AOF + appendfsync always (ADR-025 deliberate
-    # durability, not default).
-    "fortress/redis.conf".text = ''
-      bind 127.0.0.1
-      port 6379
-      appendonly yes
-      appendfsync always
-      dir /var/lib/redis
     '';
     # Caddy fronts the edge's own control plane at https://proletariat.tech
     # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
@@ -63,8 +54,9 @@
 
   # ── WireGuard server ─────────────────────────────────────────────
   # wg-quick brings wg0 up; the interface's real identity (its private
-  # key) is owned by fortress-edge, which generates + persists it in
-  # Redis and installs it into wg0 on boot. wg0.conf carries only a
+  # key) is the SHARED store-held key (ADR-029): fortress-edge reads
+  # WG_PRIVATE_KEY from edge.env and installs it into wg0 on boot.
+  # wg0.conf carries only a
   # throwaway key so the interface can come up; PEERS are added at
   # runtime by the control plane (`wg set`), so signups need no config
   # change. Address + listen port are assembled by provision-edge.sh
@@ -80,24 +72,6 @@
       RemainAfterExit = true;
       ExecStart = "${pkgs.wireguard-tools}/bin/wg-quick up wg0";
       ExecStop = "${pkgs.wireguard-tools}/bin/wg-quick down wg0";
-    };
-  };
-
-  # ── Redis (control-plane store) ──────────────────────────────────
-  systemd.services.redis = {
-    description = "Redis for fortress control plane";
-    enable = true;
-    wantedBy = ["multi-user.target"];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${pkgs.redis}/bin/redis-server /etc/fortress/redis.conf";
-      Restart = "on-failure";
-      RestartSec = 5;
-      # redis.conf sets `dir /var/lib/redis`; StateDirectory creates it
-      # (a bare Debian image has no /var/lib/redis). LANG=C.UTF-8 so
-      # redis 8.x's setlocale() doesn't abort on an unset locale.
-      StateDirectory = "redis";
-      Environment = "LANG=C.UTF-8";
     };
   };
 
@@ -132,8 +106,8 @@
   systemd.services.edge-control-plane = {
     description = "Fortress edge — forwarder + control plane";
     enable = true;
-    after = ["network-online.target" "wg-quick-wg0.service" "redis.service"];
-    wants = ["network-online.target" "wg-quick-wg0.service" "redis.service"];
+    after = ["network-online.target" "wg-quick-wg0.service"];
+    wants = ["network-online.target" "wg-quick-wg0.service"];
     wantedBy = ["multi-user.target"];
     # The binary shells out to `wg set` to install its runtime identity
     # into wg0; give the unit the wg binary on PATH (systemd's default
@@ -141,9 +115,11 @@
     path = [ pkgs.wireguard-tools ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${fortressEdgePkg}/bin/fortress-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081 --ipv6-iface eth0";
+      # No --redis-url: the store URL is the secret REDIS_URL (TLS
+      # rediss://) from edge.env — the pair's one shared coordinate.
+      ExecStart = "${fortressEdgePkg}/bin/fortress-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --api-addr 0.0.0.0:8081 --ipv6-iface eth0";
       # The edge secrets (DNS zone + token, root domain, admin key
-      # hash) are resolved by the secretspec SDK from /etc/fortress/
+      # hash, wg key, REDIS_URL) are resolved by the secretspec SDK from /etc/fortress/
       # (secretspec.toml + edge.env, written by provision-edge.sh, mode
       # 0600, never in the repo). WorkingDirectory=/etc/fortress so the
       # SDK's CWD-walk finds secretspec.toml; EnvironmentFile lands the

@@ -212,6 +212,7 @@ pub struct MockFloatApiClient {
     pub deletes: std::sync::Mutex<Vec<u64>>,
     pub floats: std::sync::Mutex<Vec<HetznerFloatingIp>>,
     pub next_id: std::sync::Mutex<u64>,
+    pub list_fails: std::sync::Mutex<bool>,
 }
 
 impl MockFloatApiClient {
@@ -263,6 +264,9 @@ impl FloatApiClient for MockFloatApiClient {
     }
 
     async fn list(&self) -> Result<Vec<HetznerFloatingIp>, FloatError> {
+        if *self.list_fails.lock().unwrap() {
+            return Err(FloatError::Api("injected failure".to_string()));
+        }
         Ok(self.floats.lock().unwrap().clone())
     }
 }

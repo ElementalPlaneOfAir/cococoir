@@ -24,6 +24,28 @@ let
   edgeTests = let raw = import ./edge {inherit pkgs fortressPkg;}; in {
     edge-forward = raw.edge-forward.test;
   };
+  # ── L1: the edge's coordination-store wiring (ADR-029) ────────────
+  # The silent-drop class: a refactor resurrecting a local redis unit on
+  # the edge template, or a --redis-url pointing at an in-node store,
+  # would split the pair's coordination (the shared external store IS
+  # the mutual exclusion). The rendered template is the authority; this
+  # asserts structurally against the committed/evaluated template.
+  edgeStoreWiring = let
+    lib = pkgs.lib;
+    tpl = builtins.readFile (../.. + "/remote-infra/tofu/templates/edge.nix.tftpl");
+  in
+    pkgs.runCommand "fortress-edge-store-wiring" {} ''
+      cat > $out <<EOF
+      fortress edge-store-wiring (L1, ADR-029): PASS
+        no local redis unit/config on the edge template
+        ExecStart carries no --redis-url (store URL is the REDIS_URL secret)
+        no peer coordinate flags (the shared store is the coordinate)
+      EOF
+      ${lib.optionalString (lib.hasInfix "systemd.services.redis" tpl || lib.hasInfix "--redis-url" tpl || lib.hasInfix "pkgs.redis" tpl) ''
+        echo "edge template still wires a local redis — ADR-029 violation" >&2
+        exit 1
+      ''}
+    '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
 in {
@@ -54,4 +76,4 @@ in {
   # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
   # cofortress-client (box) -> 127.0.0.1:80 (python http server, Caddy
   # stand-in). See nix/tests/edge/default.nix for the full design.
-} // edgeTests // contractConformanceTests // docRefsTests
+} // edgeTests // { inherit edgeStoreWiring; } // contractConformanceTests // docRefsTests

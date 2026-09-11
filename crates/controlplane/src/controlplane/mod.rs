@@ -47,6 +47,8 @@ pub mod account;
 pub mod auth;
 pub mod dns;
 pub mod float;
+pub mod ha;
+pub mod lease;
 pub mod mail;
 pub mod secret;
 pub mod web;
@@ -60,6 +62,8 @@ pub use dns::{
 pub use float::{
     get_float_api, FloatApiClient, FloatError, HetznerFloat, HetznerFloatingIp, MockFloatApiClient,
 };
+pub use ha::{EdgeHa, HaConfig, HaRole};
+pub use lease::{LeaderLease, LEASE_KEY, LEASE_RENEW_SECS, LEASE_TTL_SECS};
 pub use secret::{admin_key_hash, root_domain};
 pub use wg::{RealWgClient, WgClient, WgError};
 
@@ -273,6 +277,8 @@ pub enum ControlPlaneError {
     Wg(#[from] WgError),
     #[error("dns: {0}")]
     Dns(#[from] DnsError),
+    #[error("float: {0}")]
+    Float(#[from] FloatError),
     #[error("invalid username: {0}")]
     InvalidUsername(String),
     #[error("invalid wireguard public key: {0}")]

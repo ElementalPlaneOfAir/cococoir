@@ -63,6 +63,14 @@ pub fn wg_private_key() -> &'static str {
     &SECRETS.secrets.wg_private_key
 }
 
+/// The shared external coordination store URL (ADR-029 / edge-ha T4).
+/// Both pair nodes read the SAME value — that shared URL is what makes
+/// the cluster's `SET NX` lease mutually exclusive. `rediss://` carries
+/// the TLS connection to the managed provider.
+pub fn redis_url() -> &'static str {
+    &SECRETS.secrets.redis_url
+}
+
 /// The SMTP submission relay host, when configured. Absent → the
 /// console mailer is used (dev/test); present → the SmtpMailer is used
 /// and a broken config is a boot error, never a silent fallback.
@@ -113,7 +121,7 @@ mod tests {
     use super::*;
 
     /// The value-free contract mirrors the committed `secretspec.toml`:
-    /// six required secrets + five optional SMTP secrets under the
+    /// seven required secrets + five optional SMTP secrets under the
     /// default profile. Kept in lockstep with the real file by
     /// convention — a drift here is caught when the real file's
     /// `declare_secrets!` no longer matches.
@@ -129,6 +137,7 @@ DNS_TOKEN = { description = "Hetzner DNS API token", required = true }
 ROOT_DOMAIN = { description = "Root domain", required = true }
 ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
 WG_PRIVATE_KEY = { description = "Shared edge wg0 private key", required = true }
+REDIS_URL = { description = "Shared external coordination store URL", required = true }
 SMTP_HOST = { description = "SMTP submission relay host", required = false }
 SMTP_PORT = { description = "SMTP submission port", required = false }
 SMTP_USER = { description = "SMTP submission auth user", required = false }
@@ -169,6 +178,7 @@ MAIL_FROM = { description = "Envelope From", required = false }
             "ROOT_DOMAIN=example.net",
             "ADMIN_KEY_HASH=0000000000000000000000000000000000000000000000000000000000000000",
             "WG_PRIVATE_KEY=KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=",
+            "REDIS_URL=rediss://coord.example.net:6379",
         ]
         .join("\n")
     }
@@ -194,6 +204,8 @@ MAIL_FROM = { description = "Envelope From", required = false }
         // The shared wg0 key round-trips as a WireGuard private key.
         let wg_key = resolved_value(&resp, "WG_PRIVATE_KEY");
         assert_eq!(wg_key.len(), 44); // base64, 32 bytes
+        // The shared store URL round-trips (the pair's one coordinate).
+        assert_eq!(resolved_value(&resp, "REDIS_URL"), "rediss://coord.example.net:6379");
     }
 
     #[test]
