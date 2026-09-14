@@ -46,9 +46,6 @@
 pub mod account;
 pub mod auth;
 pub mod dns;
-pub mod float;
-pub mod ha;
-pub mod lease;
 pub mod mail;
 pub mod secret;
 pub mod web;
@@ -59,11 +56,6 @@ pub use dns::{
     customer_hostname, get_dns_api, reconcile_pass, remove_customer, resolve_aaaa,
     resolve_aaaa_boxed, upsert_customer, DnsApiClient, DnsError, HetznerDns, MockDnsApiClient,
 };
-pub use float::{
-    get_float_api, FloatApiClient, FloatError, HetznerFloat, HetznerFloatingIp, MockFloatApiClient,
-};
-pub use ha::{EdgeHa, HaConfig, HaRole};
-pub use lease::{LeaderLease, LEASE_KEY, LEASE_RENEW_SECS, LEASE_TTL_SECS};
 pub use secret::{admin_key_hash, root_domain};
 pub use wg::{RealWgClient, WgClient, WgError};
 
@@ -277,8 +269,6 @@ pub enum ControlPlaneError {
     Wg(#[from] WgError),
     #[error("dns: {0}")]
     Dns(#[from] DnsError),
-    #[error("float: {0}")]
-    Float(#[from] FloatError),
     #[error("invalid username: {0}")]
     InvalidUsername(String),
     #[error("invalid wireguard public key: {0}")]
@@ -384,11 +374,11 @@ impl ControlPlane {
             .clone())
     }
 
-    /// The edge's own WireGuard public key, derived from the shared
-    /// private key (ADR-029). Pure getter — does not touch the kernel —
-    /// so it is safe to call per-signup and from `GET /pubkey`. The
-    /// edge's identity is stable across restarts *and across nodes*
-    /// because both read the same `WG_PRIVATE_KEY` from the store.
+    /// The edge's own WireGuard public key, derived from the store-held
+    /// private key. Pure getter — does not touch the kernel — so it is
+    /// safe to call per-signup and from `GET /pubkey`. The edge's
+    /// identity is stable across restarts (and across a rebuild) because
+    /// it reads the same `WG_PRIVATE_KEY` from the store.
     pub fn edge_public_key(&self) -> Result<String, ControlPlaneError> {
         let private_key = self.edge_wg_private_key;
         let priv_bytes: [u8; 32] = B64

@@ -81,11 +81,12 @@ echo "==> [4/6] system-manager switch (applies the edge config)"
 echo "==> [5/6] write edge secrets (edge.env + secretspec.toml)"
 # The edge secrets resolve through the secretspec SDK: a value-free
 # secretspec.toml contract (deployed here) + a dotenv edge.env holding
-# the values (zone + token + root domain + admin key hash + the shared
-# WG_PRIVATE_KEY). The SDK reads secretspec.toml via a CWD walk from
-# /etc/fortress (WorkingDirectory on the unit) and the values from
-# edge.env (0600, never in the repo). `-S provision` = token + generated
-# admin key + the shared wg0 identity (ADR-029: ONE key for both nodes).
+# the values (zone + token + root domain + admin key hash + the wg0
+# identity + the external store URL). The SDK reads secretspec.toml via
+# a CWD walk from /etc/fortress (WorkingDirectory on the unit) and the
+# values from edge.env (0600, never in the repo). `-S provision` = token
+# + generated admin key + the wg0 identity + REDIS_URL (the external
+# managed Redis that is the control plane's store).
 eval "$(nix run "$REPO_ROOT#secretspec" -- export -P provisioning -S provision \
   -f "$TOML" --format shell --reason "provision-edge: write edge.env")"
 DNS_ZONE_ID=$("$TOFU" -chdir="$TOFU_DIR" output -raw dns_zone_id)
@@ -109,13 +110,12 @@ ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   < "$REPO_ROOT/crates/controlplane/secretspec.toml"
 
 echo "==> [6/6] wire the WG tunnel interface"
-# The edge's WG identity is the shared store-held key (ADR-029): both
-# nodes read the same WG_PRIVATE_KEY from edge.env and fortress-edge
-# installs it into wg0 on boot (install_edge_identity), so a re-handshake
-# to the survivor just works. wg0.conf only needs *a* key for `wg-quick
-# up` to bring the interface up; the edge overrides it on boot, so we
-# generate a throwaway here. Address + listen port come from tofu's
-# single source of truth.
+# The edge's WG identity is the store-held key (ADR-029, retained for a
+# stable identity across rebuilds): fortress-edge reads WG_PRIVATE_KEY
+# from edge.env and installs it into wg0 on boot (install_edge_identity).
+# wg0.conf only needs *a* key for `wg-quick up` to bring the interface
+# up; the edge overrides it on boot, so we generate a throwaway here.
+# Address + listen port come from tofu's single source of truth.
 WG_IP=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_wg_ip)         # 10.10.0.1
 WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || echo "51820")
   ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
@@ -125,13 +125,13 @@ WG_PORT=$("$TOFU" -chdir="$TOFU_DIR" output -raw wg_listen_port 2>/dev/null || e
      printf '[Interface]\nAddress = %s/24\nListenPort = %s\nPrivateKey = %s\n' \
        '$WG_IP' '$WG_PORT' \"\$(cat /etc/wireguard/wg0-throwaway.key)\" > /etc/wireguard/wg0.conf && \
      chmod 0600 /etc/wireguard/wg0.conf && rm -f /etc/wireguard/wg0-throwaway.key && \
-     systemctl restart wg-quick-wg0 fortress-edge"
+     systemctl restart wg-quick-wg0 edge-control-plane"
 
 echo ""
 echo "==> Edge box up. Its WG public key is served by the control plane"
 echo "    at https://<edge-ip>:8081/api/wireguard/pubkey (or returned"
 echo "    in each /api/wireguard/new response)."
-echo "  DNS: point proletariat.tech NS records at:"
+echo "  DNS: point interdim.net NS records at:"
 "$TOFU" -chdir="$TOFU_DIR" output -json nameservers | jq -r '.[] | "    \(.)"'
 echo "  Admin key (for the control-plane API):"
 echo "    nix run .#secretspec -- export -P provisioning -S provision --format shell"

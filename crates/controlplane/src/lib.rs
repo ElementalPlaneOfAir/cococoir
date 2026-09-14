@@ -6,8 +6,8 @@
 pub mod controlplane;
 
 pub use controlplane::{
-    app, control_plane, forwarder, generate_wg_keypair, get_float_api, init_globals,
+    app, control_plane, forwarder, generate_wg_keypair, init_globals,
     validate_username, AdminKey, ControlPlane, ControlPlaneError, Customer, DnsApiClient, DnsError,
-    EdgeHa, FloatApiClient, HaConfig, HaRole, HetznerDns, MockDnsApiClient, MockFloatApiClient,
-    RealWgClient, SignupResponse, Subnet64, WgClient, WgError, WgSubnet,
+    HetznerDns, MockDnsApiClient, RealWgClient, SignupResponse, Subnet64, WgClient, WgError,
+    WgSubnet,
 };

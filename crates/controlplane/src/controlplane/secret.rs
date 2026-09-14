@@ -55,18 +55,16 @@ pub fn admin_key_hash() -> &'static [u8; 32] {
     &HASH
 }
 
-/// The shared WireGuard private key for the edge's `wg0` interface
-/// (ADR-029 / edge-ha T3). One keypair for both nodes — the survivor
-/// presents the same peer identity, so a re-handshake just works.
-/// `&'static` because `SECRETS` is process-lifetime.
+/// The WireGuard private key for the edge's `wg0` interface (ADR-029 /
+/// edge-ha T3, retained after the pair was cut): store-held, so the edge
+/// presents the same peer identity across rebuilds and a re-dial after a
+/// rebuild just works. `&'static` because `SECRETS` is process-lifetime.
 pub fn wg_private_key() -> &'static str {
     &SECRETS.secrets.wg_private_key
 }
 
-/// The shared external coordination store URL (ADR-029 / edge-ha T4).
-/// Both pair nodes read the SAME value — that shared URL is what makes
-/// the cluster's `SET NX` lease mutually exclusive. `rediss://` carries
-/// the TLS connection to the managed provider.
+/// The external managed store URL (ADR-029 / edge-ha T4, retained): the
+/// control plane's durable Redis, reached over TLS (`rediss://`).
 pub fn redis_url() -> &'static str {
     &SECRETS.secrets.redis_url
 }
@@ -136,8 +134,8 @@ DNS_ZONE_NAME = { description = "Hetzner DNS zone apex", required = true }
 DNS_TOKEN = { description = "Hetzner DNS API token", required = true }
 ROOT_DOMAIN = { description = "Root domain", required = true }
 ADMIN_KEY_HASH = { description = "SHA-256 hex of the admin API key", required = true }
-WG_PRIVATE_KEY = { description = "Shared edge wg0 private key", required = true }
-REDIS_URL = { description = "Shared external coordination store URL", required = true }
+WG_PRIVATE_KEY = { description = "Store-held edge wg0 private key", required = true }
+REDIS_URL = { description = "External managed store URL", required = true }
 SMTP_HOST = { description = "SMTP submission relay host", required = false }
 SMTP_PORT = { description = "SMTP submission port", required = false }
 SMTP_USER = { description = "SMTP submission auth user", required = false }
@@ -201,10 +199,10 @@ MAIL_FROM = { description = "Envelope From", required = false }
         // The declared hash round-trips through the hex decoder.
         let hash = resolved_value(&resp, "ADMIN_KEY_HASH");
         assert!(decode_hash_hex(hash).is_some());
-        // The shared wg0 key round-trips as a WireGuard private key.
+        // The store-held wg0 key round-trips as a WireGuard private key.
         let wg_key = resolved_value(&resp, "WG_PRIVATE_KEY");
         assert_eq!(wg_key.len(), 44); // base64, 32 bytes
-        // The shared store URL round-trips (the pair's one coordinate).
+        // The external store URL round-trips.
         assert_eq!(resolved_value(&resp, "REDIS_URL"), "rediss://coord.example.net:6379");
     }
 

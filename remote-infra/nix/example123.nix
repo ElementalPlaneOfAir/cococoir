@@ -23,7 +23,7 @@
   networking.hostName = "example123";
 
   fortress = {
-    baseDomain = "example123.proletariat.tech";
+    baseDomain = "example123.interdim.net";
     tls.mode = "acme"; # real certs through the tunnel
 
     services = {
@@ -73,9 +73,9 @@
   # ── IPv4 LAN path: the "custom DNS server" from the vision. ─────
   networking.hosts = {
     "127.0.0.1" = [
-      "jellyfin.example123.proletariat.tech"
-      "auth.example123.proletariat.tech"
-      "cryptpad.example123.proletariat.tech"
+      "jellyfin.example123.interdim.net"
+      "auth.example123.interdim.net"
+      "cryptpad.example123.interdim.net"
     ];
   };
 
@@ -91,3 +91,4 @@
 
   nix.settings.experimental-features = ["nix-command" "flakes"];
 }
+

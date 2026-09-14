@@ -83,6 +83,36 @@ async fn session_email(cp: &'static ControlPlane, req: &Request) -> Option<Strin
 
 // ── pages (momenta + daisyUI, same as the client dashboard) ─────────
 
+/// The custom CSS the landing page needs beyond Tailwind/daisyUI
+/// utilities: the radial glow background, gradient headline text, the
+/// soft card shadow, and the checkmark list ticks. Injected raw via
+/// `_dangerously_set_inner_html` because a `<style>` child would have
+/// its `>` and `/` escaped as text.
+const LANDING_CSS: &str = r#"
+  body {
+    background:
+      radial-gradient(1200px 600px at 50% -10%, oklch(0.3 0.12 290 / 0.5), transparent 60%),
+      radial-gradient(900px 500px at 85% 10%, oklch(0.35 0.1 200 / 0.35), transparent 55%),
+      var(--color-base-100);
+  }
+  .glow-text {
+    background: linear-gradient(100deg, var(--color-primary), var(--color-accent) 45%, var(--color-secondary));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .card-glow {
+    box-shadow: 0 0 0 1px oklch(1 0 0 / 0.06), 0 20px 60px -20px oklch(0 0 0 / 0.6);
+  }
+  .tick::before {
+    content: "✓";
+    color: var(--color-success);
+    font-weight: 700;
+    margin-right: 0.5rem;
+  }
+"#;
+
+/// The auth pages' shell: a centered, narrow column of forms.
 fn page_shell(title: &str, main: Node) -> Node {
     rsx!(
         <html lang="en" data_theme="dark">
@@ -100,6 +130,32 @@ fn page_shell(title: &str, main: Node) -> Node {
     )
 }
 
+/// The landing page's shell: full-width, with the custom marketing CSS.
+fn landing_shell(main: Node) -> Node {
+    rsx!(
+        <html lang="en" data_theme="dark">
+            <head>
+                <title>"Fortress — your home server, your rules"</title>
+                <meta charset="UTF-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
+                <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
+                <style _dangerously_set_inner_html={LANDING_CSS}></style>
+            </head>
+            <body class="min-h-screen text-base-content">{main}</body>
+        </html>
+    )
+}
+
+/// A Fortress shield glyph, reused for the nav logo and footer.
+fn shield_icon(class: &str) -> Node {
+    rsx!(
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class={class}>
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+    )
+}
+
 pub struct LandingProps {
     pub logged_in: bool,
     pub email: Option<String>,
@@ -107,63 +163,252 @@ pub struct LandingProps {
 
 #[component]
 pub fn Landing(props: &LandingProps) -> Node {
-    let actions = if props.logged_in {
-        rsx!(
-            <div class="flex flex-col gap-2">
-                <p class="text-sm text-base-content/60">"Signed in as " {props.email.as_deref().unwrap_or("")}</p>
-                <a href="/auth/logout" class="btn btn-outline">"Sign out"</a>
-            </div>
-        )
-    } else {
-        rsx!(
-            <div class="flex flex-col gap-2">
-                <a href="/register" class="btn btn-primary">"Create an account"</a>
-                <a href="/login" class="btn btn-outline">"Log in"</a>
-            </div>
-        )
-    };
-    page_shell(
-        "Fortress",
+    // The navbar's account actions: signed-in shows the email + sign out,
+    // otherwise the create-account button.
+    let nav_auth = if props.logged_in {
         rsx!(
             <>
-                <div class="hero rounded-2xl bg-base-100 shadow-sm">
-                    <div class="hero-content py-12 text-center">
-                        <div class="max-w-md flex flex-col gap-4">
-                            <h1 class="text-4xl font-bold">"Fortress"</h1>
-                            <p class="text-base-content/60">"Remote access for your home servers."</p>
-                            {actions}
+                <span class="text-sm text-base-content/60 hidden sm:inline">{props.email.as_deref().unwrap_or("")}</span>
+                <a href="/auth/logout" class="btn btn-ghost btn-sm">"Sign out"</a>
+            </>
+        )
+    } else {
+        rsx!(<a href="/register" class="btn btn-primary btn-sm">"Create account"</a>)
+    };
+
+    // The hero's primary CTA: always the account/order path.
+    let hero_cta = if props.logged_in {
+        rsx!(<a href="/" class="btn btn-primary btn-lg px-8">"Go to my dashboard"</a>)
+    } else {
+        rsx!(<a href="/register" class="btn btn-primary btn-lg px-8">"Order a box"</a>)
+    };
+
+    landing_shell(rsx!(
+        <>
+            
+            <nav class="navbar sticky top-0 z-40 backdrop-blur-md bg-base-100/70 border-b border-white/5 px-6">
+                <div class="flex-1 items-center gap-2">
+                    {shield_icon("h-7 w-7 text-primary")}
+                    <span class="text-lg font-bold tracking-tight">"Fortress"</span>
+                </div>
+                <div class="flex-none gap-2">
+                    <a href="#install" class="btn btn-ghost btn-sm hidden sm:inline-flex">"Install"</a>
+                    {nav_auth}
+                </div>
+            </nav>
+
+            
+            <header class="px-6 pt-20 pb-16 text-center">
+                <div class="mx-auto max-w-3xl">
+                    <div class="badge badge-outline badge-sm mb-6 gap-2 px-3 py-3">
+                        <span class="h-2 w-2 rounded-full bg-success animate-pulse"></span>
+                        "A worker cooperative · open source · NixOS"
+                    </div>
+                    <h1 class="text-5xl sm:text-6xl font-black tracking-tight leading-[1.05]">
+                        <span class="block">"Your home server."</span>
+                        <span class="block glow-text">"Your data. Your rules."</span>
+                    </h1>
+                    <p class="mx-auto mt-6 max-w-xl text-lg text-base-content/70">
+                        "Fortress replaces Google Docs, Dropbox, Netflix and Ring with a self-hosted box in your house — reachable from anywhere, with every key on your own hardware."
+                    </p>
+                    <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+                        {hero_cta}
+                        <a href="#install" class="btn btn-outline btn-lg px-8">"Install it yourself"</a>
+                    </div>
+                    <div class="mt-12 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-base-content/50">
+                        <span>"Own your data"</span>
+                        <span class="text-base-content/20">"•"</span>
+                        <span>"Remote access built in"</span>
+                        <span class="text-base-content/20">"•"</span>
+                        <span>"One login for everything"</span>
+                        <span class="text-base-content/20">"•"</span>
+                        <span>"No subscription lock-in"</span>
+                    </div>
+                </div>
+            </header>
+
+            
+            <section class="px-6 py-10">
+                <div class="mx-auto max-w-5xl">
+                    <div class="flex flex-wrap items-center justify-center gap-3">
+                        <span class="text-sm text-base-content/50 mr-2">"Replaces:"</span>
+                        <div class="flex flex-wrap justify-center gap-3">
+                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"Google Docs → " <b class="text-success">"CryptPad"</b></span>
+                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"Netflix → " <b class="text-success">"Jellyfin"</b></span>
+                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"+ Radarr, Sonarr, Lidarr, Prowlarr"</span>
+                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"Nextcloud" <b class="badge badge-sm badge-outline ml-1">"soon"</b></span>
                         </div>
                     </div>
                 </div>
-                <div class="card rounded-2xl bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h2 class="card-title text-xl">"Install"</h2>
-                    <p class="text-sm text-base-content/70">
-                        "Fortress is a NixOS module. Point your flake at it, import the module, enable the services you want, and rebuild — no setup wizard, no app store."
-                    </p>
-                    <div class="flex flex-col gap-2 text-sm">
-                        <p class="font-mono text-xs text-base-content/50">"flake input + module import"</p>
-                        <pre class="rounded-xl bg-base-200 p-3 text-xs overflow-x-auto">{r#"{ inputs, ... }: {
-  inputs.fortress = {
-    url = "github:ElementalPlaneOfAir/fortress";
+            </section>
+
+            
+            <section class="px-6 py-14">
+                <div class="mx-auto max-w-5xl">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                        <div class="card bg-base-200/50 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class="h-8 w-8 text-primary"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                                <h3 class="card-title text-lg">"Your keys, your hardware"</h3>
+                                <p class="text-sm text-base-content/60">"TLS and WireGuard keys never leave your house. Nobody else can decrypt your traffic — not even us."</p>
+                            </div>
+                        </div>
+                        <div class="card bg-base-200/50 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class="h-8 w-8 text-accent"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                                <h3 class="card-title text-lg">"Reachable anywhere"</h3>
+                                <p class="text-sm text-base-content/60">"One encrypted tunnel to a box in the cloud. Jellyfin, docs, photos — from any phone, on any network, no port forwarding."</p>
+                            </div>
+                        </div>
+                        <div class="card bg-base-200/50 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class="h-8 w-8 text-secondary"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                                <h3 class="card-title text-lg">"One login for everything"</h3>
+                                <p class="text-sm text-base-content/60">"Every service signs in with the same account. Add a user once, they get every app — no per-app password sprawl."</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            
+            <section class="px-6 py-14">
+                <div class="mx-auto max-w-5xl">
+                    <h2 class="text-center text-3xl font-bold mb-10">"Two ways in"</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div class="card bg-base-100 border border-white/5 card-glow">
+                            <div class="card-body gap-4">
+                                <div class="badge badge-primary badge-sm w-fit">"Zero setup"</div>
+                                <h3 class="card-title text-2xl">"Buy a box"</h3>
+                                <p class="text-sm text-base-content/60">"We assemble, install and ship a pre-configured Fortress. Plug it in, connect ethernet, and claim it with your account in under five minutes."</p>
+                                <ul class="flex flex-col gap-2 text-sm">
+                                    <li class="tick">"Pre-installed NixOS + all services"</li>
+                                    <li class="tick">"Encrypted offsite backups included"</li>
+                                    <li class="tick">"Support from real humans"</li>
+                                </ul>
+                                <div class="card-actions mt-2"><a href="/register" class="btn btn-primary">"Get yours"</a></div>
+                            </div>
+                        </div>
+                        <div class="card bg-base-100 border border-white/5 card-glow">
+                            <div class="card-body gap-4">
+                                <div class="badge badge-accent badge-sm w-fit">"Bring your own hardware"</div>
+                                <h3 class="card-title text-2xl">"Install on your machine"</h3>
+                                <p class="text-sm text-base-content/60">"Fortress is a NixOS module. Point your flake at it, enable the services you want, rebuild. No setup wizard, no app store."</p>
+                                <ul class="flex flex-col gap-2 text-sm">
+                                    <li class="tick">"Free forever, AGPL-3.0"</li>
+                                    <li class="tick">"Run as many machines as you like"</li>
+                                    <li class="tick">"Same remote access as a box"</li>
+                                </ul>
+                                <div class="card-actions mt-2"><a href="#install" class="btn btn-outline">"See the install guide"</a></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            
+            <section id="install" class="px-6 py-14 scroll-mt-16">
+                <div class="mx-auto max-w-3xl">
+                    <h2 class="text-center text-3xl font-bold mb-2">"Install on your own machines"</h2>
+                    <p class="text-center text-base-content/60 mb-10">"Runs on any x86-64 NixOS machine. Each machine is one file in your flake."</p>
+
+                    <div class="flex flex-col gap-5">
+                        <div class="card bg-base-100 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <div class="flex items-center gap-3">
+                                    <span class="badge badge-primary">"1"</span>
+                                    <h3 class="card-title">"Add the flake input"</h3>
+                                </div>
+                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"{
+  inputs = {
+    fortress.url = "github:ElementalPlaneOfAir/cococoir";
     inputs.nixpkgs.follows = "nixpkgs";
   };
+}"#}</pre>
+                            </div>
+                        </div>
+
+                        <div class="card bg-base-100 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <div class="flex items-center gap-3">
+                                    <span class="badge badge-primary">"2"</span>
+                                    <h3 class="card-title">"Import the module"</h3>
+                                </div>
+                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"{
   imports = [ inputs.fortress.nixosModules.default ];
 }"#}</pre>
-                        <p class="font-mono text-xs text-base-content/50">"enable a service"</p>
-                        <pre class="rounded-xl bg-base-200 p-3 text-xs overflow-x-auto">{r#"fortress.services.jellyfin = { enable = true; public = true; };
-fortress.services.dex      = { enable = true; public = true; };"#}</pre>
-                        <p class="font-mono text-xs text-base-content/50">"rebuild"</p>
-                        <pre class="rounded-xl bg-base-200 p-3 text-xs overflow-x-auto">{"sudo nixos-rebuild switch --flake .#mybox"}</pre>
+                            </div>
+                        </div>
+
+                        <div class="card bg-base-100 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <div class="flex items-center gap-3">
+                                    <span class="badge badge-primary">"3"</span>
+                                    <h3 class="card-title">"Enable services and rebuild"</h3>
+                                </div>
+                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"fortress.services.jellyfin = { enable = true; public = true; };
+fortress.services.dex      = { enable = true; public = true; };
+
+sudo nixos-rebuild switch --flake .#mybox"#}</pre>
+                                <p class="text-sm text-base-content/60">"Each service gets its own Caddy vhost with automatic TLS. Enable a service next to Dex and every user signs in with one account."</p>
+                            </div>
+                        </div>
+
+                        <div class="card bg-base-100 border border-white/5 card-glow">
+                            <div class="card-body gap-3">
+                                <div class="flex items-center gap-3">
+                                    <span class="badge badge-primary">"4"</span>
+                                    <h3 class="card-title">"Repeat per machine"</h3>
+                                </div>
+                                <p class="text-sm text-base-content/60">"One flake, many machines. Each machine is its own " <code class="text-primary">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-primary">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
+                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"# flake.nix — one module, N machines
+outputs = { self, nixpkgs, fortress, ... }: {
+  nixosConfigurations = {
+    living-room = nixpkgs.lib.nixosSystem {
+      modules = [
+        fortress.nixosModules.default
+        ({ pkgs, ... }: {
+          networking.hostName = "living-room";
+          fortress.baseDomain = "alice.example.com";
+          fortress.services.jellyfin.enable = true;
+          fortress.services.dex.enable = true;
+        })
+      ];
+    };
+    garage = nixpkgs.lib.nixosSystem {
+      modules = [
+        fortress.nixosModules.default
+        ({ pkgs, ... }: {
+          networking.hostName = "garage";
+          fortress.baseDomain = "alice.example.com";
+          fortress.services.cryptpad.enable = true;
+        })
+      ];
+    };
+  };
+};"#}</pre>
+                                <p class="text-sm text-base-content/60">"Each machine gets its own Caddy vhosts under your domain. Claim them all under one account for a single set of remote-access routes."</p>
+                            </div>
+                        </div>
                     </div>
-                    <p class="text-sm text-base-content/70">
-                        "Each service gets its own Caddy vhost with auto-TLS, and enabling it alongside Dex gives you OIDC sign-in for free. The full service catalog is listed in the project README."
-                    </p>
                 </div>
+            </section>
+
+            
+            <footer class="px-6 py-12 border-t border-white/5 mt-8">
+                <div class="mx-auto max-w-5xl flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-base-content/50">
+                    <div class="flex items-center gap-2">
+                        {shield_icon("h-5 w-5 text-primary")}
+                        <span>"Fortress — a worker cooperative. AGPL-3.0."</span>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <a href="/register" class="link link-hover">"Create account"</a>
+                        <a href="/login" class="link link-hover">"Sign in"</a>
+                    </div>
                 </div>
-            </>
-        ),
-    )
+            </footer>
+        </>
+    ))
 }
 
 pub struct SignupProps {
@@ -754,7 +999,7 @@ mod tests {
         };
         let client = TestClient::new(test_app(cp, mailer));
         for (path, needle) in [
-            ("/", "Remote access for your home servers"),
+            ("/", "Your home server"),
             ("/register", "Create an account"),
             ("/login", "Log in"),
             ("/forgot", "Reset your password"),
@@ -1010,8 +1255,10 @@ mod tests {
         })
         .to_html();
         assert!(html.contains("Install"), "landing has an install section");
-        assert!(html.contains("github:ElementalPlaneOfAir/fortress"), "flake input documented");
+        assert!(html.contains("github:ElementalPlaneOfAir/cococoir"), "flake input documented");
         assert!(html.contains("fortress.services.jellyfin"), "service enable documented");
         assert!(html.contains("nixos-rebuild switch"), "rebuild command documented");
+        assert!(html.contains("living-room"), "multi-machine example documented");
+        assert!(html.contains("nixosConfigurations"), "flake structure documented");
     }
 }

@@ -1,39 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Fortress remote infra — DNS for proletariat.tech.
+# Fortress remote infra — DNS for interdim.net.
 #
-# The zone is created here (the user owns the domain but has no
-# Hetzner zone yet). Records follow the IPv6 vision doc + ADR-029:
-#   proletariat.tech              A    -> shared Floating IPv4 /32 (WG dial-out
+# The zone is created here (the operator owns the domain but has no
+# Hetzner zone yet). Records follow the IPv6 vision doc + ADR-025:
+#   interdim.net              A    -> edge box's own IPv4 (WG dial-out
 #                                     endpoint + control-plane website)
-#   proletariat.tech              AAAA -> <float /64>::1
-#   *.example123.proletariat.tech AAAA -> customer /128 carved from the float /64
-# The apex A/AAAA never change on failover — the floats move, DNS stays.
-# The operator must point proletariat.tech's NS records at Hetzner's
-# nameservers (output "nameservers") for the zone to go live.
+#   interdim.net              AAAA -> <server /64>::1
+#   *.example123.interdim.net AAAA -> customer /128 carved from the box /64
+#
+# Single instance: no floats, no failover, DNS points at the one box.
+# A CNAME at the old domain bridges until a formal migration.
 
-resource "hcloud_zone" "proletariat" {
+resource "hcloud_zone" "interdim" {
   name = var.domain
   mode = "primary"
   ttl  = 300
 }
 
-# Apex: the shared Floating IPv4 /32. This is the one universal address
-# (most homes are v4-only), carrying the WG dial-out endpoint and the
-# control-plane website. It moves with the pair on failover; DNS never
-# changes.
+# Apex: the edge box's own IPv4. Most homes are v4-only, so this carries
+# the WG dial-out endpoint + the control-plane website.
 resource "hcloud_zone_rrset" "apex_a" {
-  zone = hcloud_zone.proletariat.name
+  zone = hcloud_zone.interdim.name
   name = "@"
   type = "A"
   records = [
-    { value = local.shared_v4 },
+    { value = hcloud_server.edge.ipv4_address },
   ]
 }
 
-# Apex IPv6: the cluster floating /64's ::1 — not a node's auto /64.
+# Apex IPv6: the box /64's ::1.
 resource "hcloud_zone_rrset" "apex_aaaa" {
-  zone = hcloud_zone.proletariat.name
+  zone = hcloud_zone.interdim.name
   name = "@"
   type = "AAAA"
   records = [
@@ -42,11 +40,10 @@ resource "hcloud_zone_rrset" "apex_aaaa" {
 }
 
 # The customer's wildcard: every service subdomain resolves to the
-# customer's /128 carved from the cluster floating /64. Caddy
-# SNI-routes per service on the customer box, so one address serves the
-# whole jar.
+# customer's /128 carved from the box /64. Caddy SNI-routes per service
+# on the customer box, so one address serves the whole jar.
 resource "hcloud_zone_rrset" "customer_aaaa" {
-  zone = hcloud_zone.proletariat.name
+  zone = hcloud_zone.interdim.name
   name = "*.${var.customer}"
   type = "AAAA"
   records = [

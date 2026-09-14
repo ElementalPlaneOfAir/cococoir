@@ -3,16 +3,17 @@
 # Fortress edge box — system-manager config.
 #
 # Rendered by tofu from remote-infra/tofu/main.tf — do not hand-edit.
-# The addressing (edge_ipv6_subnet, wg_subnet, wg_listen_port) flows
-# from tofu so there is exactly one source of truth for the deployed
-# addressing, matching the DNS records and the provision script.
+# The addressing (edge_ipv6_subnet, wg_subnet, wg_listen_port, domain)
+# flows from tofu so there is exactly one source of truth for the
+# deployed addressing, matching the DNS records and the provision script.
 #
 # The edge runs on a stock Debian image (Hetzner), so disk + networking
 # + NIC are handled by the OS out of the box. system-manager applies
 # only what fortress needs: the merged edge binary, its systemd unit,
-# WireGuard, and the operator SSH key. The store is the external shared
-# REDIS_URL secret — no local Redis. No disko, no
-# fstab, no bootloader — nothing that can break the boot.
+# WireGuard, and the operator SSH key. No local Redis: the control-plane
+# store is an EXTERNAL managed Redis whose URL is the secret REDIS_URL in
+# edge.env (the box's persistence + the single-point-of-truth store).
+# No disko, no fstab, no bootloader — nothing that can break the boot.
 {
   config,
   lib,
@@ -35,7 +36,7 @@
     "ssh/authorized_keys.d/root".text = ''
       ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@vermissian
     '';
-    # Caddy fronts the edge's own control plane at https://proletariat.tech
+    # Caddy fronts the edge's own control plane at https://interdim.net
     # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
     # handler on 0.0.0.0:8081 — the control-plane API plus the /healthz
     # /readyz /status endpoints (the edge serves both from one poem app),
@@ -45,7 +46,7 @@
     # edge's own addresses (IPv4 + ::1) so it never shadows the
     # forwarder's customer /128 listeners (e.g. ::3:80/443).
     "caddy/Caddyfile".text = ''
-      proletariat.tech {
+      interdim.net {
         bind 62.238.111.21 2a01:4f9:c014:2c44::1
         reverse_proxy 127.0.0.1:8081
       }
@@ -54,13 +55,13 @@
 
   # ── WireGuard server ─────────────────────────────────────────────
   # wg-quick brings wg0 up; the interface's real identity (its private
-  # key) is the SHARED store-held key (ADR-029): fortress-edge reads
-  # WG_PRIVATE_KEY from edge.env and installs it into wg0 on boot.
-  # wg0.conf carries only a
-  # throwaway key so the interface can come up; PEERS are added at
-  # runtime by the control plane (`wg set`), so signups need no config
-  # change. Address + listen port are assembled by provision-edge.sh
-  # from tofu's single source of truth.
+  # key) is installed at runtime: fortress-edge reads WG_PRIVATE_KEY
+  # from edge.env and installs it into wg0 on boot (a stable identity
+  # across rebuilds). wg0.conf carries only a throwaway key so the
+  # interface can come up; PEERS are added at runtime by the control
+  # plane (`wg set`), so signups need no config change. Address + listen
+  # port are assembled by provision-edge.sh from tofu's single source of
+  # truth.
   systemd.services.wg-quick-wg0 = {
     description = "WireGuard tunnel for fortress edge";
     enable = true;
@@ -76,12 +77,12 @@
   };
 
   # ── Caddy (public HTTPS for the control plane) ──────────────────
-  # Serves https://proletariat.tech over the edge's own IPv4 + ::1 and
+  # Serves https://interdim.net over the edge's own IPv4 + ::1 and
   # proxies to the control-plane API. Binds only the edge's addresses
   # (per the Caddyfile) so it never collides with the forwarder's
   # customer /128 listeners. StateDirectory persists ACME certs/state.
   systemd.services.caddy = {
-    description = "Caddy reverse proxy — fortress control plane at https://proletariat.tech";
+    description = "Caddy reverse proxy — fortress control plane at https://interdim.net";
     enable = true;
     after = ["network-online.target"];
     wants = ["network-online.target"];
@@ -115,13 +116,15 @@
     path = [ pkgs.wireguard-tools ];
     serviceConfig = {
       Type = "simple";
-      # No --redis-url: the store URL is the secret REDIS_URL (TLS
-      # rediss://) from edge.env — the pair's one shared coordinate.
+      # The store URL is NOT a unit flag here: it is the secret REDIS_URL
+      # (TLS rediss://) from edge.env — the external managed Redis that
+      # is the control plane's store.
       ExecStart = "${fortressEdgePkg}/bin/fortress-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --api-addr 0.0.0.0:8081 --ipv6-iface eth0";
       # The edge secrets (DNS zone + token, root domain, admin key
-      # hash, wg key, REDIS_URL) are resolved by the secretspec SDK from /etc/fortress/
-      # (secretspec.toml + edge.env, written by provision-edge.sh, mode
-      # 0600, never in the repo). WorkingDirectory=/etc/fortress so the
+      # hash, wg key, REDIS_URL) are resolved by the secretspec SDK from
+      # /etc/fortress/ (secretspec.toml + edge.env, written by
+      # provision-edge.sh, mode 0600, never in the repo).
+      # WorkingDirectory=/etc/fortress so the
       # SDK's CWD-walk finds secretspec.toml; EnvironmentFile lands the
       # dotenv values in the process env as a belt-and-suspenders. The
       # service fails at boot — not on first signup — if either file is

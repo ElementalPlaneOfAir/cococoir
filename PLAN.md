@@ -608,7 +608,12 @@ revisited.
 
 - **ADR-029: Per-customer addresses are movable Hetzner Floating IPs; the
   edge is a hot-hot pair coordinated by a Redis lease (extends
-  ADR-025/028).** Remote access rode one box: a node death meant every
+  ADR-025/028).** *REVERSED 2026-09-14 — see the pivot note at the end of
+  this ADR: the two-node hot-hot pair was cut before ship; the edge ships
+  as a single box (ADR-025 addressing) with the external managed Redis
+  store retained. The lease/float machinery was **deleted** from the
+  tree (git history preserves it); the design history below stands as the record of what was
+  built and why it was shelved. Remote access rode one box: a node death meant every
   customer lost the `/128`s carved from that box's `/64`, and recovery
   was a manual re-provision with address churn + DNS rewrite. The
   redesign makes the *address* the movable unit, not the box:
@@ -669,6 +674,47 @@ revisited.
     200, and DNS is byte-identical, under the RTO budget. Untested
     failover is fiction. Design + task DAG:
     `.specify/specs/edge-ha/proposal.md`.
+  - **Amended 2026-09-11 (T5 shape):** the pair's two nodes run
+    **byte-identical config** — node identity is NOT baked into the
+    rendered config. A node discovers its own Hetzner `server-id` (and
+    derives `node-id`) at boot by listing servers from the API and
+    matching its own primary IPv4; IDs exist only so the float reconcile
+    knows which box owns which floats (ADR-029 float ownership), never
+    for a pairing protocol. This removes the tofu two-phase (apply →
+    read server IDs → render per-node) and the per-node rendered configs
+    entirely — one edge config, one flake output, provisioned to both
+    IPs. **No Cloud Network**: the pair coordinates only through the
+    external store (T4 deleted every direct node-to-node channel), so a
+    private network would carry zero traffic. **Apex domain is
+    interdim.net** (source reconciled to the live state; a CNAME at the
+    old domain bridges until an official migration).
+    **PIVOT 2026-09-14 — the pair is cut; the edge ships single-node
+    (supersedes the two-node T5–T8 shape above):** pre-deployment, the
+    reliability investment is a guess — real failure modes are
+    unknowable until customers exist, and the customer-side (home box,
+    ISP) is the bigger, undebuggable downtime pool either way. The
+    decision (with the operator): the edge is **ONE Hetzner box**
+    (`hil`, Oregon) with ADR-025 addressing (box's own routed `/64`,
+    customer `/128`s carve from it), the WG dial-out + control-plane
+    website on the box's own IPv4, and **the external managed Redis
+    store retained** (`REDIS_URL` secret, `rediss://`) as the control
+    plane's persistence — it was built as HA coordination but its value
+    is the durable store, and it is what makes a dead box a rebuild,
+    not a data-loss event. **What is cut:** the floats
+    (`hcloud_floating_ip` removed from tofu), the lease/`ha.rs`/`EdgeHa`
+    wiring in the binary (**deleted** — `float.rs`, `ha.rs`, `lease.rs`,
+    the `--node-id/--server-id` flags, and the HA loop are gone; git
+    history preserves them), the shared `/32` endpoint
+    model, the failover test, and the Cloud Network. DNS points at the
+    single box. Recovery is a rebuild runbook (provision a new box,
+    point DNS, customers re-dial), not seconds-of-downtime HA. **Why the
+    store survives:** it decouples control-plane state from the box, so
+    a rebuild or a box swap rehydrates from the store instead of losing
+    customers. **Deferred paths (kept as the record):** provider BGP
+    dual-announcement of a customer-owned `/48` was the researched
+    "real" HA destination (auto-failover in ~30s, no lease code, but
+    needs an ASN + LIR-owned space and a BGP-capable provider,
+    ~€400/yr); it is the reference if customer data ever demands it.
 
 ## Implementation backlog
 

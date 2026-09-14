@@ -24,12 +24,12 @@ let
   edgeTests = let raw = import ./edge {inherit pkgs fortressPkg;}; in {
     edge-forward = raw.edge-forward.test;
   };
-  # ── L1: the edge's coordination-store wiring (ADR-029) ────────────
+  # ── L1: the edge's store wiring (ADR-029, single-node shape) ──────
   # The silent-drop class: a refactor resurrecting a local redis unit on
   # the edge template, or a --redis-url pointing at an in-node store,
-  # would split the pair's coordination (the shared external store IS
-  # the mutual exclusion). The rendered template is the authority; this
-  # asserts structurally against the committed/evaluated template.
+  # would break the edge's contract with the external managed store (the
+  # control plane's persistence). The rendered template is the authority;
+  # this asserts structurally against the committed/evaluated template.
   edgeStoreWiring = let
     lib = pkgs.lib;
     tpl = builtins.readFile (../.. + "/remote-infra/tofu/templates/edge.nix.tftpl");
@@ -39,7 +39,6 @@ let
       fortress edge-store-wiring (L1, ADR-029): PASS
         no local redis unit/config on the edge template
         ExecStart carries no --redis-url (store URL is the REDIS_URL secret)
-        no peer coordinate flags (the shared store is the coordinate)
       EOF
       ${lib.optionalString (lib.hasInfix "systemd.services.redis" tpl || lib.hasInfix "--redis-url" tpl || lib.hasInfix "pkgs.redis" tpl) ''
         echo "edge template still wires a local redis — ADR-029 violation" >&2

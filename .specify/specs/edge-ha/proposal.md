@@ -1,6 +1,13 @@
 # Edge HA — hot-hot pair + floating-IP mobility
 
-Status: proposal.
+Status: **CUT 2026-09-14 — the two-node pair is shelved before ship.**
+The edge ships as a **single box** (ADR-025 addressing) with the external
+managed Redis store retained for control-plane persistence. T1–T4 below
+landed and were then **deleted from the tree** (git history preserves
+them: `float.rs`, `ha.rs`, `lease.rs`, and the `--node-id/--server-id`
+flags are gone); T5–T8 are **cut**. Full
+decision + rationale: PLAN.md ADR-029 pivot note. This document stands
+as the record of what was built and why it was shelved.
 
 ## Premise
 
@@ -391,33 +398,49 @@ deleting a 330-line distributed state machine from the codebase.
 
 hard kill.
 
-### T5: Two-node provisioning (tofu + system-manager + Cloud Network)
+### T5: Two-node provisioning (tofu + system-manager)
 **Depends on:** T2, T3
-**Verification:** tofu renders two nodes (edge-a/edge-b) in `hil` on a
-Cloud Network with per-node primary IPs + shared floats; the single `edge`
-resource is replaced and the `hel1` box retired; both `system-manager
-switch` clean; `nix flake check` green including the new tripwires;
-`example123` re-provisioned on the pair. The external store: `REDIS_URL`
-(TLS `rediss://`) lives in the sops store, is written to both nodes'
+**Verification:** tofu renders TWO identical nodes (`edge-a`/`edge-b`) in
+`hil` with shared floats; the single `edge` resource is replaced and the
+`hel1` box retired; both nodes run the SAME system-manager config;
+`nix flake check` green including the new tripwires; `example123`
+re-provisioned on the pair. The external store: `REDIS_URL` (TLS
+`rediss://`) lives in the sops store, is written to both nodes'
 `edge.env` by `provision-edge.sh`, and neither node runs a local Redis
 (the in-box redis service/config are deleted from the edge template).
-**No store data migration (decided):** the hel1 Redis (customers, `/128`
-alloc counter) is deliberately NOT carried over — it holds demo/test data
-only, so the pair starts fresh in `hil`, the alloc counter resets, and
-existing customers re-register (new `/128` + new keypair). Consequence
-accepted: the "same address, no DNS" mobility promise applies to failovers
-*after* cutover, not to this one-time migration (fresh `/128`s for
-everyone). If real (non-demo) customers land on the old edge before T5,
-this decision must be revisited (a dump/restore of the Redis store is the
-fallback).
-**Files:** `remote-infra/tofu/main.tf`, `remote-infra/tofu/render.tf`,
+**No Cloud Network (cut):** the pair coordinates ONLY through the external
+store — T4 deleted every direct node-to-node channel (peer probe,
+replication, promote/rejoin). A private Cloud Network would carry no
+traffic; cut it (AGENTS: nothing left to remove).
+**Identical nodes, runtime self-identification (decided 2026-09-11):** the
+two nodes run byte-identical config. Node identity is NOT baked into the
+rendered config — a node discovers its own `server-id` (+ derives
+`node-id`) at boot by listing Hetzner servers from the API and matching
+its own primary IPv4. IDs exist only to track which resources (the
+floats) belong to which box (ADR-029 float ownership), not for any
+pairing protocol. This removes the tofu two-phase (apply → read IDs →
+render) and the per-node rendered configs entirely — one edge config,
+one flake output, provisioned to both IPs.
+**Domain = interdim.net (decided 2026-09-11):** reconcile the source to the
+live state (the `hcloud_zone` resource + comments currently drift between
+`proletariat`/`interdim`). The apex `A`/`AAAA` derive from the floats;
+the operator will add a CNAME at the old domain until a formal migration.
+**Full teardown license (operator):** the hel1 box + store data may be
+destroyed. No store data migration — the pair starts fresh in `hil`,
+the alloc counter resets, existing customers re-register. If real
+(non-demo) customers land on the old edge before T5, revisit (dump/restore
+of the store is the fallback).
+**Files:** `remote-infra/tofu/main.tf`, `remote-infra/tofu/dns.tf`
+(reconcile domain), `remote-infra/tofu/render.tf`,
 `remote-infra/tofu/variables.tf`,
-`remote-infra/tofu/templates/edge.nix.tftpl` (no local redis; unit
-depends on network, not redis),
-`remote-infra/scripts/provision-edge.sh` (writes `REDIS_URL` into
-`edge.env`), `crates/controlplane/secretspec.toml` (`REDIS_URL`
-contract), `crates/controlplane/src/controlplane/secret.rs`
-(`redis_url()` accessor)
+`remote-infra/tofu/templates/edge.nix.tftpl` (no local redis; no baked
+node identity),
+`remote-infra/scripts/provision-edge.sh` (loop both nodes; writes
+`REDIS_URL` into each `edge.env`), `crates/controlplane/src/bin/fortress-edge.rs`
+(node self-identification replaces baked `--node-id/--server-id`),
+`crates/controlplane/src/controlplane/ha.rs` (self-identify at boot),
+`crates/controlplane/secretspec.toml` (`REDIS_URL` contract),
+`crates/controlplane/src/controlplane/secret.rs` (`redis_url()` accessor)
 
 ### T6: Per-customer floating /32 (IPv4 SKU provisioning path)
 **Depends on:** T1, T4

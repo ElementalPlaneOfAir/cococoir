@@ -3,10 +3,10 @@
 # Fortress remote infra — render the machine configs.
 #
 # The configs are RENDERED from templates so the deployed addressing
-# (edge IPv4, /64, customer /128, WG subnet, WG listen port) has
+# (edge IPv4, /64, customer /128, WG subnet, WG listen port, domain) has
 # exactly one source of truth: this tofu. Edit the .tftpl, re-apply,
 # and the flake picks up the new config. The rendered files are
-# checked in (they contain only public values: IPs).
+# checked in (they contain only public values: IPs + domain).
 #
 # The edge box runs stock Debian via system-manager; its config is
 # rendered here (system-manager/edge.nix) so the edge's /64 flows from
@@ -21,6 +21,7 @@ resource "local_file" "edge_nix" {
     edge_primary_v6  = local.edge_primary_v6
     wg_subnet        = var.wg_subnet
     wg_listen_port   = tostring(var.wg_listen_port)
+    domain           = var.domain
   })
 }
 

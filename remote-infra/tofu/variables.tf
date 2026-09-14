@@ -19,9 +19,9 @@ variable "server_type" {
 }
 
 variable "location" {
-  description = "Hetzner location (nbg1, fsn1, hel1, ash, sin)."
+  description = "Hetzner location (nbg1, fsn1, hel1, ash, hil, sin)."
   type        = string
-  default     = "hel1"
+  default     = "hil"
 }
 
 variable "bootstrap_image" {
@@ -37,7 +37,7 @@ variable "ipv4_gateway" {
 }
 
 variable "domain" {
-  description = "Apex domain the customer services live under (e.g. proletariat.tech)."
+  description = "Apex domain the customer services live under (e.g. interdim.net)."
   type        = string
 }
 
@@ -65,7 +65,7 @@ variable "wg_listen_port" {
 }
 
 variable "edge_ipv6_subnet" {
-  description = "The subnet customers carve /128s from. Default: the cluster's Floating IPv6 /64 (ADR-029). Set this when the operator manages one shared /64 and hands this cluster a /72 or /96 slice of it (e.g. 2a01:4f8:c17:1:ab00::/72). Must be byte-aligned /64..=/112. Never a node's auto /64."
+  description = "The subnet customers carve /128s from. Default: the box's own routed /64 (ADR-025). Set this when the operator manages one shared /64 and hands this box a /72 or /96 slice of it (e.g. 2a01:4f8:c17:1:ab00::/72). Must be byte-aligned /64..=/112."
   type        = string
   default     = ""
 }
