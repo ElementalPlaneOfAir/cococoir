@@ -25,14 +25,16 @@
     ./network.nix
     ./secrets.nix
     ./storage/btrfs.nix
+    ./storage/plain-dirs.nix
     ./client.nix
     ./services/jellyfin.nix
     ./services/dex.nix
     ./services/cryptpad.nix
     ./services/radarr.nix
     ./services/sonarr.nix
-    ./services/lidarr.nix
-    ./services/prowlarr.nix
+    ./services/qbittorrent.nix
+    ./services/seerr.nix
+    ./services/media.nix
     ./integrations/jellyfin-oidc.nix
     ./integrations/cryptpad-oidc.nix
   ];

@@ -69,7 +69,8 @@ in
       config,
       ...
     }: let
-      dataRoot = config.fortress.storage.btrfs.pool.mountpoint;
+      btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
+      dataRoot = config.fortress.storage.dataRoot;
       mediaRoot =
         if cfg.mediaRoot == null
         then "${dataRoot}/media"
@@ -79,6 +80,36 @@ in
         shows = "${mediaRoot}/shows";
         music = "${mediaRoot}/music";
         metadata = "${dataRoot}/jellyfin/metadata";
+      };
+      # Jellyfin scans only the `library/` subdir of each media
+      # subvolume; `downloads/` (the qbittorrent staging area) stays
+      # invisible to it. Downloads hardlink INTO library — same
+      # subvolume, so hardlinks are possible and imports are free.
+      libraryPaths = {
+        movies = "${mediaPaths.movies}/library";
+        shows = "${mediaPaths.shows}/library";
+      };
+      mediaDirs = {
+        "${mediaPaths.movies}/downloads" = {
+          user = "jellyfin";
+          group = "jellyfin";
+          mode = "770";
+        };
+        "${mediaPaths.movies}/library" = {
+          user = "jellyfin";
+          group = "jellyfin";
+          mode = "770";
+        };
+        "${mediaPaths.shows}/downloads" = {
+          user = "jellyfin";
+          group = "jellyfin";
+          mode = "770";
+        };
+        "${mediaPaths.shows}/library" = {
+          user = "jellyfin";
+          group = "jellyfin";
+          mode = "770";
+        };
       };
       base = {
         services.jellyfin = {
@@ -104,6 +135,7 @@ in
               group = "jellyfin";
               mode = "770";
             };
+            dirs = lib.mkDefault (lib.filterAttrs (p: _: lib.hasPrefix "${mediaPaths.movies}/" p) mediaDirs);
           };
           "media-shows" = {
             mountpoint = lib.mkDefault mediaPaths.shows;
@@ -113,6 +145,7 @@ in
               group = "jellyfin";
               mode = "770";
             };
+            dirs = lib.mkDefault (lib.filterAttrs (p: _: lib.hasPrefix "${mediaPaths.shows}/" p) mediaDirs);
           };
           "media-music" = {
             mountpoint = lib.mkDefault mediaPaths.music;
@@ -135,8 +168,9 @@ in
         };
 
         systemd.services.jellyfin = {
-          after = ["fortress-btrfs-subvolumes.service"];
-          requires = ["fortress-btrfs-subvolumes.service"];
+          after = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
+          requires = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
+          serviceConfig.TimeoutStopSec = 30;
           unitConfig.RequiresMountsFor = [
             mediaPaths.movies
             mediaPaths.shows
@@ -150,8 +184,29 @@ in
         systemd.services.jellarr.serviceConfig = {
           Restart = "on-failure";
           RestartSec = 5;
-          StartLimitBurst = 10;
+          StartLimitBurst = 20;
         };
+
+        # The packaged bootstrap stops Jellyfin as soon as jellyfin.db
+        # exists — on a fresh boot that is *during* Jellyfin's first
+        # startup. Jellyfin defers SIGTERM until its startup tasks
+        # finish, so systemd SIGKILLs it and the boot deadlocks. Gate
+        # the stop on Jellyfin serving *and* stable: /health returns
+        # 200 before the startup tasks run, so require it to hold for
+        # 60s before the bootstrap is allowed to stop Jellyfin.
+        systemd.services.jellarr-api-key-bootstrap.serviceConfig.ExecStartPre =
+          pkgs.writeShellScript "wait-jellyfin-ready" ''
+            set -euo pipefail
+            for i in $(seq 1 120); do
+              if ${pkgs.curl}/bin/curl -sf http://127.0.0.1:8096/health >/dev/null 2>&1; then
+                sleep 60
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "jellyfin never became ready before api-key bootstrap" >&2
+            exit 1
+          '';
 
         services.jellarr = {
           enable = true;
@@ -172,14 +227,14 @@ in
                 name = "Movies";
                 collectionType = "movies";
                 libraryOptions.pathInfos = [
-                  {path = mediaPaths.movies;}
+                  {path = libraryPaths.movies;}
                 ];
               }
               {
                 name = "TV Shows";
                 collectionType = "tvshows";
                 libraryOptions.pathInfos = [
-                  {path = mediaPaths.shows;}
+                  {path = libraryPaths.shows;}
                 ];
               }
               {

@@ -48,7 +48,8 @@ mkFortressService {
   defaultHealthPath = "/checkup/";
   storageNeeded = true;
   extraConfig = {cfg, lib, pkgs, config, ...}: let
-    dataRoot = config.fortress.storage.btrfs.pool.mountpoint;
+    btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
+    dataRoot = config.fortress.storage.dataRoot;
     cryptpadDataPath = "${dataRoot}/cryptpad/data";
   in {
     users.users.fortress-cryptpad = {
@@ -75,8 +76,8 @@ mkFortressService {
     };
 
     systemd.services.cryptpad = {
-      after = ["fortress-btrfs-subvolumes.service"];
-      requires = ["fortress-btrfs-subvolumes.service"];
+      after = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
+      requires = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
       unitConfig.RequiresMountsFor = cryptpadDataPath;
       confinement.enable = lib.mkForce false;
       serviceConfig = {

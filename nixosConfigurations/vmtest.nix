@@ -5,6 +5,9 @@
 # Each service gets a subdomain of `vmtest.local` so the
 # wildcard cert covers the whole jar.
 #
+# Platform-specific bits only — the shared demo tier (services,
+# certs, secrets, customer config) lives in demo-base.nix.
+#
 # Run with:
 #   nix run .#vmtest
 #   # or headless:
@@ -23,7 +26,7 @@
 # then visit https://jellyfin.vmtest.local — your browser
 # will warn about the self-signed cert; accept it. You'll see
 # the Jellyfin login page with a "Sign in with Dex" button
-# below the password fields. PocketID auto-creates users via
+# below the password fields. Dex auto-creates users via
 # OIDC on first login.
 #
 # On NixOS hosts /etc/hosts is read-only; the script will tell
@@ -32,111 +35,18 @@
 # SSH in for inspection:
 #   ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 #       root@localhost
-#
-# The VM is hermetic: secrets and the TLS cert are generated at
-# build time, btrfs pool runs with two virtual disks, no sops-nix,
-# no real network. Production uses sops-nix with the user's age key and
-# a real ACME certificate (see fortress.tls.mode = "acme").
 {
   config,
   lib,
   pkgs,
-  inputs,
   ...
-}: let
-  # Build-time secret generation for the manual VM. In
-  # production, sops-nix writes these files with mode 0440 /
-  # 0400 at /run/secrets/<name>. We keep explicit wiring here
-  # because vmtest does NOT use sops-nix.
+}: {
+  imports = [./demo-base.nix];
 
-  # Build-time Dex secrets: OIDC client secret for Jellyfin
-  # and a bcrypt password hash for the test admin user.
-  # Dex's replace-secret reads the client secret file at
-  # startup and substitutes its path in the YAML config with
-  # the file content. The bcrypt hash goes into Dex's
-  # staticPasswords.
-  testDexSecrets =
-    pkgs.runCommand "vmtest-dex-secrets" {
-      buildInputs = [pkgs.openssl pkgs.apacheHttpd];
-    } ''
-      mkdir -p $out
-      openssl rand -hex -out $out/jellyfin-client-secret 32
-      openssl rand -hex -out $out/cryptpad-client-secret 32
-      chmod 0440 $out/jellyfin-client-secret $out/cryptpad-client-secret
-      htpasswd -bnBC 10 "" password | cut -d: -f2 | tr -d '\n' > $out/admin-password-hash
-    '';
-
-  # Build-time self-signed TLS cert for the
-  # `*.vmtest.local` cookie-jar. The browser will warn
-  # about it (it's a dev VM, the cert changes every build);
-  # -k on curl / "Accept the risk" in the browser gets past it.
-  # In production, `fortress.tls.mode = "acme"` makes Caddy
-  # issue a real cert.
-  testCerts =
-    pkgs.runCommand "vmtest-tls" {
-      buildInputs = [pkgs.openssl];
-    } ''
-      mkdir -p $out
-      openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout $out/key.pem -out $out/cert.pem -days 365 \
-        -subj "/CN=*.vmtest.local" \
-        -addext "subjectAltName=DNS:vmtest.local,DNS:*.vmtest.local" \
-        >/dev/null 2>&1
-      chmod 0444 $out/cert.pem
-      chmod 0400 $out/key.pem
-    '';
-in {
-  imports = [
-    ./dashboard.nix
-    (import ../nix/nixos-modules)
-  ];
-
-  system.stateVersion = "25.11";
   networking.useDHCP = true;
   networking.firewall = {
     enable = true;
     allowedTCPPorts = [22 80 443];
-  };
-
-  networking.hosts = {
-    "127.0.0.1" = ["auth.vmtest.local" "jellyfin.vmtest.local" "cryptpad.vmtest.local"
-                      "radarr.vmtest.local" "sonarr.vmtest.local" "lidarr.vmtest.local" "prowlarr.vmtest.local"];
-  };
-
-  security.pki.certificates = [
-    (builtins.readFile "${testCerts}/cert.pem")
-  ];
-
-  # Platform-wide config. baseDomain + hostname come from
-  # dashboard.nix (the customer-edited file). tls.mode does the work
-  # that used to live in every per-vhost `extraConfig`:
-  #   - service `domain` options default to `<svc>.vmtest.local`
-  #     (override per-service if you need a non-conventional name)
-  #   - Caddy's `tls` directive is emitted automatically from
-  #     `fortress.tls.{certFile, keyFile}` for every vhost
-  #   - `services.caddy.enable = true` and the per-service
-  #     `fortress.services.<name>.enable = true` together drive
-  #     vhost creation via the contract factory
-  fortress = {
-    tls = {
-      mode = "self-signed";
-      certFile = "/etc/vmtest-tls/cert.pem";
-      keyFile = "/etc/vmtest-tls/key.pem";
-    };
-
-    # LAN access plane (ADR-028): QEMU user-mode networking assigns
-    # the guest 10.0.2.15 deterministically, so vmtest exercises the
-    # real customer path — dnsmasq answers the service domains with
-    # the LAN address, Caddy binds it, and vmtest-bootstrap.sh
-    # resolves + connects + verifies the cert exactly as a LAN device
-    # would. Production sets the box's DHCP-reserved address here.
-    network.lanAddress = "10.0.2.15";
-  };
-
-  # Build-time secrets mounted at well-known paths.
-  environment.etc = {
-    "vmtest-tls".source = testCerts;
-    "vmtest-dex-secrets".source = testDexSecrets;
   };
 
   # Real NixOS VM config. Grub on /dev/vda, ext4 root. Same pattern
@@ -185,103 +95,13 @@ in {
   # auto-declare their subvolumes.
   fortress.storage.btrfs.pool.devices = ["/dev/vdb" "/dev/vdc"];
 
-  # Caddy: just enable. Every fortress.services.<name> with
-  # enable = true registers a vhost via the contract factory,
-  # which pulls `tls` from fortress.tls and `reverse_proxy` /
-  # 403 from `public`. No per-vhost boilerplate here.
-  #
-  # The `email` option is left at its default (null) — Caddy
-  # doesn't try ACME for `*.vmtest.local` (no real DNS), and
-  # `email = ""` is a parse error.
-  services.caddy.enable = true;
-
-  # Jellyfin service. `enable` comes from dashboard.nix. Domain defaults
-  # to jellyfin.vmtest.local via fortress.baseDomain. Datasets
-  # auto-declared by the jellyfin module.
-  fortress.services.jellyfin = {
-    public = true;
-  };
-
-  fortress.services.cryptpad = {
-    public = true;
-  };
-
-  fortress.services.radarr = {
-    public = false;
-  };
-  fortress.services.sonarr = {
-    public = false;
-  };
-  fortress.services.lidarr = {
-    public = false;
-  };
-  fortress.services.prowlarr = {
-    public = false;
-  };
-
-  # Dex: self-hosted OIDC provider with email+password auth.
-  # Domain defaults to auth.vmtest.local via fortress.baseDomain.
-  # Users are declared in staticPasswords — no setup wizard, no
-  # API provisioning. Groups flow through the `groups` OIDC scope
-  # so Jellyfin picks them up as role claims.
-  fortress.services.dex = {
-    public = true;
-  };
-
-  # Build-time secret files wired into Dex and jellarr.
-  # The generated Jellyfin client secret lives in
-  # /etc/dex/clients/jellyfin-secret; the fortress-jellyfin-oidc-secret
-  # oneshot copies it there on first boot (idempotent within a VM
-  # overlay). The bcrypt hash goes directly into staticPasswords.
-  services.dex.settings = {
-    staticClients = [{
-      id = "vmtest-cli";
-      public = true;
-      name = "vmtest CLI";
-    }];
-
-    staticPasswords = let
-      hash = builtins.readFile "${testDexSecrets}/admin-password-hash";
-    in [{
-      email = "admin@example.com";
-      hash = hash;
-      username = "admin";
-      userID = "08a8684b-db88-4b73-90a9-3cd1661f5466";
-      groups = ["admins"];
-      preferredUsername = "admin";
-    }];
-  };
-
-  environment.etc."dex/clients/jellyfin-secret".source =
-    "${testDexSecrets}/jellyfin-client-secret";
-
-  environment.etc."dex/clients/cryptpad-secret".source =
-    "${testDexSecrets}/cryptpad-client-secret";
-
-  # Jellarr libraries for vmtest. Plain definitions merge with the
-  # fortress modules: this overrides the jellyfin module's mkDefault
-  # virtualFolders, and the jellyfin-oidc integration's `plugins` /
-  # `branding` merge in alongside. Do NOT wrap this in lib.mkForce —
-  # mkForce on a submodule silently discards the OIDC plugin config.
-  services.jellarr.config = {
-    library.virtualFolders = [
-      {
-        name = "Movies";
-        collectionType = "movies";
-        libraryOptions.pathInfos = [{ path = "/data/media/movies"; }];
-      }
-      {
-        name = "TV Shows";
-        collectionType = "tvshows";
-        libraryOptions.pathInfos = [{ path = "/data/media/shows"; }];
-      }
-      {
-        name = "Music";
-        collectionType = "music";
-        libraryOptions.pathInfos = [{ path = "/data/media/music"; }];
-      }
-    ];
-  };
+  # LAN access plane (ADR-028): QEMU user-mode networking assigns
+  # the guest 10.0.2.15 deterministically, so vmtest exercises the
+  # real customer path — dnsmasq answers the service domains with
+  # the LAN address, Caddy binds it, and vmtest-bootstrap.sh
+  # resolves + connects + verifies the cert exactly as a LAN device
+  # would. Production sets the box's DHCP-reserved address here.
+  fortress.network.lanAddress = "10.0.2.15";
 
   # Jellyfin's StorageHelper.TestDataDirectorySize checks
   # /var/lib/jellyfin/data has >= 2GiB free at startup and aborts
@@ -290,6 +110,11 @@ in {
   # free — not enough. Bump the disk to give /var room.
   virtualisation.diskSize = 10240; # 10 GiB, in MB
   virtualisation.emptyDiskImages = [2048 2048]; # 2 x 2 GiB for btrfs pool
+  # The full stack (jellyfin + dex + seerr + radarr + sonarr +
+  # qbittorrent + cryptpad + caddy) OOM-kills jellyfin on the 1GB
+  # default, which wedges the media-apply pipeline. 4GiB holds all
+  # of it with headroom.
+  virtualisation.memorySize = 4096; # MiB
 
   # Pre-seed the btrfs subvolume with a test file. The oneshot waits
   # for fortress-btrfs-subvolumes.service before writing.

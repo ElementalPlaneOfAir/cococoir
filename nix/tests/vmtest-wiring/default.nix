@@ -17,10 +17,10 @@ let
   lib = pkgs.lib;
 
   # ── dashboard.nix extraction ─────────────────────────────────
-  # The six service enables live in nixosConfigurations/dashboard.nix
+  # The service enables live in nixosConfigurations/dashboard.nix
   # (the customer-edited file). A silent drop of one during a refactor
   # would disable a service with no trace — assert they all render.
-  dashboardServices = ["jellyfin" "cryptpad" "radarr" "sonarr" "lidarr" "prowlarr"];
+  dashboardServices = ["jellyfin" "cryptpad" "media"];
   dashboardServiceEnabled = name:
     vmtestConfig.fortress.services.${name}.enable or false;
 
@@ -29,6 +29,14 @@ let
   plugins = jellarrCfg.config.plugins or null;
   branding = jellarrCfg.config.branding or null;
   folderNames = map (f: f.name) jellarrCfg.config.library.virtualFolders;
+  folderPaths = lib.concatMap (f: map (p: p.path) (f.libraryOptions.pathInfos or []))
+    jellarrCfg.config.library.virtualFolders;
+  movieLibraryPath = let
+    folder = lib.findFirst (f: f.name == "Movies") null jellarrCfg.config.library.virtualFolders;
+  in if folder == null then null else (builtins.head folder.libraryOptions.pathInfos).path;
+  mediaSubvolumes = vmtestConfig.fortress.storage.btrfs.subvolumes;
+  movieDirs = builtins.attrNames (mediaSubvolumes."media-movies".dirs or {});
+  showDirs = builtins.attrNames (mediaSubvolumes."media-shows".dirs or {});
 
   # ── cryptpad OIDC ───────────────────────────────────────────
   cpSettings = vmtestConfig.services.cryptpad.settings;
@@ -44,8 +52,7 @@ let
   cryptpadPkg = vmtestConfig.services.cryptpad.package;
   cryptpadPkgHasSSO = lib.strings.hasInfix "-with-sso" (cryptpadPkg.name or "");
 
-  # ── ingress / ACME ordering ──────────────────────────────────
-  # Caddy terminates ACME for every customer domain and those
+  # ── ingress / ACME ordering ──────────────────────────────────  # Caddy terminates ACME for every customer domain and those
   # challenges traverse the tunnel. If caddy.service doesn't order
   # after the client, a fresh boot races the tunnel and ACME backoff
   # leaves domains certless (auth/cryptpad incident, 2026-08-28).
@@ -61,7 +68,7 @@ let
   lanAddress = vmtestConfig.fortress.network.lanAddress;
   lanDnsEnabled = vmtestConfig.fortress.network.dns.enable;
   dnsmasqAddresses = vmtestConfig.services.dnsmasq.settings.address or [];
-  enabledServiceCfgs = lib.filterAttrs (_: s: s.enable or false)
+  enabledServiceCfgs = lib.filterAttrs (_: s: (s.enable or false) && (s ? domain))
     vmtestConfig.fortress.services;
   enabledDomains = lib.mapAttrsToList (_: s: s.domain) enabledServiceCfgs;
   everyDomainAnswered = builtins.all
@@ -72,12 +79,42 @@ let
     lib.hasInfix "bind 127.0.0.1 ::1 ${lanAddress}"
       vmtestConfig.services.caddy.virtualHosts."${d}".extraConfig)
     enabledDomains;
+
+  # ── media automation stack ───────────────────────────────────
+  mediaStackServices = ["radarr" "sonarr" "qbittorrent" "seerr"];
+  mediaServiceEnabled = name: vmtestConfig.fortress.services.${name}.enable;
+  mediaApplySvc = vmtestConfig.systemd.services.fortress-media-apply or null;
+  mediaKeygenSvc = vmtestConfig.systemd.services.fortress-media-api-keys or null;
+  qbittorrentCfg = vmtestConfig.services.qbittorrent;
+  qbittorrentFortressCfg = vmtestConfig.fortress.services.qbittorrent;
 in
 # ── dashboard.nix assertions ──────────────────────────────────
 # Every service declared in the customer-edited dashboard.nix must
 # render enabled in the real composition.
 assert lib.assertMsg (builtins.all dashboardServiceEnabled dashboardServices)
   "vmtest-wiring: a service enable from nixosConfigurations/dashboard.nix was dropped from the rendered config — the dashboard.nix extraction is broken";
+
+# ── media automation stack assertions ─────────────────────────
+# The single `media` toggle must render ALL four services plus the
+# keygen + apply oneshots — a silent drop anywhere in that chain
+# yields a half-wired stack that looks healthy in every per-service
+# check.
+assert lib.assertMsg (builtins.all mediaServiceEnabled mediaStackServices)
+  "vmtest-wiring: the media toggle did not render all four media stack services enabled";
+assert lib.assertMsg (mediaApplySvc != null && builtins.elem "multi-user.target" (mediaApplySvc.wantedBy or []))
+  "vmtest-wiring: fortress-media-apply is missing or has no boot activation — the stack would boot unwired";
+assert lib.assertMsg (mediaApplySvc != null && builtins.all (u: builtins.elem u (mediaApplySvc.after or [])) ["radarr.service" "sonarr.service" "qbittorrent.service" "fortress-media-api-keys.service"])
+  "vmtest-wiring: fortress-media-apply does not order after the media services — it could apply against half-up services";
+assert lib.assertMsg (mediaKeygenSvc != null && builtins.elem "multi-user.target" (mediaKeygenSvc.wantedBy or []))
+  "vmtest-wiring: fortress-media-api-keys is missing or has no boot activation — *arr API keys would never be pinned";
+assert lib.assertMsg (qbittorrentCfg.enable)
+  "vmtest-wiring: services.qbittorrent is not enabled";
+assert lib.assertMsg (qbittorrentFortressCfg.public == false)
+  "vmtest-wiring: qbittorrent's Caddy vhost is public — the web UI must stay the internal admin surface (seerr is the front door)";
+assert lib.assertMsg (vmtestConfig.systemd.services.qbittorrent.serviceConfig.PrivateUsers or null == false)
+  "vmtest-wiring: qbittorrent.service still has PrivateUsers=true — supplementary-group mapping to nobody would silently revoke access to the 0770 media subvolumes";
+assert lib.assertMsg (qbittorrentCfg.group == "jellyfin")
+  "vmtest-wiring: qbittorrent does not run in the jellyfin group — it could not write the media subvolume downloads dirs";
 # ── jellyfin assertions ────────────────────────────────────────
 assert lib.assertMsg (jellarrCfg.enable)
   "vmtest-wiring: services.jellarr is not enabled — the jellyfin service module must activate it";
@@ -91,6 +128,20 @@ assert lib.assertMsg (!(builtins.elem "Entertainment" folderNames))
   "vmtest-wiring: the jellyfin module's mkDefault virtualFolders leaked into vmtest (should be overridden)";
 assert lib.assertMsg (builtins.elem "multi-user.target" vmtestConfig.systemd.services.jellarr.wantedBy)
   "vmtest-wiring: jellarr.service has no boot activation — declarative config would never apply on first boot";
+
+# ── media library layout assertions ───────────────────────────
+# Jellyfin must scan the `library/` subdir of each media subvolume,
+# never the subvolume root — the `downloads/` staging area lives
+# beside it, and a root scan would surface in-flight, misnamed
+# torrents in the user's library (the "library lies" failure).
+assert lib.assertMsg (movieLibraryPath != null && lib.hasSuffix "/library" movieLibraryPath)
+  "vmtest-wiring: the Movies library does not point at a /library subdir (got: ${toString movieLibraryPath}) — raw downloads would leak into the Jellyfin library";
+assert lib.assertMsg (builtins.all (p: lib.hasSuffix "/library" p) (lib.filter (p: lib.hasInfix "/movies/" p || lib.hasInfix "/shows/" p) folderPaths))
+  "vmtest-wiring: a movie/show Jellyfin library path does not point at a /library subdir — raw downloads would leak into the library";
+assert lib.assertMsg (builtins.elem "${mediaSubvolumes."media-movies".mountpoint}/downloads" movieDirs && builtins.elem "${mediaSubvolumes."media-movies".mountpoint}/library" movieDirs)
+  "vmtest-wiring: the media-movies subvolume does not declare downloads/ + library/ dirs — the hardlink staging layout is missing";
+assert lib.assertMsg (builtins.elem "${mediaSubvolumes."media-shows".mountpoint}/downloads" showDirs && builtins.elem "${mediaSubvolumes."media-shows".mountpoint}/library" showDirs)
+  "vmtest-wiring: the media-shows subvolume does not declare downloads/ + library/ dirs — the hardlink staging layout is missing";
 
 # ── cryptpad assertions ───────────────────────────────────────
 assert lib.assertMsg (cpSso.enabled or false)

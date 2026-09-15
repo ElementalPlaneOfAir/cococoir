@@ -31,8 +31,6 @@
       cryptpad.public = true;
       radarr.public = false;
       sonarr.public = false;
-      lidarr.public = false;
-      prowlarr.public = false;
       dex.public = true;
     };
 

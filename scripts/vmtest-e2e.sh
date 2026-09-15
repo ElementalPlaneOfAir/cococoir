@@ -17,6 +17,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+echo "==> Killing any stale vmtest VM (holds ports 2222/443, would"
+echo "    silently poison this run's assertions with an old system)"
+for stale_pid in $(pgrep -f qemu-system-x86_64.*vmtest 2>/dev/null || true); do
+  kill -9 "$stale_pid" 2>/dev/null || true
+done
+wait 2>/dev/null || true
+
 echo "==> Nuking vmtest disk overlay (fresh boot state)"
 rm -f vmtest.qcow2
 

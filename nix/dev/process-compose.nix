@@ -31,5 +31,29 @@
         "FORTRESS_CONFIG_PATH=./nixosConfigurations/dashboard.nix"
       ];
     };
+    # A throwaway Redis for the local edge. No persistence — the edge
+    # only needs it as a live store while the dev box is up.
+    redis = {
+      command = "${pkgs.redis}/bin/redis-server --save \"\" --appendonly no";
+    };
+    # The edge in dummy mode (`--dummy`, a debug-builds-only flag): mock
+    # WG/DNS, console mailer, real forwarder + Redis store + HTTP wiring.
+    # Waits for redis to answer PING before booting (init fails fast
+    # otherwise), then `cargo run`s the debug binary so a source edit is
+    # picked up on the next bring-up. UI at http://localhost:8081.
+    #
+    # The `exec` line must stay on ONE physical line: process-compose
+    # runs commands through its own embedded shell, which mishandles
+    # backslash-newline continuations (it turns the trailing `\` into a
+    # stray `n` argument).
+    edge = {
+      command = ''
+        for i in $(seq 1 30); do
+          ${pkgs.redis}/bin/redis-cli ping >/dev/null 2>&1 && break
+          sleep 1
+        done
+        exec ${pkgs.cargo}/bin/cargo run --quiet --bin fortress-edge -- --dummy --subnet fd00::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081
+      '';
+    };
   };
 }

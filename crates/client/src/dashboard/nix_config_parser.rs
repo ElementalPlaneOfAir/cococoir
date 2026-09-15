@@ -403,24 +403,9 @@ pub const SERVICE_LIST: &[ServiceInfo] = &[
         description: "Google docs, but fully self-encrypted",
     },
     ServiceInfo {
-        nixname: "radarr",
-        display_name: "Radarr",
-        description: "Movie download automation",
-    },
-    ServiceInfo {
-        nixname: "sonarr",
-        display_name: "Sonarr",
-        description: "TV show download automation",
-    },
-    ServiceInfo {
-        nixname: "lidarr",
-        display_name: "Lidarr",
-        description: "Music download automation",
-    },
-    ServiceInfo {
-        nixname: "prowlarr",
-        display_name: "Prowlarr",
-        description: "Indexer manager for the *arrs",
+        nixname: "media",
+        display_name: "Media Automation",
+        description: "One switch: search, request, download movies and TV",
     },
 ];
 
@@ -550,7 +535,7 @@ in {
       enable = true;
       public = true;
     };
-    services.radarr.enable = false;
+    services.media.enable = false;
   };
 
   networking.hostName = "vmtest";
@@ -598,10 +583,10 @@ in {
             .expect("jellyfin enable present");
         assert_eq!(jellyfin.value, NixValue::Bool(true));
 
-        let radarr = file
-            .find_attrpath(&["fortress", "services", "radarr", "enable"])
-            .expect("radarr enable present");
-        assert_eq!(radarr.value, NixValue::Bool(false));
+        let media = file
+            .find_attrpath(&["fortress", "services", "media", "enable"])
+            .expect("media enable present");
+        assert_eq!(media.value, NixValue::Bool(false));
 
         let groups = file
             .find_attrpath(&["users", "users", "nicole", "groups"])
@@ -719,7 +704,7 @@ in {
         assert_eq!(config.root_domain.as_deref(), Some("vmtest.local"));
         assert_eq!(config.services_enabled.get("jellyfin"), Some(&true));
         assert_eq!(config.services_enabled.get("cryptpad"), Some(&true));
-        assert_eq!(config.services_enabled.get("radarr"), Some(&false));
+        assert_eq!(config.services_enabled.get("media"), Some(&false));
         assert_eq!(config.services_enabled.get("sonarr"), None, "not declared in file");
 
         let nicole = config.users.get("nicole").expect("nicole present");

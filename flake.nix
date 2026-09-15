@@ -60,6 +60,21 @@
       ];
     };
 
+    # Full-OS container tier (collaborator / tinkerer): the vmtest
+    # demo stack as a `docker import`-able rootfs tarball (systemd
+    # as PID 1). See nixosConfigurations/fortress-container.nix.
+    # x86_64-linux only: the image is built for the host's docker.
+    fortressContainer = inputs.nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      pkgs = withCrane "x86_64-linux";
+      specialArgs = { inherit inputs; };
+      modules = [
+        ./nixosConfigurations/fortress-container.nix
+        "${inputs.nixpkgs}/nixos/modules/virtualisation/docker-image.nix"
+        inputs.jellarr.nixosModules.default
+      ];
+    };
+
     # Customer box (home machine, full v2 stack) is rendered by
     # remote-infra/tofu from templates/example123.nix.tftpl — do not
     # hand-edit, and it is NOT exposed as a flake nixosConfiguration:
@@ -105,6 +120,11 @@
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
 
+      # Full-OS container tier. Build + run with `nix run
+      # .#fortress-container` (macOS: untested — see
+      # nixosConfigurations/fortress-container.nix).
+      flake.nixosConfigurations.fortress-container = fortressContainer;
+
       perSystem = {pkgs, self', system, ...}: let
         # Real nixpkgs for dev tooling. flake-parts' perSystem `pkgs`
         # come from a vendored nixpkgs fork (its `dex` is the
@@ -127,6 +147,14 @@
             inherit (withCrane system) pkgs;
             vmtestConfig = vmtest.config;
           }
+        )
+        # fortress-container is pinned to x86_64-linux; only wire its
+        # wiring tripwire into checks on that system.
+        // pkgs.lib.optionalAttrs (system == "x86_64-linux") (
+          import ./nix/tests/container-wiring {
+            inherit (withCrane system) pkgs;
+            containerConfig = fortressContainer.config;
+          }
         );
         # The app's `program` field is just a string path. We avoid
         # interpolation of `vmtest.config.system.build.vm` (which
@@ -140,6 +168,65 @@
             exec nix run .#nixosConfigurations.vmtest.config.system.build.vm -- "$@"
           '');
         };
+        # Full-OS container demo tier (x86_64-linux only; the
+        # nixosConfiguration exists only there). Builds the rootfs
+        # tarball, imports it, and runs it: systemd as PID 1, Caddy on
+        # the published :443, service data on a named host volume.
+        #
+        # macOS: UNTESTED STUB. The container needs no WireGuard/tun
+        # kernel support (the demo tier has no tunnel), so the risk is
+        # Docker Desktop quirks around privileged systemd containers
+        # (cgroups) and `docker import` of the xz tarball. If this
+        # fails on a Mac, the fallback is `nix run .#vmtest` (QEMU via
+        # UTM/Lima), and the WireGuard permission question is then
+        # revisit-able with real data.
+        apps.fortress-container =
+          if system == "x86_64-linux"
+          then {
+            type = "app";
+            program = toString (pkgs.writeShellScript "fortress-container" ''
+              set -euo pipefail
+              if [ "$(uname -s)" = "Darwin" ]; then
+                echo "WARNING: macOS is UNTESTED for the container tier." >&2
+                echo "If this fails, use 'nix run .#vmtest' (QEMU) instead," >&2
+                echo "or report the failure — the stub exists to gather exactly this." >&2
+              fi
+              tarball="$(nix build --print-out-paths \
+                .#nixosConfigurations.fortress-container.config.system.build.tarball \
+                --no-link)"
+              # Stream-decompress into the import: a direct
+              # `podman import <file.tar.xz>` wedged at 100% CPU on
+              # this rootless podman (container-e2e found it); the
+              # pipe works identically for docker and podman.
+              xz -dc "$tarball/tarball/nixos-system-x86_64-linux.tar.xz" \
+                | docker import - fortress:demo
+              docker rm -f fortress-demo 2>/dev/null || true
+              docker run --privileged -d --name fortress-demo \
+                -p 443:443 \
+                -v fortress-data:/data \
+                fortress:demo /init
+              echo ""
+              echo "fortress-demo container started. Boot log:"
+              sleep 2
+              docker logs fortress-demo
+              echo ""
+              echo "Then (on the host) add to /etc/hosts:"
+              echo "  127.0.0.1 jellyfin.vmtest.local auth.vmtest.local cryptpad.vmtest.local"
+              echo "and visit https://jellyfin.vmtest.local (self-signed cert;"
+              echo "accept the risk). Login: admin@example.com / password (Dex)."
+              echo "Logs: docker logs -f fortress-demo   Shell: docker exec -it fortress-demo bash"
+              echo ""
+              echo "Following container logs (Ctrl-C to stop following):"
+              docker logs -f fortress-demo
+            '');
+          }
+          else {
+            type = "app";
+            program = toString (pkgs.writeShellScript "fortress-container-unsupported" ''
+              echo "fortress-container is x86_64-linux only (the tier ships no ${system} image)." >&2
+              exit 1
+            '');
+          };
         # secretspec 0.19 CLI from the flake's locked nixpkgs. The
         # devshell's `secretspec` comes from devenv's own nixpkgs and is
         # an older version without the `file` provider backend, so the
@@ -150,9 +237,12 @@
           type = "app";
           program = "${realPkgs.secretspec}/bin/secretspec";
         };
-        # Dashboard live-edit loop, managed by process-compose: bacon's
-        # dashboard job with the admin login enabled, torn down cleanly
-        # on Ctrl-C. Run from the repo root:
+        # Dashboard live-edit loop + local edge, managed by
+        # process-compose: bacon's dashboard job (admin login enabled),
+        # a throwaway redis, and the edge in debug-only `--dummy` mode
+        # (mock WG/DNS, console mailer, real HTTP/store wiring at
+        # :8081), all torn down cleanly on Ctrl-C. Run from the repo
+        # root:
         #   nix run .#dashboard-dev
         # The pc spec lives in nix/dev/process-compose.nix — dev
         # tooling, deliberately outside the nixos modules.

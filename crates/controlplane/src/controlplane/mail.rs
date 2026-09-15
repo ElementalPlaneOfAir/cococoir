@@ -226,6 +226,13 @@ pub fn init_mailer() -> Result<(), MailerError> {
     Ok(())
 }
 
+/// Initialize the process mailer to the console printer — for the
+/// dev/dummy boot path, which must not touch the boot-only `SECRETS`
+/// (absent on a dev box). Magic links print to stdout, same as L2.
+pub fn init_console_mailer() {
+    let _ = MAILER.set(Box::new(ConsoleMailer));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

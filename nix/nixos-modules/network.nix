@@ -44,11 +44,13 @@ let
   cfg = config.fortress.network;
 
   # Domains of every enabled factory service. Derived, never
-  # configured — dnsmasq coverage tracks the service tree.
+  # configured — dnsmasq coverage tracks the service tree. The
+  # aggregate toggles (e.g. `media`) carry no vhost of their own —
+  # only factory services have a domain.
   enabledDomains =
     lib.unique
       (lib.mapAttrsToList (_: s: s.domain)
-        (lib.filterAttrs (_: s: s.enable or false) config.fortress.services));
+        (lib.filterAttrs (_: s: (s.enable or false) && (s ? domain)) config.fortress.services));
 in
 {
   options.fortress.network = {

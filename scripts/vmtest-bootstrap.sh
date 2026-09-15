@@ -48,7 +48,8 @@ echo "─── Services ───"
 # snapshot check would race them, so the dedicated wait loop
 # below owns their verification.
 for svc in dex fortress-jellyfin-oidc-secret jellyfin \
-  fortress-jellarr-api-key fortress-cryptpad-oidc-secret cryptpad; do
+  fortress-jellarr-api-key fortress-cryptpad-oidc-secret cryptpad \
+  qbittorrent seerr fortress-media-api-keys; do
   state=$(systemctl is-active $svc.service 2>/dev/null || true)
   [ -n "$state" ] || state=missing
   case "$state" in
@@ -76,7 +77,7 @@ done
 echo ""
 echo "─── Jellarr (declarative config applied) ───"
 jellarr_ok=0
-for i in $(seq 1 150); do
+for i in $(seq 1 450); do
   if systemctl is-failed -q jellarr.service \
     || systemctl is-failed -q jellarr-api-key-bootstrap.service \
     || systemctl is-failed -q fortress-jellarr-api-key.service; then
@@ -96,6 +97,83 @@ for i in $(seq 1 150); do
   sleep 2
 done
 [ "$jellarr_ok" = "1" ] || fail "jellarr pipeline" "timeout"
+
+echo ""
+echo "─── Media automation stack (qbittorrent, radarr, sonarr, seerr) ───"
+apply_ok=0
+for i in $(seq 1 450); do
+  if systemctl is-failed -q fortress-media-api-keys.service \
+    || systemctl is-failed -q fortress-media-apply.service; then
+    fail "media-apply pipeline" "FAILED"
+    journalctl -u fortress-media-api-keys -u fortress-media-apply \
+      --no-pager -n 40 >&2 || true
+    break
+  fi
+  state=$(systemctl is-active fortress-media-apply.service 2>/dev/null || true)
+  if [ "$state" = "active" ]; then
+    apply_ok=1
+    pass "media-apply pipeline" "applied"
+    break
+  fi
+  sleep 2
+done
+[ "$apply_ok" = "1" ] || fail "media-apply pipeline" "timeout"
+
+if [ "$apply_ok" = "1" ]; then
+  radarr_key=$(cat /var/lib/fortress-media/radarr-api-key)
+  sonarr_key=$(cat /var/lib/fortress-media/sonarr-api-key)
+
+  qbt_ok=0
+  for i in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:8080/api/v2/torrents/categories \
+      | jq -e 'has("movies") and has("tv")' >/dev/null 2>&1; then
+      qbt_ok=1
+      pass "qbt categories" "movies + tv save paths"
+      break
+    fi
+    sleep 2
+  done
+  [ "${qbt_ok:-0}" = "1" ] || fail "qbt categories" "missing movies/tv save paths"
+
+  for svc in radarr sonarr; do
+    port=$( [ "$svc" = radarr ] && echo 7878 || echo 8989 )
+    key=$(cat "/var/lib/fortress-media/$svc-api-key")
+    arr_ok=0
+    for i in $(seq 1 30); do
+      if curl -sf -H "X-Api-Key: $key" "http://127.0.0.1:$port/api/v3/downloadclient" \
+        | jq -e 'map(select(.name == "qBittorrent")) | length > 0' >/dev/null 2>&1; then
+        arr_ok=1
+        pass "$svc download client" "qBittorrent wired (category)"
+        break
+      fi
+      sleep 2
+    done
+    [ "$arr_ok" = "1" ] || fail "$svc download client" "qBittorrent missing"
+  done
+
+  seerr_ok=0
+  seerr_cookie=$(mktemp)
+  # Seerr's only first-boot admin path is Jellyfin sign-in (local login
+  # has no admin-creation route); re-auth the bootstrap user.
+  if curl -sf -c "$seerr_cookie" -H 'Content-Type: application/json' \
+      -d "{\"username\": \"seerr-bootstrap\", \"password\": \"$(cat /var/lib/fortress-media/seerr-admin-password)\", \"hostname\": \"127.0.0.1\", \"port\": 8096, \"useSsl\": false, \"urlBase\": \"\", \"serverType\": 2}" \
+      http://127.0.0.1:5055/api/v1/auth/jellyfin >/dev/null \
+    || curl -sf -c "$seerr_cookie" -H 'Content-Type: application/json' \
+      -d "{\"username\": \"seerr-bootstrap\", \"password\": \"$(cat /var/lib/fortress-media/seerr-admin-password)\", \"useSsl\": false, \"serverType\": 2}" \
+      http://127.0.0.1:5055/api/v1/auth/jellyfin >/dev/null; then
+    for i in $(seq 1 30); do
+      if curl -sf -b "$seerr_cookie" http://127.0.0.1:5055/api/v1/settings/radarr \
+        | jq -e 'map(select(.hostname == "127.0.0.1" and .port == 7878)) | length > 0' >/dev/null 2>&1; then
+        seerr_ok=1
+        pass "seerr wiring" "radarr + sonarr + jellyfin connected"
+        break
+      fi
+      sleep 2
+    done
+  fi
+  [ "${seerr_ok:-0}" = "1" ] || fail "seerr wiring" "radarr instance missing or login refused"
+  rm -f "$seerr_cookie"
+fi
 
 # The login page renders the branding jellarr pushed — the
 # end-to-end proof that declarative config (incl. the OIDC
@@ -125,7 +203,7 @@ echo "─── Health ───"
 # from "backend down". NixOS's security.pki extras land in the bundle
 # file only (the hashed /etc/ssl/certs dir stays the stock cacert set),
 # so verify against the bundle, not -CApath.
-for d in auth jellyfin cryptpad radarr sonarr lidarr prowlarr; do
+for d in auth jellyfin cryptpad radarr sonarr qbittorrent seerr; do
   host="$d.vmtest.local"
   if echo | timeout 10 openssl s_client -connect 127.0.0.1:443 \
       -servername "$host" -verify_hostname "$host" \
@@ -152,7 +230,7 @@ case "$dnsmasq_state" in
   *) fail "dnsmasq" "${dnsmasq_state:-missing}" ;;
 esac
 
-for d in auth jellyfin cryptpad radarr sonarr lidarr prowlarr; do
+for d in auth jellyfin cryptpad radarr sonarr qbittorrent seerr; do
   host="$d.vmtest.local"
   ans=$(dig @"$LAN" +short "$host" A 2>/dev/null | head -1)
   if [ "$ans" = "$LAN" ]; then

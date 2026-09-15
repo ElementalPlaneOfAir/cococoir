@@ -83,7 +83,20 @@ let
     path = sv.mountpoint;
     quota = sv.quota;
     owner = sv.owner;
+    dirs = sv.dirs;
   }) cfg.btrfs.subvolumes;
+
+  dirLine = name: dir: ''
+    ${pkgs.coreutils}/bin/mkdir -p ${escapeShellArg name}
+    ${pkgs.coreutils}/bin/chown ${escapeShellArg (dir.user + (if dir.group != null then ":" + dir.group else ""))} ${escapeShellArg name}
+    ${optionalString (dir.mode != null) ''
+      ${pkgs.coreutils}/bin/chmod ${escapeShellArg dir.mode} ${escapeShellArg name}
+    ''}
+  '';
+
+  subvolumeDirsLine = sv:
+    concatMapStringsSep "\n" (name: dirLine name sv.dirs.${name})
+      (builtins.attrNames sv.dirs);
 
   subvolumeCreateLine = sv: ''
     echo "[fortress-btrfs] subvolume ${sv.path}"
@@ -105,6 +118,7 @@ let
         ${pkgs.coreutils}/bin/chmod ${escapeShellArg sv.owner.mode} ${escapeShellArg sv.path}
       ''}
     ''}
+    ${subvolumeDirsLine sv}
   '';
 
   subvolumeCreate = pkgs.writeShellScript "fortress-btrfs-subvolume-create" ''
@@ -115,6 +129,31 @@ let
 in
 {
   options.fortress.storage = {
+    backend = mkOption {
+      type = types.enum ["btrfs" "plain-dirs"];
+      default = "btrfs";
+      description = ''
+        Storage backend. `btrfs` is the customer tier (ADR-023:
+        pool + subvolumes on real disks). `plain-dirs` is the
+        container tier (`nixosConfigurations/fortress-container.nix`):
+        the same auto-declared subvolume tree is applied as plain
+        directories under `dataRoot` (systemd-tmpfiles), inside a
+        bind-mounted volume. Not customer-facing — a tier setting,
+        set once by the platform config that needs it.
+      '';
+    };
+
+    dataRoot = mkOption {
+      type = types.path;
+      default = cfg.btrfs.pool.mountpoint;
+      description = ''
+        Directory tree services write under (media libraries,
+        service data). Defaults to the btrfs pool mountpoint so
+        the customer tier needs no extra option; the container
+        tier overrides it to the volume bind-mount point.
+      '';
+    };
+
     enable = mkOption {
       type = types.bool;
       default = true;
@@ -218,6 +257,35 @@ in
                 user, which breaks any service that persists data.
               '';
             };
+
+            dirs = mkOption {
+              type = types.attrsOf (types.submodule {
+                options = {
+                  user = mkOption {
+                    type = types.str;
+                    description = "System user that owns the directory.";
+                  };
+                  group = mkOption {
+                    type = types.nullOr types.str;
+                    default = null;
+                    description = "Owning group. Defaults to the user's primary group when null.";
+                  };
+                  mode = mkOption {
+                    type = types.nullOr types.str;
+                    default = null;
+                    example = "770";
+                    description = "Permission bits applied at creation. null = leave umask default.";
+                  };
+                };
+              });
+              default = {};
+              description = ''
+                Plain directories created inside the subvolume (and
+                converged on every boot, with the same owner/mode
+                semantics as the subvolume itself). The key is the
+                absolute path of the directory.
+              '';
+            };
           };
         });
         default = {};
@@ -230,7 +298,7 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf (cfg.enable && cfg.backend == "btrfs") {
     assertions = [
       {
         assertion = devices != [];

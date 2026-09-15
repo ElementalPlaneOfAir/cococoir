@@ -60,17 +60,17 @@ let
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
-    lidarr = [
+    qbittorrent = [
       "mkFortressService {"
-      "name = \"lidarr\";"
-      "defaultPort = 8686;"
+      "name = \"qbittorrent\";"
+      "defaultPort = 8080;"
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
-    prowlarr = [
+    seerr = [
       "mkFortressService {"
-      "name = \"prowlarr\";"
-      "defaultPort = 9696;"
+      "name = \"seerr\";"
+      "defaultPort = 5055;"
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
@@ -78,12 +78,29 @@ let
 
   readService = name: builtins.readFile (../../nixos-modules/services + "/${name}.nix");
 
+  # Storage-backend tripwire (storage/plain-dirs.nix, the container
+  # tier). Service modules must derive paths from
+  # fortress.storage.dataRoot and gate any
+  # fortress-btrfs-subvolumes.service unit reference behind the
+  # btrfsStorage gate. A hard-wired pool.mountpoint or an ungated
+  # subvolume-unit reference renders fine on the customer (btrfs)
+  # tier and breaks the container tier at boot — pure eval cannot
+  # catch it, this source grep can.
+  storageTripwire = name:
+    let src = readService name; in
+    assert lib.assertMsg (!(lib.hasInfix "btrfs.pool.mountpoint" src))
+      "contract-conformance: ${name}.nix hard-wires fortress.storage.btrfs.pool.mountpoint — derive from fortress.storage.dataRoot instead (storage backend split)";
+    assert lib.assertMsg (!(lib.hasInfix "fortress-btrfs-subvolumes" src) || lib.hasInfix "btrfsStorage" src)
+      "contract-conformance: ${name}.nix references fortress-btrfs-subvolumes.service without the btrfsStorage gate — ungated, the reference kills the service on the plain-dirs (container) tier";
+    "ok";
+
   check = name: needle:
     if lib.hasInfix needle (readService name) then "ok"
     else "MISSING: ${lib.escape ["\""] needle}";
 
   report = lib.concatStringsSep "\n" (lib.concatLists (lib.mapAttrsToList (name: needles:
     map (n: "  ${name}: ${check name n}") needles
+    ++ ["  ${name}: ${storageTripwire name}"]
   ) expected));
 in
 assert lib.assertMsg (!(lib.hasInfix "MISSING" report))

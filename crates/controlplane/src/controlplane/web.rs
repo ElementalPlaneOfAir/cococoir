@@ -83,33 +83,150 @@ async fn session_email(cp: &'static ControlPlane, req: &Request) -> Option<Strin
 
 // ── pages (momenta + daisyUI, same as the client dashboard) ─────────
 
-/// The custom CSS the landing page needs beyond Tailwind/daisyUI
-/// utilities: the radial glow background, gradient headline text, the
-/// soft card shadow, and the checkmark list ticks. Injected raw via
-/// `_dangerously_set_inner_html` because a `<style>` child would have
-/// its `>` and `/` escaped as text.
+/// The landing page's zine stylesheet: paper/ink/red palette, grain and
+/// halftone texture, stamp badges, hard-shadow cards, and the jagged
+/// section tears. Injected raw via `_dangerously_set_inner_html` because
+/// a `<style>` child would have its `>` and `/` escaped as text.
 const LANDING_CSS: &str = r#"
+  :root {
+    --paper: #f3eee3;
+    --ink: #16110b;
+    --red: #d02a1e;
+    --red-deep: #8f1410;
+  }
   body {
-    background:
-      radial-gradient(1200px 600px at 50% -10%, oklch(0.3 0.12 290 / 0.5), transparent 60%),
-      radial-gradient(900px 500px at 85% 10%, oklch(0.35 0.1 200 / 0.35), transparent 55%),
-      var(--color-base-100);
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
-  .glow-text {
-    background: linear-gradient(100deg, var(--color-primary), var(--color-accent) 45%, var(--color-secondary));
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    pointer-events: none;
+    mix-blend-mode: multiply;
+    opacity: 0.5;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.22'/%3E%3C/svg%3E");
   }
-  .card-glow {
-    box-shadow: 0 0 0 1px oklch(1 0 0 / 0.06), 0 20px 60px -20px oklch(0 0 0 / 0.6);
+  ::selection { background: var(--red); color: var(--paper); }
+  .bg-paper { background: var(--paper); }
+  .text-ink { color: var(--ink); }
+  .text-red { color: var(--red); font-weight: 700; }
+  .bg-red { background: var(--red); }
+  .border-ink { border-color: var(--ink); }
+  .dim { color: rgba(22, 17, 11, 0.72); }
+  .faint { color: rgba(22, 17, 11, 0.5); }
+  .tag { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+  .mark {
+    background: var(--red);
+    color: var(--paper);
+    padding: 0 0.18em;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  .stamp {
+    display: inline-block;
+    border: 2.5px solid var(--red);
+    color: var(--red);
+    padding: 0.55rem 1rem;
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    transform: rotate(-2deg);
+  }
+  .stamp-sm { padding: 0.3rem 0.7rem; border-width: 2px; font-size: 0.65rem; }
+  .btn-zine {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    padding: 0.8rem 1.6rem;
+    font-weight: 700;
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-decoration: none;
+    box-shadow: 6px 6px 0 var(--ink);
+    transition: transform 80ms, box-shadow 80ms;
+  }
+  .btn-zine:hover { transform: translate(3px, 3px); box-shadow: 3px 3px 0 var(--ink); }
+  .btn-zine-red { background: var(--red); color: var(--paper); }
+  .btn-zine-sm { padding: 0.45rem 0.8rem; font-size: 0.72rem; box-shadow: 4px 4px 0 var(--ink); }
+  .btn-zine-sm:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+  .zine-card {
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    box-shadow: 8px 8px 0 var(--ink);
+  }
+  .code-zine {
+    background: var(--ink);
+    color: var(--paper);
+    border-left: 6px solid var(--red);
+    padding: 1rem;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .stepnum {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    flex: none;
+    background: var(--red);
+    color: var(--paper);
+    font-weight: 700;
+    border: 2px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--ink);
   }
   .tick::before {
-    content: "✓";
-    color: var(--color-success);
+    content: "»";
+    color: var(--red);
     font-weight: 700;
     margin-right: 0.5rem;
   }
+  .crossed {
+    text-decoration: line-through;
+    text-decoration-color: var(--red);
+    text-decoration-thickness: 3px;
+  }
+  .chip {
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    box-shadow: 3px 3px 0 var(--ink);
+    padding: 0.4rem 0.8rem;
+    font-size: 0.82rem;
+  }
+  .link-zine {
+    color: var(--ink);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-decoration: underline;
+    text-decoration-color: var(--red);
+    text-decoration-thickness: 3px;
+    text-underline-offset: 3px;
+  }
+  .halftone {
+    background-image: radial-gradient(circle, rgba(22, 17, 11, 0.13) 1.1px, transparent 1.2px);
+    background-size: 9px 9px;
+  }
+  .torn {
+    height: 16px;
+    background: var(--red);
+    clip-path: polygon(0 45%, 2% 75%, 4% 30%, 7% 80%, 10% 35%, 13% 75%, 16% 25%, 19% 70%, 22% 40%, 25% 85%, 28% 30%, 31% 70%, 34% 35%, 37% 80%, 40% 25%, 43% 75%, 46% 40%, 49% 85%, 52% 30%, 55% 70%, 58% 35%, 61% 80%, 64% 25%, 67% 70%, 70% 40%, 73% 85%, 76% 30%, 79% 75%, 82% 35%, 85% 80%, 88% 25%, 91% 70%, 94% 40%, 97% 80%, 100% 35%, 100% 100%, 0 100%);
+  }
+  .ticker { background: var(--red); color: var(--paper); overflow: hidden; border-bottom: 2px solid var(--ink); }
+  .ticker-track { display: flex; width: max-content; animation: ticker-scroll 36s linear infinite; }
+  .ticker-track span { display: inline-block; padding: 0.35rem 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; }
+  @keyframes ticker-scroll { to { transform: translateX(-50%); } }
 "#;
 
 /// The auth pages' shell: a centered, narrow column of forms.
@@ -133,7 +250,7 @@ fn page_shell(title: &str, main: Node) -> Node {
 /// The landing page's shell: full-width, with the custom marketing CSS.
 fn landing_shell(main: Node) -> Node {
     rsx!(
-        <html lang="en" data_theme="dark">
+        <html lang="en" data_theme="light">
             <head>
                 <title>"Fortress — your home server, your rules"</title>
                 <meta charset="UTF-8"/>
@@ -142,7 +259,7 @@ fn landing_shell(main: Node) -> Node {
                 <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
                 <style _dangerously_set_inner_html={LANDING_CSS}></style>
             </head>
-            <body class="min-h-screen text-base-content">{main}</body>
+            <body class="min-h-screen text-ink">{main}</body>
         </html>
     )
 }
@@ -168,200 +285,193 @@ pub fn Landing(props: &LandingProps) -> Node {
     let nav_auth = if props.logged_in {
         rsx!(
             <>
-                <span class="text-sm text-base-content/60 hidden sm:inline">{props.email.as_deref().unwrap_or("")}</span>
-                <a href="/auth/logout" class="btn btn-ghost btn-sm">"Sign out"</a>
+                <span class="tag dim hidden sm:inline">{props.email.as_deref().unwrap_or("")}</span>
+                <a href="/auth/logout" class="btn-zine btn-zine-sm">"Sign out"</a>
             </>
         )
     } else {
-        rsx!(<a href="/register" class="btn btn-primary btn-sm">"Create account"</a>)
+        rsx!(<a href="/register" class="btn-zine btn-zine-red btn-zine-sm">"Create account"</a>)
     };
 
     // The hero's primary CTA: always the account/order path.
     let hero_cta = if props.logged_in {
-        rsx!(<a href="/" class="btn btn-primary btn-lg px-8">"Go to my dashboard"</a>)
+        rsx!(<a href="/" class="btn-zine btn-zine-red">"Go to my dashboard"</a>)
     } else {
-        rsx!(<a href="/register" class="btn btn-primary btn-lg px-8">"Order a box"</a>)
+        rsx!(<a href="/register" class="btn-zine btn-zine-red">"Order a box"</a>)
     };
+
+    let ticker_text =
+        "no masters · no clouds · your keys, your machine · worker cooperative · open source · agpl-3.0 · no ads · no tracking · ".repeat(4);
 
     landing_shell(rsx!(
         <>
-            
-            <nav class="navbar sticky top-0 z-40 backdrop-blur-md bg-base-100/70 border-b border-white/5 px-6">
-                <div class="flex-1 items-center gap-2">
-                    {shield_icon("h-7 w-7 text-primary")}
-                    <span class="text-lg font-bold tracking-tight">"Fortress"</span>
+
+            <nav class="sticky top-0 z-40 bg-paper border-b-2 border-ink px-6">
+                <div class="flex-1 flex items-center gap-2">
+                    {shield_icon("h-6 w-6 text-red")}
+                    <span class="text-lg font-black uppercase tracking-tight">"Fortress"</span>
                 </div>
-                <div class="flex-none gap-2">
-                    <a href="#install" class="btn btn-ghost btn-sm hidden sm:inline-flex">"Install"</a>
+                <div class="flex-none flex items-center gap-4">
+                    <a href="#install" class="tag dim hidden sm:inline">"Install"</a>
                     {nav_auth}
                 </div>
             </nav>
 
-            
-            <header class="px-6 pt-20 pb-16 text-center">
+            <div class="ticker" aria_hidden={true}>
+                <div class="ticker-track">
+                    <span>{ticker_text.clone()}</span>
+                    <span>{ticker_text.clone()}</span>
+                </div>
+            </div>
+
+            <header class="halftone px-6 pt-16 pb-14 text-center">
                 <div class="mx-auto max-w-3xl">
-                    <div class="badge badge-outline badge-sm mb-6 gap-2 px-3 py-3">
-                        <span class="h-2 w-2 rounded-full bg-success animate-pulse"></span>
-                        "A worker cooperative · open source · NixOS"
-                    </div>
-                    <h1 class="text-5xl sm:text-6xl font-black tracking-tight leading-[1.05]">
+                    <div class="stamp mb-8">"A worker cooperative · open source · NixOS"</div>
+                    <h1 class="text-5xl sm:text-6xl font-black uppercase leading-[1.02] tracking-tight">
                         <span class="block">"Your home server."</span>
-                        <span class="block glow-text">"Your data. Your rules."</span>
+                        <span class="block mt-3"><span class="mark">"Your data. Your rules."</span></span>
                     </h1>
-                    <p class="mx-auto mt-6 max-w-xl text-lg text-base-content/70">
+                    <p class="mx-auto mt-8 max-w-xl text-lg dim">
                         "Fortress replaces Google Docs, Dropbox, Netflix and Ring with a self-hosted box in your house — reachable from anywhere, with every key on your own hardware."
                     </p>
-                    <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+                    <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
                         {hero_cta}
-                        <a href="#install" class="btn btn-outline btn-lg px-8">"Install it yourself"</a>
+                        <a href="#install" class="btn-zine">"Install it yourself"</a>
                     </div>
-                    <div class="mt-12 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-base-content/50">
-                        <span>"Own your data"</span>
-                        <span class="text-base-content/20">"•"</span>
-                        <span>"Remote access built in"</span>
-                        <span class="text-base-content/20">"•"</span>
-                        <span>"One login for everything"</span>
-                        <span class="text-base-content/20">"•"</span>
-                        <span>"No subscription lock-in"</span>
+                    <div class="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+                        <span class="tag dim">"Own your data"</span>
+                        <span class="text-red">"★"</span>
+                        <span class="tag dim">"Remote access built in"</span>
+                        <span class="text-red">"★"</span>
+                        <span class="tag dim">"One login for everything"</span>
+                        <span class="text-red">"★"</span>
+                        <span class="tag dim">"No subscription lock-in"</span>
                     </div>
                 </div>
             </header>
 
-            
-            <section class="px-6 py-10">
+            <div class="torn"></div>
+
+            <section class="px-6 py-12">
                 <div class="mx-auto max-w-5xl">
-                    <div class="flex flex-wrap items-center justify-center gap-3">
-                        <span class="text-sm text-base-content/50 mr-2">"Replaces:"</span>
-                        <div class="flex flex-wrap justify-center gap-3">
-                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"Google Docs → " <b class="text-success">"CryptPad"</b></span>
-                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"Netflix → " <b class="text-success">"Jellyfin"</b></span>
-                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"+ Radarr, Sonarr, Lidarr, Prowlarr"</span>
-                            <span class="px-4 py-2 rounded-xl bg-base-200/60 text-sm">"Nextcloud" <b class="badge badge-sm badge-outline ml-1">"soon"</b></span>
+                    <div class="flex flex-wrap items-center justify-center gap-4">
+                        <span class="tag dim mr-2">"Replaces:"</span>
+                        <div class="flex flex-wrap justify-center gap-4">
+                            <span class="chip"><span class="crossed">"Google Docs"</span>" → "<b class="text-red">"CryptPad"</b></span>
+                            <span class="chip"><span class="crossed">"Netflix"</span>" → "<b class="text-red">"Jellyfin"</b></span>
+                            <span class="chip">"+ Radarr, Sonarr, Lidarr, Prowlarr"</span>
+                            <span class="chip">"Nextcloud"<span class="stamp stamp-sm ml-2">"soon"</span></span>
                         </div>
                     </div>
                 </div>
             </section>
 
-            
             <section class="px-6 py-14">
                 <div class="mx-auto max-w-5xl">
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-                        <div class="card bg-base-200/50 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class="h-8 w-8 text-primary"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-                                <h3 class="card-title text-lg">"Your keys, your hardware"</h3>
-                                <p class="text-sm text-base-content/60">"TLS and WireGuard keys never leave your house. Nobody else can decrypt your traffic — not even us."</p>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-start justify-between gap-2">
+                                <h3 class="font-black uppercase text-lg leading-tight">"Your keys, your hardware"</h3>
+                                <span class="text-red text-xl font-black">"01"</span>
                             </div>
+                            <p class="text-sm dim">"TLS and WireGuard keys never leave your house. Nobody else can decrypt your traffic — not even us."</p>
                         </div>
-                        <div class="card bg-base-200/50 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class="h-8 w-8 text-accent"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                                <h3 class="card-title text-lg">"Reachable anywhere"</h3>
-                                <p class="text-sm text-base-content/60">"One encrypted tunnel to a box in the cloud. Jellyfin, docs, photos — from any phone, on any network, no port forwarding."</p>
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-start justify-between gap-2">
+                                <h3 class="font-black uppercase text-lg leading-tight">"Reachable anywhere"</h3>
+                                <span class="text-red text-xl font-black">"02"</span>
                             </div>
+                            <p class="text-sm dim">"One encrypted tunnel to a box in the cloud. Jellyfin, docs, photos — from any phone, on any network, no port forwarding."</p>
                         </div>
-                        <div class="card bg-base-200/50 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" class="h-8 w-8 text-secondary"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                                <h3 class="card-title text-lg">"One login for everything"</h3>
-                                <p class="text-sm text-base-content/60">"Every service signs in with the same account. Add a user once, they get every app — no per-app password sprawl."</p>
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-start justify-between gap-2">
+                                <h3 class="font-black uppercase text-lg leading-tight">"One login for everything"</h3>
+                                <span class="text-red text-xl font-black">"03"</span>
                             </div>
+                            <p class="text-sm dim">"Every service signs in with the same account. Add a user once, they get every app — no per-app password sprawl."</p>
                         </div>
                     </div>
                 </div>
             </section>
 
-            
             <section class="px-6 py-14">
                 <div class="mx-auto max-w-5xl">
-                    <h2 class="text-center text-3xl font-bold mb-10">"Two ways in"</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                        <div class="card bg-base-100 border border-white/5 card-glow">
-                            <div class="card-body gap-4">
-                                <div class="badge badge-primary badge-sm w-fit">"Zero setup"</div>
-                                <h3 class="card-title text-2xl">"Buy a box"</h3>
-                                <p class="text-sm text-base-content/60">"We assemble, install and ship a pre-configured Fortress. Plug it in, connect ethernet, and claim it with your account in under five minutes."</p>
-                                <ul class="flex flex-col gap-2 text-sm">
-                                    <li class="tick">"Pre-installed NixOS + all services"</li>
-                                    <li class="tick">"Encrypted offsite backups included"</li>
-                                    <li class="tick">"Support from real humans"</li>
-                                </ul>
-                                <div class="card-actions mt-2"><a href="/register" class="btn btn-primary">"Get yours"</a></div>
-                            </div>
+                    <h2 class="text-center text-3xl font-black uppercase mb-10"><span class="mark">"Two ways in"</span></h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div class="zine-card p-6 flex flex-col gap-3 h-full">
+                            <div class="stamp stamp-sm w-fit">"Zero setup"</div>
+                            <h3 class="text-2xl font-black uppercase">"Buy a box"</h3>
+                            <p class="text-sm dim">"We assemble, install and ship a pre-configured Fortress. Plug it in, connect ethernet, and claim it with your account in under five minutes."</p>
+                            <ul class="flex flex-col gap-2 text-sm">
+                                <li class="tick">"Pre-installed NixOS + all services"</li>
+                                <li class="tick">"Encrypted offsite backups included"</li>
+                                <li class="tick">"Support from real humans"</li>
+                            </ul>
+                            <div class="mt-auto pt-3"><a href="/register" class="btn-zine btn-zine-red">"Get yours"</a></div>
                         </div>
-                        <div class="card bg-base-100 border border-white/5 card-glow">
-                            <div class="card-body gap-4">
-                                <div class="badge badge-accent badge-sm w-fit">"Bring your own hardware"</div>
-                                <h3 class="card-title text-2xl">"Install on your machine"</h3>
-                                <p class="text-sm text-base-content/60">"Fortress is a NixOS module. Point your flake at it, enable the services you want, rebuild. No setup wizard, no app store."</p>
-                                <ul class="flex flex-col gap-2 text-sm">
-                                    <li class="tick">"Free forever, AGPL-3.0"</li>
-                                    <li class="tick">"Run as many machines as you like"</li>
-                                    <li class="tick">"Same remote access as a box"</li>
-                                </ul>
-                                <div class="card-actions mt-2"><a href="#install" class="btn btn-outline">"See the install guide"</a></div>
-                            </div>
+                        <div class="zine-card p-6 flex flex-col gap-3 h-full">
+                            <div class="stamp stamp-sm w-fit">"Bring your own hardware"</div>
+                            <h3 class="text-2xl font-black uppercase">"Install on your machine"</h3>
+                            <p class="text-sm dim">"Fortress is a NixOS module. Point your flake at it, enable the services you want, rebuild. No setup wizard, no app store."</p>
+                            <ul class="flex flex-col gap-2 text-sm">
+                                <li class="tick">"Free forever, AGPL-3.0"</li>
+                                <li class="tick">"Run as many machines as you like"</li>
+                                <li class="tick">"Same remote access as a box"</li>
+                            </ul>
+                            <div class="mt-auto pt-3"><a href="#install" class="btn-zine">"See the install guide"</a></div>
                         </div>
                     </div>
                 </div>
             </section>
 
-            
             <section id="install" class="px-6 py-14 scroll-mt-16">
                 <div class="mx-auto max-w-3xl">
-                    <h2 class="text-center text-3xl font-bold mb-2">"Install on your own machines"</h2>
-                    <p class="text-center text-base-content/60 mb-10">"Runs on any x86-64 NixOS machine. Each machine is one file in your flake."</p>
+                    <h2 class="text-center text-3xl font-black uppercase mb-2">"Install on your own machines"</h2>
+                    <p class="text-center dim mb-10">"Runs on any x86-64 NixOS machine. Each machine is one file in your flake."</p>
 
-                    <div class="flex flex-col gap-5">
-                        <div class="card bg-base-100 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <div class="flex items-center gap-3">
-                                    <span class="badge badge-primary">"1"</span>
-                                    <h3 class="card-title">"Add the flake input"</h3>
-                                </div>
-                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"{
+                    <div class="flex flex-col gap-8">
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-center gap-3">
+                                <span class="stepnum">"1"</span>
+                                <h3 class="font-black uppercase">"Add the flake input"</h3>
+                            </div>
+                            <pre class="code-zine">{r#"{
   inputs = {
     fortress.url = "github:ElementalPlaneOfAir/cococoir";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 }"#}</pre>
-                            </div>
                         </div>
 
-                        <div class="card bg-base-100 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <div class="flex items-center gap-3">
-                                    <span class="badge badge-primary">"2"</span>
-                                    <h3 class="card-title">"Import the module"</h3>
-                                </div>
-                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"{
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-center gap-3">
+                                <span class="stepnum">"2"</span>
+                                <h3 class="font-black uppercase">"Import the module"</h3>
+                            </div>
+                            <pre class="code-zine">{r#"{
   imports = [ inputs.fortress.nixosModules.default ];
 }"#}</pre>
-                            </div>
                         </div>
 
-                        <div class="card bg-base-100 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <div class="flex items-center gap-3">
-                                    <span class="badge badge-primary">"3"</span>
-                                    <h3 class="card-title">"Enable services and rebuild"</h3>
-                                </div>
-                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"fortress.services.jellyfin = { enable = true; public = true; };
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-center gap-3">
+                                <span class="stepnum">"3"</span>
+                                <h3 class="font-black uppercase">"Enable services and rebuild"</h3>
+                            </div>
+                            <pre class="code-zine">{r#"fortress.services.jellyfin = { enable = true; public = true; };
 fortress.services.dex      = { enable = true; public = true; };
 
 sudo nixos-rebuild switch --flake .#mybox"#}</pre>
-                                <p class="text-sm text-base-content/60">"Each service gets its own Caddy vhost with automatic TLS. Enable a service next to Dex and every user signs in with one account."</p>
-                            </div>
+                            <p class="text-sm dim">"Each service gets its own Caddy vhost with automatic TLS. Enable a service next to Dex and every user signs in with one account."</p>
                         </div>
 
-                        <div class="card bg-base-100 border border-white/5 card-glow">
-                            <div class="card-body gap-3">
-                                <div class="flex items-center gap-3">
-                                    <span class="badge badge-primary">"4"</span>
-                                    <h3 class="card-title">"Repeat per machine"</h3>
-                                </div>
-                                <p class="text-sm text-base-content/60">"One flake, many machines. Each machine is its own " <code class="text-primary">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-primary">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
-                                <pre class="rounded-xl bg-neutral p-4 text-xs font-mono overflow-x-auto">{r#"# flake.nix — one module, N machines
+                        <div class="zine-card p-6 flex flex-col gap-3">
+                            <div class="flex items-center gap-3">
+                                <span class="stepnum">"4"</span>
+                                <h3 class="font-black uppercase">"Repeat per machine"</h3>
+                            </div>
+                            <p class="text-sm dim">"One flake, many machines. Each machine is its own " <code class="text-red">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-red">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
+                            <pre class="code-zine">{r#"# flake.nix — one module, N machines
 outputs = { self, nixpkgs, fortress, ... }: {
   nixosConfigurations = {
     living-room = nixpkgs.lib.nixosSystem {
@@ -387,23 +497,23 @@ outputs = { self, nixpkgs, fortress, ... }: {
     };
   };
 };"#}</pre>
-                                <p class="text-sm text-base-content/60">"Each machine gets its own Caddy vhosts under your domain. Claim them all under one account for a single set of remote-access routes."</p>
-                            </div>
+                            <p class="text-sm dim">"Each machine gets its own Caddy vhosts under your domain. Claim them all under one account for a single set of remote-access routes."</p>
                         </div>
                     </div>
                 </div>
             </section>
 
-            
-            <footer class="px-6 py-12 border-t border-white/5 mt-8">
-                <div class="mx-auto max-w-5xl flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-base-content/50">
+            <div class="torn"></div>
+
+            <footer class="px-6 py-10 mt-2">
+                <div class="mx-auto max-w-5xl flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div class="flex items-center gap-2">
-                        {shield_icon("h-5 w-5 text-primary")}
-                        <span>"Fortress — a worker cooperative. AGPL-3.0."</span>
+                        {shield_icon("h-5 w-5 text-red")}
+                        <span class="tag dim">"Fortress — a worker cooperative. AGPL-3.0."</span>
                     </div>
-                    <div class="flex items-center gap-4">
-                        <a href="/register" class="link link-hover">"Create account"</a>
-                        <a href="/login" class="link link-hover">"Sign in"</a>
+                    <div class="flex items-center gap-5">
+                        <a href="/register" class="link-zine">"Create account"</a>
+                        <a href="/login" class="link-zine">"Sign in"</a>
                     </div>
                 </div>
             </footer>

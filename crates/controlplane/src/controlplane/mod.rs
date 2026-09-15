@@ -57,7 +57,7 @@ pub use dns::{
     resolve_aaaa_boxed, upsert_customer, DnsApiClient, DnsError, HetznerDns, MockDnsApiClient,
 };
 pub use secret::{admin_key_hash, root_domain};
-pub use wg::{RealWgClient, WgClient, WgError};
+pub use wg::{MockWgClient, RealWgClient, WgClient, WgError};
 
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -748,6 +748,13 @@ pub fn control_plane() -> &'static ControlPlane {
     CONTROL_PLANE.get().expect("control plane not initialized")
 }
 
+/// The dummy/dev boot domain and edge WG key, injected instead of the
+/// boot secrets (`--dummy`). The WG key is a valid x25519 base64 string
+/// so the pubkey derivation (`ControlPlane::edge_public_key`) works if a
+/// dev box is ever used for a real signup round trip.
+const DUMMY_ROOT_DOMAIN: &str = "dev.local";
+const DUMMY_EDGE_WG_PRIV: &str = "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=";
+
 /// Initialize the process globals, hydrating the live forwarder from
 /// Redis before it becomes visible. Order matters: forwarder → control
 /// plane → rehydrate (rehydrate needs the control plane's Redis
@@ -755,7 +762,29 @@ pub fn control_plane() -> &'static ControlPlane {
 /// returns `Err` on unreachable Redis rather than panicking, so a boot
 /// or test that can't reach Redis fails cleanly. Tests bypass this
 /// entirely by `set()`-ing their own instances.
+///
+/// `dummy` selects the dev/dummy boot path (the `--dummy` flag, which
+/// only compiles into debug builds): no boot secrets, no wg0, no DNS
+/// provider, console mailer — but the same forwarder, Redis store, and
+/// HTTP wiring as prod.
 pub async fn init_globals(
+    redis_url: &str,
+    subnet: Subnet64,
+    wg_subnet: WgSubnet,
+    ipv6_iface: Option<String>,
+    dummy: bool,
+) -> Result<(), ControlPlaneError> {
+    if dummy {
+        init_globals_dummy(redis_url, subnet, wg_subnet, ipv6_iface).await
+    } else {
+        init_globals_real(redis_url, subnet, wg_subnet, ipv6_iface).await
+    }
+}
+
+/// The production boot path: resolve the boot secrets (DNS zone, admin
+/// key, SMTP) — a missing secret fails boot, never a first-signup
+/// surprise — then the shared forwarder/store tail.
+async fn init_globals_real(
     redis_url: &str,
     subnet: Subnet64,
     wg_subnet: WgSubnet,
@@ -769,6 +798,48 @@ pub async fn init_globals(
     // The mailer is process config too: a configured-but-broken SMTP
     // relay fails boot, never a silent fallback to the console.
     mail::init_mailer().expect("mailer init: configured SMTP relay must build");
+    init_forwarder_and_store(redis_url, subnet, wg_subnet, ipv6_iface, |url, sub, wgsub| {
+        let cp = ControlPlane::new(url, sub, wgsub)?;
+        cp.install_edge_identity()?;
+        Ok(cp)
+    })
+    .await
+}
+
+/// The dev/dummy boot path: no boot secrets (absent on a dev box), no
+/// wg0, no DNS provider, console mailer — the control plane runs against
+/// the injected mock WG + DNS clients. Everything after this — the
+/// forwarder, the Redis store, the [`app`] HTTP wiring — is the same
+/// code as prod, which is the point: the dev box exercises it.
+async fn init_globals_dummy(
+    redis_url: &str,
+    subnet: Subnet64,
+    wg_subnet: WgSubnet,
+    ipv6_iface: Option<String>,
+) -> Result<(), ControlPlaneError> {
+    mail::init_console_mailer();
+    init_forwarder_and_store(redis_url, subnet, wg_subnet, ipv6_iface, |url, sub, wgsub| {
+        let wg: &'static MockWgClient = Box::leak(Box::new(MockWgClient::new()));
+        let dns: &'static MockDnsApiClient = Box::leak(Box::new(MockDnsApiClient::new()));
+        let cp = ControlPlane::with_deps(url, sub, wgsub, DUMMY_ROOT_DOMAIN, DUMMY_EDGE_WG_PRIV, wg, dns)?;
+        cp.install_edge_identity()?;
+        Ok(cp)
+    })
+    .await
+}
+
+/// Shared boot tail for both paths: init the forwarder, build the
+/// control plane via `build_cp`, then rehydrate the live forwards from
+/// the durable store. Keeping this shared is what guarantees the
+/// dummy/dev edge and the production edge take identical paths through
+/// the forwarder, store, and rehydrate code.
+async fn init_forwarder_and_store(
+    redis_url: &str,
+    subnet: Subnet64,
+    wg_subnet: WgSubnet,
+    ipv6_iface: Option<String>,
+    build_cp: impl FnOnce(&str, Subnet64, WgSubnet) -> Result<ControlPlane, ControlPlaneError>,
+) -> Result<(), ControlPlaneError> {
     FORWARDER
         .get_or_try_init(|| async {
             Forwarder::new_live(Config {
@@ -779,11 +850,7 @@ pub async fn init_globals(
         })
         .await?;
     CONTROL_PLANE
-        .get_or_try_init(|| async {
-            let cp = ControlPlane::new(redis_url, subnet, wg_subnet)?;
-            cp.install_edge_identity()?;
-            Ok::<ControlPlane, ControlPlaneError>(cp)
-        })
+        .get_or_try_init(|| async { build_cp(redis_url, subnet, wg_subnet) })
         .await?;
     // Obligatory reconcile-on-boot: rebuild the live forwards from the
     // durable store before the edge accepts traffic, so a crash never

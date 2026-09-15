@@ -716,6 +716,53 @@ revisited.
     needs an ASN + LIR-owned space and a BGP-capable provider,
     ~€400/yr); it is the reference if customer data ever demands it.
 
+- **ADR-030: The container tier is a full-OS NixOS image, not a
+  degraded product.** To let collaborators/tinkerers run fortress on
+  an ordinary Linux box, the vmtest demo stack ships as one
+  `docker import`-able NixOS rootfs tarball
+  (`nixosConfigurations/fortress-container.nix`, built on nixpkgs'
+  `docker-image.nix` — systemd as PID 1; arion rejected: a dev
+  composer, not a distribution format). The tier is explicitly the
+  *demo* tier: hermetic build-time secrets, `*.vmtest.local`
+  domains, no tunnel, no ADR-028 LAN plane, `--privileged` (same
+  trust shape as the QEMU vmtest, minus the VM). Storage is a
+  **backend split**, not a config off-switch:
+  `fortress.storage.backend = "btrfs" | "plain-dirs"` (internal
+  option, never customer-facing) with `fortress.storage.dataRoot`;
+  `storage/plain-dirs.nix` consumes the same auto-declared
+  subvolume tree as systemd-tmpfiles with identical owner/mode
+  converge-on-boot semantics, so the service contract is unchanged
+  and no service module knows which tier it is in. btrfs quota
+  semantics are customer-tier-only; plain-dirs ignores them (size
+  enforcement is the host volume's job). Access is published ports
+  + host /etc/hosts; Caddy binds `127.0.0.1 0.0.0.0` in this tier
+  only (docker's userland proxy enters via eth0; the
+  `_contract.nix` never-wildcard rule exists to protect the client
+  forwarder's tunnel ingress, which this tier doesn't run —
+  `container-wiring` L1 asserts the bind renders).
+  Operational notes from the first boot (2026-09-15): rootless
+  podman's computed TasksMax (~300) start-limit-loops cryptpad's
+  node workers (EAGAIN on spawn) → `DefaultTasksMax=4096`;
+  a direct `import <file.tar.xz>` wedged at 100% CPU → stream
+  `xz -dc | docker import -`; `systemctl --failed` is kept a clean
+  signal by suppressing the always-failing kernel debug/trace
+  mounts. **macOS is an untested stub**: the app warns, and the
+  container needs no WireGuard/tun kernel support (no tunnel in the
+  demo tier), so the expected risk is Docker Desktop cgroup
+  quirks — nothing is promised until `scripts/container-e2e.sh`
+  passes on a Mac. **Tunnel path (deferred, not built):** a
+  QUIC/stream-level relay replacing wg on the client was designed
+  through (CGNAT-safe via outbound dial, `/128` routing unchanged,
+  stream-metadata replaces inner IP addressing) and is rejected
+  for now — it means owning a protocol (framing, reconnect,
+  handshake security) vs owning an integration of the spec'd wg
+  protocol; boringtun buys nothing on Linux (same
+  `/dev/net/tun` + `NET_ADMIN` capability set as kernel wg).
+  Revisit triggers: a tier that needs no-capability networking, or
+  tunnel overhead measurably hurting customers. Until then the
+  container tier + kernel wg in-container (`--cap-add NET_ADMIN
+  --device /dev/net/tun`) is the portable path.
+
 ## Implementation backlog
 
 Build order. No dates. Each item: what it produces, what test
