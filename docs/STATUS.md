@@ -400,7 +400,13 @@ left down:
   website-signup device token). This also kills the edge-holds-private-keys
   smell and the `fopen` fragility.
 
-## Next move
+## Live infra state (as of 2026-09-14)
+- Old hel1 edge box (`162615675`) **destroyed** via apply; AWS option dead, Hetzner `hil` (Oregon) is the destination.
+- First `apply` failed mid-run: `hil` does not carry `cx23` (US locations are `cpx*`/`ccx*` only; verified via Hetzner API). Fixed: `server_type` default now `cpx11` (variables.tf + tfvars comments). Proof: server_types API listing filtered on `hil`.
+- Next operator action: re-run `provision-edge.sh` (tofu re-applies, then full config lands). The box gets fresh IPs; re-render + DNS follow automatically.
+- Teardown license stands: customers re-register on the new `hil` box; store data intact.
+
+## Session start checkpoint
 
 1. **DONE — edge Caddy + `::1` public surface** (`https://proletariat.tech`).
 2. **DONE — `/signup` accepts a client WG key, idempotent + rotates**

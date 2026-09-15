@@ -686,8 +686,12 @@ revisited.
     IPs. **No Cloud Network**: the pair coordinates only through the
     external store (T4 deleted every direct node-to-node channel), so a
     private network would carry zero traffic. **Apex domain is
-    interdim.net** (source reconciled to the live state; a CNAME at the
-    old domain bridges until an official migration).
+    interdim.net** — decided 2026-09-14: everything moves to the new
+    domain outright (picture-hosted control plane at `interdim.net`,
+    customer vhosts at `<svc>.<tenant>.interdim.net`), NO CNAME/redirect
+    at the old domain — a bridge domain is tech debt for exactly the
+    reason customers would have to move twice; `proletariat.tech` is
+    retired as a serving name (git history preserves its era).
     **PIVOT 2026-09-14 — the pair is cut; the edge ships single-node
     (supersedes the two-node T5–T8 shape above):** pre-deployment, the
     reliability investment is a guess — real failure modes are

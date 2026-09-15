@@ -13,9 +13,9 @@ variable "server_name" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type for the edge box."
+  description = "Hetzner server type for the edge box. The US locations (hil/ash/sin) offer only cpx*/ccx* — cx* is EU-only."
   type        = string
-  default     = "cx23"
+  default     = "cpx11"
 }
 
 variable "location" {

@@ -400,12 +400,12 @@ mod tests {
     #[test]
     fn link_builders_produce_expected_urls() {
         assert_eq!(
-            verify_link("proletariat.tech", "abc"),
-            "https://proletariat.tech/verify?token=abc"
+            verify_link("interdim.net", "abc"),
+            "https://interdim.net/verify?token=abc"
         );
         assert_eq!(
-            reset_link("proletariat.tech", "abc"),
-            "https://proletariat.tech/reset?token=abc"
+            reset_link("interdim.net", "abc"),
+            "https://interdim.net/reset?token=abc"
         );
     }
 

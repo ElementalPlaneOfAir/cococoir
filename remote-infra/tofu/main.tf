@@ -7,7 +7,7 @@
 # endpoint + the control-plane website. This is deliberately a single
 # instance: the HA pair (ADR-029) was cut before ship — failover for a
 # fleet this size is a rebuild runbook, not a hot-hot state machine (the
-# T4 lease machinery is dead-coded in the tree, not wired).
+# T4 lease machinery was deleted from the tree when the pair was cut).
 #
 # Addressing has exactly one source of truth: this tofu. The rendered
 # edge config and every DNS record derive from the server here, so they

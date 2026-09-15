@@ -47,7 +47,7 @@
     # forwarder's customer /128 listeners (e.g. ::3:80/443).
     "caddy/Caddyfile".text = ''
       interdim.net {
-        bind 62.238.111.21 2a01:4f9:c014:2c44::1
+        bind 5.78.42.23 2a01:4ff:1f0:9815::1
         reverse_proxy 127.0.0.1:8081
       }
     '';
@@ -119,7 +119,7 @@
       # The store URL is NOT a unit flag here: it is the secret REDIS_URL
       # (TLS rediss://) from edge.env — the external managed Redis that
       # is the control plane's store.
-      ExecStart = "${fortressEdgePkg}/bin/fortress-edge --subnet 2a01:4f9:c014:2c44::/64 --wg-subnet 10.10.0.0/24 --api-addr 0.0.0.0:8081 --ipv6-iface eth0";
+      ExecStart = "${fortressEdgePkg}/bin/fortress-edge --subnet 2a01:4ff:1f0:9815::/64 --wg-subnet 10.10.0.0/24 --api-addr 0.0.0.0:8081 --ipv6-iface eth0";
       # The edge secrets (DNS zone + token, root domain, admin key
       # hash, wg key, REDIS_URL) are resolved by the secretspec SDK from
       # /etc/fortress/ (secretspec.toml + edge.env, written by
