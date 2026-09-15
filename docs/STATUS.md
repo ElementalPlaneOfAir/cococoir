@@ -183,7 +183,9 @@ reliability investment was a guess, and the customer-side (home box,
 ISP) is the bigger undebuggable downtime pool either way. The edge is
 **ONE Hetzner box in `hil` (Oregon)** with ADR-025 addressing (box's own
 routed `/64`, customer `/128`s carve from it), the WG dial-out +
-control-plane website on the box's own IPv4, DNS at **interdim.net**,
+control-plane website on the box's own IPv4, DNS at **proletariat.tech**
+(operator confirmed 2026-09-14; an interim wiring to `interdim.net` in
+the tofu was corrected back — the zone ships now in the same apply),
 and the **external managed Redis retained** (`REDIS_URL` secret,
 `rediss://`) as the control plane's persistence — a dead box is a
 rebuild, not a data-loss event. The floats, lease, and HA wiring are
@@ -192,7 +194,7 @@ edge-ha proposal are cut, T5 redefined as the single-node ship build. Deferred H
 dual-announcement of a customer-owned `/48`) documented in ADR-029.
 **What shipped (2026-09-14):** tofu rewritten — floats removed
 (`main.tf` single `hcloud_server.edge`, box `/64` addressing), `dns.tf`
-reconciled to `interdim.net` (source no longer drifts), `render.tf`
+reconciled to `proletariat.tech` (source no longer drifts), `render.tf`
 passes `domain`, location default `hil`; `edge.nix.tftpl` Caddyfile now
 `${domain}` from var + `--ipv6-iface eth0` retained (the customer-`/128`
 reachability fix — the template had silently dropped it, a tripwire

@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Fortress remote infra — DNS for interdim.net.
+# Fortress remote infra — DNS for proletariat.tech.
 #
 # The zone is created here (the operator owns the domain but has no
 # Hetzner zone yet). Records follow the IPv6 vision doc + ADR-025:
-#   interdim.net              A    -> edge box's own IPv4 (WG dial-out
+#   proletariat.tech              A    -> edge box's own IPv4 (WG dial-out
 #                                     endpoint + control-plane website)
-#   interdim.net              AAAA -> <server /64>::1
-#   *.example123.interdim.net AAAA -> customer /128 carved from the box /64
+#   proletariat.tech              AAAA -> <server /64>::1
+#   *.example123.proletariat.tech AAAA -> customer /128 carved from the box /64
 #
 # Single instance: no floats, no failover, DNS points at the one box.
 # A CNAME at the old domain bridges until a formal migration.
 
-resource "hcloud_zone" "interdim" {
+resource "hcloud_zone" "proletariat" {
   name = var.domain
   mode = "primary"
   ttl  = 300
@@ -21,7 +21,7 @@ resource "hcloud_zone" "interdim" {
 # Apex: the edge box's own IPv4. Most homes are v4-only, so this carries
 # the WG dial-out endpoint + the control-plane website.
 resource "hcloud_zone_rrset" "apex_a" {
-  zone = hcloud_zone.interdim.name
+  zone = hcloud_zone.proletariat.name
   name = "@"
   type = "A"
   records = [
@@ -31,7 +31,7 @@ resource "hcloud_zone_rrset" "apex_a" {
 
 # Apex IPv6: the box /64's ::1.
 resource "hcloud_zone_rrset" "apex_aaaa" {
-  zone = hcloud_zone.interdim.name
+  zone = hcloud_zone.proletariat.name
   name = "@"
   type = "AAAA"
   records = [
@@ -43,7 +43,7 @@ resource "hcloud_zone_rrset" "apex_aaaa" {
 # customer's /128 carved from the box /64. Caddy SNI-routes per service
 # on the customer box, so one address serves the whole jar.
 resource "hcloud_zone_rrset" "customer_aaaa" {
-  zone = hcloud_zone.interdim.name
+  zone = hcloud_zone.proletariat.name
   name = "*.${var.customer}"
   type = "AAAA"
   records = [

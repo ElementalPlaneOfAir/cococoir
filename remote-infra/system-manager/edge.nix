@@ -36,7 +36,7 @@
     "ssh/authorized_keys.d/root".text = ''
       ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@vermissian
     '';
-    # Caddy fronts the edge's own control plane at https://interdim.net
+    # Caddy fronts the edge's own control plane at https://proletariat.tech
     # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
     # handler on 0.0.0.0:8081 — the control-plane API plus the /healthz
     # /readyz /status endpoints (the edge serves both from one poem app),
@@ -46,7 +46,7 @@
     # edge's own addresses (IPv4 + ::1) so it never shadows the
     # forwarder's customer /128 listeners (e.g. ::3:80/443).
     "caddy/Caddyfile".text = ''
-      interdim.net {
+      proletariat.tech {
         bind 5.78.42.23 2a01:4ff:1f0:9815::1
         reverse_proxy 127.0.0.1:8081
       }
@@ -77,12 +77,12 @@
   };
 
   # ── Caddy (public HTTPS for the control plane) ──────────────────
-  # Serves https://interdim.net over the edge's own IPv4 + ::1 and
+  # Serves https://proletariat.tech over the edge's own IPv4 + ::1 and
   # proxies to the control-plane API. Binds only the edge's addresses
   # (per the Caddyfile) so it never collides with the forwarder's
   # customer /128 listeners. StateDirectory persists ACME certs/state.
   systemd.services.caddy = {
-    description = "Caddy reverse proxy — fortress control plane at https://interdim.net";
+    description = "Caddy reverse proxy — fortress control plane at https://proletariat.tech";
     enable = true;
     after = ["network-online.target"];
     wants = ["network-online.target"];

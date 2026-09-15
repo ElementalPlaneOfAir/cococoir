@@ -12,7 +12,7 @@ deployment can be reviewed and modified in one place.
 remote-infra/
 ├── tofu/                    # OpenTofu: the source of truth
 │   ├── main.tf              # server, firewall, ssh key, address derivation
-│   ├── dns.tf               # interdim.net zone + records
+│   ├── dns.tf               # proletariat.tech zone + records
 │   ├── render.tf            # renders the customer (NixOS) config from template
 │   ├── templates/           # example123.nix template
 │   ├── versions.tf          # hcloud + local providers
@@ -49,7 +49,7 @@ remote-infra/
 ## The IPv6 model being provisioned
 
 ```
-cellular (IPv6) ──*.example123.interdim.net AAAA──▶ edge /128 :80/:443
+cellular (IPv6) ──*.example123.proletariat.tech AAAA──▶ edge /128 :80/:443
                                                       │  fortress-edge
                                                       │  (blind L4 forward)
                                                       ▼
@@ -91,7 +91,7 @@ at runtime).
 
 ## After provisioning
 
-1. **Point interdim.net's NS records at Hetzner's nameservers**
+1. **Point proletariat.tech's NS records at Hetzner's nameservers**
    (`tofu output nameservers`) at your registrar. Until then the zone
    exists but is not authoritative.
 2. **Customer box** (home machine, NixOS): apply

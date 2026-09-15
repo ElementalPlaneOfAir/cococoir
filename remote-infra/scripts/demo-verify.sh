@@ -11,11 +11,11 @@
 # Usage (from the edge box or any host with DNS + network):
 #   bash scripts/demo-verify.sh [baseDomain]
 #
-# Defaults to example123.interdim.net; pass a different base to
+# Defaults to example123.proletariat.tech; pass a different base to
 # re-run for another customer. Requires curl + jq + openssl.
 set -euo pipefail
 
-base="${1:-example123.interdim.net}"
+base="${1:-example123.proletariat.tech}"
 edge_v4=""
 edge_v6=""
 

@@ -20,13 +20,13 @@ output "customer_ipv6" {
 }
 
 output "nameservers" {
-  description = "Hetzner nameservers for the zone — point interdim.net's NS records here at your registrar for the zone to go live."
-  value       = hcloud_zone.interdim.authoritative_nameservers.assigned
+  description = "Hetzner nameservers for the zone — point proletariat.tech's NS records here at your registrar for the zone to go live."
+  value       = hcloud_zone.proletariat.authoritative_nameservers.assigned
 }
 
 output "dns_zone_id" {
   description = "Hetzner DNS zone ID for the apex domain — the runtime DNS client provisions customer AAAA records into it."
-  value       = hcloud_zone.interdim.id
+  value       = hcloud_zone.proletariat.id
 }
 
 output "domain" {

@@ -37,7 +37,7 @@ variable "ipv4_gateway" {
 }
 
 variable "domain" {
-  description = "Apex domain the customer services live under (e.g. interdim.net)."
+  description = "Apex domain the customer services live under (e.g. proletariat.tech)."
   type        = string
 }
 
