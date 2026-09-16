@@ -10,11 +10,11 @@ use crate::dashboard::auth::{
     clear_session_cookie_header, gate_request, read_cookie, session_cookie_header, verify_password,
     SESSION_COOKIE,
 };
-use crate::dashboard::db::DbError;
 use crate::dashboard::components::{
     EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, HtmxTest, HtmxTestProps,
     IndexPage, IndexProps, LoginPage, LoginPageProps,
 };
+use crate::dashboard::db::DbError;
 use crate::dashboard::nix_config_parser::{
     ConfigSchema, FortressConfig, NixConfigFile, NixParseError, NixValue, SetError,
 };
@@ -91,16 +91,16 @@ pub struct ConfigEdit {
 /// applies to one candidate file, re-parse validates the result, and only
 /// then is the file replaced (temp-file + rename). A single failure leaves
 /// the file byte-identical.
-pub fn save_config(
-    path: &ConfigPath,
-    edits: &[ConfigEdit],
-) -> Result<(), SaveError> {
+pub fn save_config(path: &ConfigPath, edits: &[ConfigEdit]) -> Result<(), SaveError> {
     let mut candidate = read_config(path)?;
     for edit in edits {
         let path_refs: Vec<&str> = edit.path.iter().map(String::as_str).collect();
         candidate
             .set_attrpath(&path_refs, &edit.source)
-            .map_err(|error| SaveError::Edit { path: edit.path.join("."), error })?;
+            .map_err(|error| SaveError::Edit {
+                path: edit.path.join("."),
+                error,
+            })?;
     }
     write_atomic(path.as_path(), candidate.to_source())
 }
@@ -114,12 +114,8 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), SaveError>
             "config path has no parent directory",
         ))
     })?;
-    let tmp = parent.join(format!(
-        ".fortress-dashboard.{}.tmp",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::write(&tmp, contents)
-        .map_err(|error| SaveError::Io(error))?;
+    let tmp = parent.join(format!(".fortress-dashboard.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, contents).map_err(|error| SaveError::Io(error))?;
     std::fs::rename(&tmp, path).map_err(|error| SaveError::Io(error))
 }
 
@@ -163,7 +159,11 @@ fn editor_page(
             nixname: service.nixname.to_string(),
             display_name: service.display_name,
             description: service.description,
-            enabled: config.services_enabled.get(service.nixname).copied().unwrap_or(false),
+            enabled: config
+                .services_enabled
+                .get(service.nixname)
+                .copied()
+                .unwrap_or(false),
             declared: config.services_enabled.contains_key(service.nixname),
         })
         .collect();
@@ -259,7 +259,12 @@ fn build_edits(config: &FortressConfig, form: &EditorForm) -> Vec<ConfigEdit> {
         if config.services_enabled.contains_key(service.nixname) {
             let enabled = form.service_checked(service.nixname);
             edits.push(ConfigEdit {
-                path: vec!["fortress".into(), "services".into(), service.nixname.into(), "enable".into()],
+                path: vec![
+                    "fortress".into(),
+                    "services".into(),
+                    service.nixname.into(),
+                    "enable".into(),
+                ],
                 source: NixValue::Bool(enabled).to_source(),
             });
         }
@@ -274,7 +279,12 @@ fn build_edits(config: &FortressConfig, form: &EditorForm) -> Vec<ConfigEdit> {
                     .map(str::to_string)
                     .collect();
                 edits.push(ConfigEdit {
-                    path: vec!["users".into(), "users".into(), username.clone(), "groups".into()],
+                    path: vec![
+                        "users".into(),
+                        "users".into(),
+                        username.clone(),
+                        "groups".into(),
+                    ],
                     source: NixValue::StrList(groups).to_source(),
                 });
             }
@@ -489,7 +499,8 @@ mod tests {
 
     fn test_auth() -> AuthMode {
         AuthMode::Password(auth::AdminConfig {
-            password_hash: "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W".to_string(),
+            password_hash: "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W"
+                .to_string(),
         })
     }
 
@@ -607,7 +618,12 @@ mod tests {
         let client = TestClient::new(app(db, test_auth(), test_config_path()));
         let response = client.get("/auth/login").send().await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("Sign in to the admin dashboard"));
         assert!(body.contains("btn btn-primary"));
         assert!(body.contains("data-theme=\"dark\""));
@@ -664,7 +680,12 @@ mod tests {
             .send()
             .await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("Incorrect password."));
         let bounced = client.get("/").send().await;
         bounced.assert_status(StatusCode::SEE_OTHER);
@@ -736,7 +757,10 @@ mod tests {
     #[test]
     fn read_config_missing_file_is_not_found() {
         let path = ConfigPath(PathBuf::from("/nonexistent/coco.nix"));
-        assert!(matches!(read_config(&path), Err(ConfigReadError::NotFound(_))));
+        assert!(matches!(
+            read_config(&path),
+            Err(ConfigReadError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -756,7 +780,10 @@ mod tests {
         std::fs::write(path.as_path(), "{ networking.hostName = \"vmtest\"; }")
             .expect("write config");
         let file = read_config(&path).expect("reads and parses");
-        assert_eq!(file.to_source().trim(), "{ networking.hostName = \"vmtest\"; }");
+        assert_eq!(
+            file.to_source().trim(),
+            "{ networking.hostName = \"vmtest\"; }"
+        );
     }
 
     #[test]
@@ -764,7 +791,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("coco-save-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = ConfigPath(dir.join("dashboard.nix"));
-        let original = "{ fortress.baseDomain = \"vmtest.local\"; networking.hostName = \"vmtest\"; }\n";
+        let original =
+            "{ fortress.baseDomain = \"vmtest.local\"; networking.hostName = \"vmtest\"; }\n";
         std::fs::write(path.as_path(), original).expect("write config");
 
         let edits = vec![ConfigEdit {
@@ -851,14 +879,25 @@ mod tests {
         let client = TestClient::new(app(db, AuthMode::Dev, temp_config(EDITOR_FIXTURE)));
         let response = client.get("/").send().await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("value=\"vmtest\""));
         assert!(body.contains("value=\"vmtest.local\""));
         assert!(body.contains("name=\"svc_jellyfin\""));
         assert!(body.contains("name=\"svc_cryptpad\""));
         assert!(body.contains("name=\"groups_nicole\""));
-        assert!(body.contains("value=\"storage, wheel\""), "BTreeSet sorts groups");
-        assert!(!body.contains("Could not load the config file"), "fixture must parse");
+        assert!(
+            body.contains("value=\"storage, wheel\""),
+            "BTreeSet sorts groups"
+        );
+        assert!(
+            !body.contains("Could not load the config file"),
+            "fixture must parse"
+        );
     }
 
     #[tokio::test]
@@ -867,7 +906,12 @@ mod tests {
         let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
         let response = client.get("/").send().await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("Could not load the config file"));
     }
 
@@ -883,7 +927,12 @@ mod tests {
             .send()
             .await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("Saved."));
 
         let written = std::fs::read_to_string(path.as_path()).expect("read back");
@@ -891,7 +940,10 @@ mod tests {
         assert!(written.contains("fortress.baseDomain = \"home.arpa\""));
         assert!(written.contains("fortress.services.cryptpad.enable = true"));
         assert!(written.contains("fortress.services.jellyfin.enable = true"));
-        assert!(written.contains("groups = [ \"wheel\" ]"), "groups replaced: {written}");
+        assert!(
+            written.contains("groups = [ \"wheel\" ]"),
+            "groups replaced: {written}"
+        );
     }
 
     #[tokio::test]
@@ -927,7 +979,12 @@ mod tests {
             .send()
             .await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("Saved."));
     }
 
@@ -942,7 +999,12 @@ mod tests {
             .send()
             .await;
         response.assert_status(StatusCode::OK);
-        let body = response.0.into_body().into_string().await.expect("utf8 body");
+        let body = response
+            .0
+            .into_body()
+            .into_string()
+            .await
+            .expect("utf8 body");
         assert!(body.contains("Could not load the config file"));
     }
 }

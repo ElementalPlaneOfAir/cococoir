@@ -22,10 +22,7 @@ const WG_IFACE: &str = "wg0";
 #[derive(Debug, Error)]
 pub enum WgError {
     #[error("wg exited with status {code}: {stderr}")]
-    Command {
-        code: i32,
-        stderr: String,
-    },
+    Command { code: i32, stderr: String },
     #[error("failed to run wg: {0}")]
     Io(std::io::Error),
 }

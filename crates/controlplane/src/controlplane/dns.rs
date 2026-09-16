@@ -17,9 +17,9 @@
 //!    of the provisioning client — provisioning and resolution are
 //!    different providers that can be swapped independently.
 //!
-//! The customer-naming policy (main + wildcard record under the root
+//! The machine-naming policy (main + wildcard record under the root
 //! domain) lives ABOVE this module, in the orchestrator
-//! (`upsert_customer`/`remove_customer`). The provider client never
+//! (`upsert_machine`/`remove_machine`). The provider client never
 //! constructs a name; the naming layer never talks to a provider. The
 //! root domain is passed in by callers (from `secret::root_domain()`),
 //! keeping the naming functions pure and testable without a global.
@@ -48,7 +48,7 @@ pub enum DnsError {
 }
 
 /// A client for a DNS provider's provisioning API. One record per
-/// call; `name` is the FULL record name (e.g. `*.bob.proletariat.tech`).
+/// call; `name` is the FULL record name (e.g. `*.bobby.proletariat.tech`).
 /// The "main + wildcard" policy lives above this (see the module doc).
 #[async_trait]
 pub trait DnsApiClient: Send + Sync {
@@ -68,7 +68,7 @@ pub trait DnsApiClient: Send + Sync {
 const HETZNER_BASE: &str = "https://api.hetzner.cloud/v1";
 
 /// An RRSet as returned by the Hetzner Cloud DNS API: a name + type
-/// (e.g. `*.bob` + `AAAA`) holding one or more record values. The id
+/// (e.g. `*.bobby` + `AAAA`) holding one or more record values. The id
 /// is just `{name}/{type}`, so the client keys on `name` + `type`.
 #[derive(Debug, Deserialize)]
 struct HetznerRrset {
@@ -109,7 +109,7 @@ struct RrsetsResponse {
 /// Holds the provider's own config — zone id, zone name (the apex this
 /// client writes into; Hetzner's API takes record names *relative* to
 /// the zone, so the full name must be stripped against it), and token.
-/// Nothing about customer naming: `DOMAIN` (naming) is a separate
+/// Nothing about machine naming: `DOMAIN` (naming) is a separate
 /// global above this struct.
 #[derive(Clone)]
 pub struct HetznerDns {
@@ -168,9 +168,7 @@ impl HetznerDns {
         }
         full.strip_suffix(&format!(".{zone}"))
             .map(str::to_string)
-            .ok_or_else(|| {
-                DnsError::Api(format!("{full} is not under zone {zone}"))
-            })
+            .ok_or_else(|| DnsError::Api(format!("{full} is not under zone {zone}")))
     }
 
     async fn get_rrset(&self, name: &str) -> Result<Option<HetznerRrset>, DnsError> {
@@ -267,7 +265,8 @@ impl MockDnsApiClient {
 
     /// Make subsequent `upsert_aaaa` calls fail (provider outage).
     pub fn fail_upserts(&self) {
-        self.fail_upsert.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.fail_upsert
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -277,10 +276,7 @@ impl DnsApiClient for MockDnsApiClient {
         if self.fail_upsert.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(DnsError::Api("mock provider outage".to_string()));
         }
-        self.upserts
-            .lock()
-            .unwrap()
-            .push((name.to_string(), ipv6));
+        self.upserts.lock().unwrap().push((name.to_string(), ipv6));
         Ok(())
     }
 
@@ -295,7 +291,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 /// The process's verification resolver, pointed at 1.1.1.1. Immutable
 /// process-lifetime config (the same shape as [`DNS_CLIENT`]): built
 /// once, never rebuilt per lookup — the reconcile loop resolves every
-/// customer's records, so per-call construction would be churn.
+/// machine's records, so per-call construction would be churn.
 /// Building is infallible for a static config, so a failure here is a
 /// programmer error and panics.
 static RESOLVER: LazyLock<hickory_resolver::Resolver<TokioRuntimeProvider>> = LazyLock::new(|| {
@@ -335,17 +331,18 @@ pub fn get_dns_api() -> &'static dyn DnsApiClient {
     &*DNS_CLIENT
 }
 
-/// Create the AAAA records for a customer: the bare hostname and the
-/// wildcard, both → the customer's `/128`. Runs both concurrently; a
-/// failure leaves the other record applied, and a retry (signup or the
-/// reconcile loop) self-heals it because each upsert is idempotent.
-pub async fn upsert_customer(
+/// Create the AAAA records for a machine: the bare hostname and the
+/// wildcard (the machine's service vhosts), both → the machine's
+/// `/128`. Runs both concurrently; a failure leaves the other record
+/// applied, and a retry (allocation or the reconcile loop) self-heals
+/// it because each upsert is idempotent.
+pub async fn upsert_machine(
     dns: &dyn DnsApiClient,
-    username: &str,
+    name: &str,
     ipv6: Ipv6Addr,
     domain: &str,
 ) -> Result<(), DnsError> {
-    let host = customer_hostname(username, domain);
+    let host = machine_hostname(name, domain);
     let wildcard = format!("*.{host}");
     let (main, wild) = tokio::join!(
         dns.upsert_aaaa(&host, ipv6),
@@ -356,29 +353,26 @@ pub async fn upsert_customer(
     Ok(())
 }
 
-/// Remove the AAAA records for a customer (bare hostname + wildcard).
-pub async fn remove_customer(
+/// Remove the AAAA records for a machine (bare hostname + wildcard).
+pub async fn remove_machine(
     dns: &dyn DnsApiClient,
-    username: &str,
+    name: &str,
     domain: &str,
 ) -> Result<(), DnsError> {
-    let host = customer_hostname(username, domain);
+    let host = machine_hostname(name, domain);
     let wildcard = format!("*.{host}");
-    let (main, wild) = tokio::join!(
-        dns.remove_aaaa(&host),
-        dns.remove_aaaa(&wildcard)
-    );
+    let (main, wild) = tokio::join!(dns.remove_aaaa(&host), dns.remove_aaaa(&wildcard));
     main?;
     wild?;
     Ok(())
 }
 
-/// The customer's bare hostname, e.g. `bob.proletariat.tech`.
-pub fn customer_hostname(username: &str, domain: &str) -> String {
-    format!("{username}.{domain}")
+/// The machine's bare hostname, e.g. `main.proletariat.tech`.
+pub fn machine_hostname(name: &str, domain: &str) -> String {
+    format!("{name}.{domain}")
 }
 
-/// Does the resolved AAAA set satisfy the record we want? A customer
+/// Does the resolved AAAA set satisfy the record we want? A machine
 /// is served correctly only if their `/128` is present.
 pub fn aaaa_matches(resolved: &[Ipv6Addr], expected: Ipv6Addr) -> bool {
     resolved.contains(&expected)
@@ -403,20 +397,20 @@ pub fn resolve_aaaa_boxed(
     Box::pin(resolve_aaaa(name))
 }
 
-/// One reconcile pass over the customer set: verify both records for
-/// each customer against real resolution and re-apply mismatches.
+/// One reconcile pass over the machine set: verify both records for
+/// each machine against real resolution and re-apply mismatches.
 /// `resolve` is injectable so tests can fake the resolver; production
 /// passes [`resolve_aaaa_boxed`]. Returns the number of records
 /// re-applied.
 pub async fn reconcile_pass(
     dns: &dyn DnsApiClient,
-    customers: &[(String, Ipv6Addr)],
+    machines: &[(String, Ipv6Addr)],
     resolve: AaaaResolver,
     domain: &str,
 ) -> usize {
     let mut reapplied = 0usize;
-    for (username, ipv6) in customers {
-        let host = customer_hostname(username, domain);
+    for (name, ipv6) in machines {
+        let host = machine_hostname(name, domain);
         let wildcard = format!("*.{host}");
         for name in [host, wildcard] {
             let resolved = match resolve(&name).await {
@@ -460,27 +454,37 @@ mod tests {
     #[test]
     fn relative_name_strips_zone() {
         let dns = provider();
-        assert_eq!(dns.relative_name("bob.proletariat.tech").unwrap(), "bob");
         assert_eq!(
-            dns.relative_name("*.bob.proletariat.tech").unwrap(),
-            "*.bob"
+            dns.relative_name("bobby.proletariat.tech").unwrap(),
+            "bobby"
+        );
+        assert_eq!(
+            dns.relative_name("*.bobby.proletariat.tech").unwrap(),
+            "*.bobby"
         );
         assert_eq!(dns.relative_name("proletariat.tech").unwrap(), "@");
-        assert!(dns.relative_name("bob.example.org").is_err());
+        assert!(dns.relative_name("bobby.example.org").is_err());
     }
 
     #[tokio::test]
     async fn mock_records_upsert_and_remove() {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        mock.upsert_aaaa("bob.proletariat.tech", ip).await.unwrap();
-        mock.upsert_aaaa("*.bob.proletariat.tech", ip).await.unwrap();
-        mock.remove_aaaa("bob.proletariat.tech").await.unwrap();
+        mock.upsert_aaaa("bobby.proletariat.tech", ip)
+            .await
+            .unwrap();
+        mock.upsert_aaaa("*.bobby.proletariat.tech", ip)
+            .await
+            .unwrap();
+        mock.remove_aaaa("bobby.proletariat.tech").await.unwrap();
         let upserts = mock.upserts.lock().unwrap();
         assert_eq!(upserts.len(), 2);
-        assert_eq!(upserts[0], ("bob.proletariat.tech".to_string(), ip));
-        assert_eq!(upserts[1], ("*.bob.proletariat.tech".to_string(), ip));
-        assert_eq!(*mock.removes.lock().unwrap(), vec!["bob.proletariat.tech".to_string()]);
+        assert_eq!(upserts[0], ("bobby.proletariat.tech".to_string(), ip));
+        assert_eq!(upserts[1], ("*.bobby.proletariat.tech".to_string(), ip));
+        assert_eq!(
+            *mock.removes.lock().unwrap(),
+            vec!["bobby.proletariat.tech".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -488,37 +492,47 @@ mod tests {
         let mock = MockDnsApiClient::new();
         mock.fail_upserts();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        assert!(mock.upsert_aaaa("bob.proletariat.tech", ip).await.is_err());
+        assert!(mock
+            .upsert_aaaa("bobby.proletariat.tech", ip)
+            .await
+            .is_err());
     }
 
     #[test]
-    fn customer_hostname_uses_domain() {
-        assert!(customer_hostname("bob", "proletariat.tech").ends_with(".proletariat.tech"));
-        assert!(customer_hostname("bob", "other.example").ends_with(".other.example"));
+    fn machine_hostname_uses_domain() {
+        assert!(machine_hostname("bobby", "proletariat.tech").ends_with(".proletariat.tech"));
+        assert!(machine_hostname("bobby", "other.example").ends_with(".other.example"));
     }
 
     #[tokio::test]
-    async fn upsert_customer_creates_both_records() {
+    async fn upsert_machine_creates_both_records() {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
-        upsert_customer(&mock, "bob", ip, "proletariat.tech").await.unwrap();
+        upsert_machine(&mock, "bobby", ip, "proletariat.tech")
+            .await
+            .unwrap();
         let upserts = mock.upserts.lock().unwrap();
         assert_eq!(upserts.len(), 2);
         let names: Vec<&str> = upserts.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"bob.proletariat.tech"));
-        assert!(names.contains(&"*.bob.proletariat.tech"));
+        assert!(names.contains(&"bobby.proletariat.tech"));
+        assert!(names.contains(&"*.bobby.proletariat.tech"));
         assert!(upserts.iter().all(|(_, got)| *got == ip));
     }
 
     #[tokio::test]
-    async fn remove_customer_removes_both_records() {
+    async fn remove_machine_removes_both_records() {
         let mock = MockDnsApiClient::new();
-        remove_customer(&mock, "bob", "proletariat.tech").await.unwrap();
+        remove_machine(&mock, "bobby", "proletariat.tech")
+            .await
+            .unwrap();
         let mut removes = mock.removes.lock().unwrap();
         removes.sort();
         assert_eq!(
             *removes,
-            vec!["*.bob.proletariat.tech".to_string(), "bob.proletariat.tech".to_string()]
+            vec![
+                "*.bobby.proletariat.tech".to_string(),
+                "bobby.proletariat.tech".to_string()
+            ]
         );
     }
 
@@ -538,10 +552,11 @@ mod tests {
         // Fake resolver: both records resolve to the WRONG address.
         // Non-capturing (the addr is in a `static`) so it coerces to
         // the `AaaaResolver` fn pointer.
-        static WRONG: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 9);
+        static WRONG: std::net::Ipv6Addr =
+            std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 9);
         let resolve: AaaaResolver = |_: &str| Box::pin(async move { Ok(vec![WRONG]) });
-        let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve, "proletariat.tech").await;
+        let machines = vec![("bobby".to_string(), ip)];
+        let reapplied = reconcile_pass(&mock, &machines, resolve, "proletariat.tech").await;
         assert_eq!(reapplied, 2); // bare + wildcard both re-applied
         assert_eq!(mock.upserts.lock().unwrap().len(), 2);
     }
@@ -551,10 +566,11 @@ mod tests {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
         // Fake resolver: both records already point at the right addr.
-        static RIGHT: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 2);
+        static RIGHT: std::net::Ipv6Addr =
+            std::net::Ipv6Addr::new(0x2a01, 0x4f8, 0xc17, 1, 0, 0, 0, 2);
         let resolve: AaaaResolver = |_: &str| Box::pin(async move { Ok(vec![RIGHT]) });
-        let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve, "proletariat.tech").await;
+        let machines = vec![("bobby".to_string(), ip)];
+        let reapplied = reconcile_pass(&mock, &machines, resolve, "proletariat.tech").await;
         assert_eq!(reapplied, 0);
         assert_eq!(mock.upserts.lock().unwrap().len(), 0);
     }
@@ -564,10 +580,12 @@ mod tests {
         let mock = MockDnsApiClient::new();
         let ip: Ipv6Addr = "2a01:4f8:c17:1::2".parse().unwrap();
         let resolve: AaaaResolver = |_: &str| {
-            Box::pin(async move { Err::<Vec<Ipv6Addr>, DnsError>(DnsError::Resolve("boom".into())) })
+            Box::pin(
+                async move { Err::<Vec<Ipv6Addr>, DnsError>(DnsError::Resolve("boom".into())) },
+            )
         };
-        let customers = vec![("bob".to_string(), ip)];
-        let reapplied = reconcile_pass(&mock, &customers, resolve, "proletariat.tech").await;
+        let machines = vec![("bobby".to_string(), ip)];
+        let reapplied = reconcile_pass(&mock, &machines, resolve, "proletariat.tech").await;
         assert_eq!(reapplied, 2);
     }
 
@@ -584,11 +602,11 @@ mod tests {
 
     #[test]
     fn rrsets_response_deserializes_cloud_api_shape() {
-        let json = r#"{"meta":{"pagination":{}},"rrsets":[{"id":"*.bob/AAAA","name":"*.bob","type":"AAAA","ttl":null,"labels":{},"records":[{"value":"2a01:4f9:c014:2c44::2","comment":""}],"zone":123}]}"#;
+        let json = r#"{"meta":{"pagination":{}},"rrsets":[{"id":"*.bobby/AAAA","name":"*.bobby","type":"AAAA","ttl":null,"labels":{},"records":[{"value":"2a01:4f9:c014:2c44::2","comment":""}],"zone":123}]}"#;
         let parsed: RrsetsResponse = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.rrsets.len(), 1);
         let rr = &parsed.rrsets[0];
-        assert_eq!(rr.name, "*.bob");
+        assert_eq!(rr.name, "*.bobby");
         assert_eq!(rr.type_, "AAAA");
         assert_eq!(rr.records[0].value, "2a01:4f9:c014:2c44::2");
     }
@@ -598,7 +616,7 @@ mod tests {
         let ip: Ipv6Addr = "2a01:4f9:c014:2c44::2".parse().unwrap();
         let body = NewRrset {
             type_: "AAAA",
-            name: "*.bob",
+            name: "*.bobby",
             ttl: 300,
             records: vec![NewRrsetRecord {
                 value: ip.to_string(),
@@ -606,7 +624,7 @@ mod tests {
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["type"], "AAAA");
-        assert_eq!(json["name"], "*.bob");
+        assert_eq!(json["name"], "*.bobby");
         assert_eq!(json["ttl"], 300);
         assert_eq!(json["records"][0]["value"], "2a01:4f9:c014:2c44::2");
         // The Cloud API bodies the zone id in the URL path, not the body.

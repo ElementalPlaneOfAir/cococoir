@@ -5,4 +5,5 @@
 
 pub mod app;
 pub mod dashboard;
+pub mod pairing;
 pub mod tunnel;

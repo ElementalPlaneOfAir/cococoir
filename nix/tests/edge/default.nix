@@ -260,21 +260,21 @@ in {
       # only the public key to the edge (ADR-025).
       client_pub = client.succeed("wg pubkey < /var/lib/fortress/wg-private.key").strip()
 
-      # Real device-route creation via the control-plane API (bearer
+      # Real machine-route creation via the control-plane API (bearer
       # admin key) with the client's public key. Allocates the /128, adds
       # the WG peer to wg0, binds the /128 forward. DNS fails
       # (throwaway) — non-fatal.
       signup = edge.succeed(
           "curl -sf -H 'Authorization: Bearer test-admin-key' "
           "-H 'Content-Type: application/json' "
-          "-d '{\"username\":\"alice\",\"public_key\":\"" + client_pub + "\"}' "
+          "-d '{\"name\":\"alicia\",\"public_key\":\"" + client_pub + "\"}' "
           "http://127.0.0.1:8081/api/wireguard/new"
       )
       data = json.loads(signup)
-      customer_ipv6 = data["customer"]["ipv6"]
-      customer_wgip = data["customer"]["wg_ip"]
+      customer_ipv6 = data["machine"]["ipv6"]
+      customer_wgip = data["machine"]["wg_ip"]
       edge_public_key = data["edge_public_key"]
-      assert data["customer"]["wg_public_key"] == client_pub, "edge stored the client's public key"
+      assert data["machine"]["wg_public_key"] == client_pub, "edge stored the client's public key"
       # The shared-identity property (ADR-029): the edge answers as the
       # deterministic key from WG_PRIVATE_KEY in edge.env — which is the
       # pubkey the client config already points at, so no peer swap is

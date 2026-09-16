@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Account model + sessions + magic-link auth (Redis).
 //!
-//! The account is the identity layer the pairing flow builds on:
-//! email-keyed, owns a DNS-safe username (the subdomain root), status
-//! `pending` → `active` after a single-use magic-link verify. One "email
-//! a token" primitive powers both account verify and password reset.
-//! Passwords are bcrypt-hashed, never plaintext (T2 acceptance).
+//! The account is the identity layer the enrollment flow builds on:
+//! email-keyed login + an internal UUID (the owner reference machines
+//! attach to, and the future auth-provider attach point — OIDC/phone),
+//! status `pending` → `active` after a single-use magic-link verify.
+//! One "email a token" primitive powers both account verify and
+//! password reset. Passwords are bcrypt-hashed, never plaintext (T2
+//! acceptance). An account has NO public username — accounts are not
+//! hostnames; machines are (T4 amendment).
 //!
-//! Redis keys (all live in the same Redis as the customers/devices):
+//! Redis keys (all live in the same Redis as the machines):
 //!   fortress:account:{email}     → AccountRecord JSON (permanent)
-//!   fortress:username:{username} → email (SETNX: username uniqueness)
 //!   fortress:verify:{token}      → email (24h TTL, GETDEL single-use)
 //!   fortress:reset:{token}       → email (24h TTL, GETDEL single-use)
 //!   fortress:session:{token}     → email (7d TTL)
@@ -21,11 +23,13 @@
 //! `ControlPlane` directly and injects a `MockMailer`.
 
 use crate::controlplane::mail::Mailer;
-use crate::controlplane::{validate_username, ControlPlane, ControlPlaneError};
+use crate::controlplane::pairing::invite_key;
+use crate::controlplane::{ControlPlane, ControlPlaneError};
 
 use rand_core::{OsRng, RngCore};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 const VERIFY_TOKEN_TTL_SECS: u64 = 24 * 60 * 60;
 const RESET_TOKEN_TTL_SECS: u64 = 24 * 60 * 60;
@@ -33,9 +37,6 @@ const SESSION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 fn account_key(email: &str) -> String {
     format!("fortress:account:{email}")
-}
-fn username_key(username: &str) -> String {
-    format!("fortress:username:{username}")
 }
 fn verify_key(token: &str) -> String {
     format!("fortress:verify:{token}")
@@ -55,14 +56,10 @@ fn session_key(token: &str) -> String {
 pub enum AccountError {
     #[error("invalid email: {0}")]
     InvalidEmail(String),
-    #[error("invalid username: {0}")]
-    InvalidUsername(String),
     #[error("invalid password: {0}")]
     InvalidPassword(String),
     #[error("account already exists: {0}")]
     DuplicateEmail(String),
-    #[error("username already taken: {0}")]
-    DuplicateUsername(String),
     #[error("account not found")]
     NotFound,
     #[error("invalid credentials")]
@@ -102,7 +99,9 @@ pub enum AccountStatus {
 /// The durable account record, keyed by email.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
-    pub username: String,
+    /// Internal owner identity. Machines reference this, never the
+    /// email — the attach point for future auth providers (OIDC/phone).
+    pub uuid: String,
     pub status: AccountStatus,
     pub password_hash: String,
     /// Billing placeholder (PLAN v3) — no billing ships in this arc.
@@ -128,9 +127,7 @@ pub fn reset_link(domain: &str, token: &str) -> String {
 }
 
 fn verify_body(link: &str) -> String {
-    format!(
-        "Verify your fortress account:\n\n{link}\n\nThis link expires in 24 hours."
-    )
+    format!("Verify your fortress account:\n\n{link}\n\nThis link expires in 24 hours.")
 }
 
 fn reset_body(link: &str) -> String {
@@ -162,33 +159,23 @@ fn account_from_json(json: String) -> Result<AccountRecord, AccountError> {
 }
 
 impl ControlPlane {
-    /// Email + username + password signup. Creates a `pending` account,
-    /// emails a single-use magic link, and fails (rolling back) if the
-    /// mailer rejects the send — a link that never sends is a signup
-    /// that never activates. Duplicate email and duplicate username are
-    /// both rejected; the username claim is atomic (SETNX) because the
-    /// username is the globally-unique DNS subdomain root.
+    /// Email + password signup. Creates a `pending` account with a
+    /// fresh UUID, emails a single-use magic link, and fails (rolling
+    /// back) if the mailer rejects the send — a link that never sends
+    /// is a signup that never activates. Duplicate email is rejected.
     pub async fn account_signup(
         &self,
         email: &str,
-        username: &str,
         password: &str,
         mailer: &dyn Mailer,
     ) -> Result<(), AccountError> {
         let email = email.trim().to_lowercase();
         validate_email(&email)?;
-        validate_username(username).map_err(|err| match err {
-            ControlPlaneError::InvalidUsername(name) => AccountError::InvalidUsername(name),
-            _ => unreachable!("validate_username only fails with InvalidUsername"),
-        })?;
         validate_password(password)?;
 
         let mut conn = self.conn().await?;
         if conn.exists(account_key(&email)).await? {
             return Err(AccountError::DuplicateEmail(email.clone()));
-        }
-        if !conn.set_nx(username_key(username), &email).await? {
-            return Err(AccountError::DuplicateUsername(username.to_string()));
         }
 
         // validate_password guarantees non-empty ≤72 bytes, the only
@@ -197,13 +184,16 @@ impl ControlPlane {
         let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
             .expect("bcrypt cannot fail: password is non-empty and ≤72 bytes");
         let account = AccountRecord {
-            username: username.to_string(),
+            uuid: Uuid::new_v4().to_string(),
             status: AccountStatus::Pending,
             password_hash,
             plan: None,
         };
         let _: () = conn
-            .set(account_key(&email), serde_json::to_string(&account).unwrap())
+            .set(
+                account_key(&email),
+                serde_json::to_string(&account).unwrap(),
+            )
             .await?;
 
         let token = random_token();
@@ -212,20 +202,93 @@ impl ControlPlane {
             .await?;
 
         // A failed send is a failed signup — never a zombie account the
-        // customer can't activate. The email + username become
-        // reusable, and the verify token is destroyed with them: it is
-        // a single-use capability for an account that no longer
-        // exists, and leaving it would dangle for 24h.
+        // customer can't activate. The email becomes reusable and the
+        // verify token is destroyed with it: it is a single-use
+        // capability for an account that no longer exists, and leaving
+        // it would dangle for 24h.
         let link = verify_link(self.root_domain, &token);
         if let Err(err) = mailer
             .send(&email, "Verify your fortress account", &verify_body(&link))
             .await
         {
             let _: Result<(), redis::RedisError> = conn.del(account_key(&email)).await;
-            let _: Result<(), redis::RedisError> = conn.del(username_key(username)).await;
             let _: Result<(), redis::RedisError> = conn.del(verify_key(&token)).await;
             return Err(AccountError::Mail(err));
         }
+        Ok(())
+    }
+
+    /// The account's internal UUID — the owner reference machines
+    /// carry. `None` for an unknown email; callers with an email from
+    /// an active session can expect.
+    pub(crate) async fn account_uuid(&self, email: &str) -> Result<Option<String>, AccountError> {
+        let email = email.trim().to_lowercase();
+        let mut conn = self.conn().await?;
+        let Some(json): Option<String> = conn.get(account_key(&email)).await? else {
+            return Ok(None);
+        };
+        Ok(Some(account_from_json(json)?.uuid))
+    }
+
+    /// Delete the logged-in account: every machine's WG peer + live
+    /// forwards + per-machine DNS + device tokens, every invite owned
+    /// by the email, every session, and the account record itself — in
+    /// that order (store entries last, mirroring machine delete's
+    /// unwire-first discipline). The box's local data is the box's: the
+    /// box just loses remote access (tunnel dead, token revoked) and
+    /// can re-enroll under a new account. Never wipes.
+    pub async fn account_delete(&self, email: &str) -> Result<(), AccountError> {
+        let email = email.trim().to_lowercase();
+        let mut conn = self.conn().await?;
+        let key = account_key(&email);
+        let Some(json): Option<String> = conn.get(&key).await? else {
+            return Err(AccountError::NotFound);
+        };
+        let _account = account_from_json(json)?;
+
+        // Machines: unwire each (peer + forwards + DNS + the record,
+        // which carries the device-token hash). Best-effort — the
+        // account must die even if one machine's WG/DNS removal hiccups.
+        let machines = self.machines_of(&email).await.unwrap_or_default();
+        for machine in &machines {
+            if let Err(err) = self.delete(&machine.name).await {
+                tracing::error!(name = %machine.name, err = %err, "account delete: machine unwire failed");
+            }
+        }
+
+        // Invites owned by the email (waiting, approved, or denied).
+        let invites = self.invites_of(&email).await.unwrap_or_default();
+        for (code, _record) in invites {
+            let _: () = conn.del(invite_key(&code)).await?;
+        }
+
+        // Sessions: any session token whose value is this email. The
+        // scan is cursor-complete (one page is not enough in a keyspace
+        // with other accounts' sessions).
+        let mut cursor = "0".to_string();
+        loop {
+            let (next, session_keys): (String, Vec<String>) = redis::cmd("SCAN")
+                .arg(&cursor)
+                .arg("MATCH")
+                .arg(session_key("*"))
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await?;
+            for skey in session_keys {
+                let value: Option<String> = conn.get(&skey).await?;
+                if value.as_deref() == Some(email.as_str()) {
+                    let _: () = conn.del(&skey).await?;
+                }
+            }
+            if next == "0" {
+                break;
+            }
+            cursor = next;
+        }
+
+        // The account record last.
+        let _: () = conn.del(&key).await?;
         Ok(())
     }
 
@@ -318,7 +381,11 @@ impl ControlPlane {
 
     /// Consume the single-use reset token and replace the password.
     /// Works logged-out; the token is the credential.
-    pub async fn reset_password(&self, token: &str, new_password: &str) -> Result<(), AccountError> {
+    pub async fn reset_password(
+        &self,
+        token: &str,
+        new_password: &str,
+    ) -> Result<(), AccountError> {
         validate_password(new_password)?;
         let mut conn = self.conn().await?;
         let email: Option<String> = redis::cmd("GETDEL")
@@ -348,7 +415,7 @@ mod tests {
     use crate::controlplane::dns::MockDnsApiClient;
     use crate::controlplane::mail::MockMailer;
     use crate::controlplane::wg::MockWgClient;
-    use crate::controlplane::{Subnet64, WgSubnet};
+    use crate::controlplane::{SignupOutcome, Subnet64, WgSubnet};
 
     /// The tests share one real Redis (when REDIS_URL is set). They
     /// never touch the process globals — each builds a `ControlPlane`
@@ -362,12 +429,31 @@ mod tests {
         let dns: &'static MockDnsApiClient = Box::leak(Box::new(MockDnsApiClient::new()));
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
-        ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=", wg, dns).ok()
+        ControlPlane::with_deps(
+            &url,
+            subnet,
+            wg_subnet,
+            "example.net",
+            "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=",
+            wg,
+            dns,
+        )
+        .map(|cp| cp.isolated_alloc(leaked_alloc_key()))
+        .ok()
     }
 
     /// Skip the store-backed tests when no Redis is available (the nix
     /// devshell provides it; CI does not run one) — same convention as
     /// `redis_store_round_trip`.
+    fn leaked_alloc_key() -> &'static str {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        Box::leak(format!("fortress:test-alloc:{}-{}", std::process::id(), nanos).into_boxed_str())
+    }
+
     fn skip_without_redis() -> Option<ControlPlane> {
         let cp = test_cp();
         if cp.is_none() {
@@ -383,13 +469,6 @@ mod tests {
             .unwrap()
             .as_nanos();
         format!("{label}-{}-{}@example.com", std::process::id(), nanos)
-    }
-
-    /// The local part of a `unique_email` is DNS-safe (lowercase, single
-    /// hyphens) — reuse it as the username so every test claims a
-    /// username no other test (or a prior run) has taken.
-    fn username_for(email: &str) -> String {
-        email.split('@').next().unwrap().to_string()
     }
 
     fn extract_token(body: &str) -> String {
@@ -432,11 +511,12 @@ mod tests {
 
     #[tokio::test]
     async fn signup_verify_login_logout_round_trip() {
-        let Some(cp) = skip_without_redis() else { return; };
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
         let mailer = MockMailer::new();
         let email = unique_email("rt");
-        let username = username_for(&email);
-        cp.account_signup(&email, &username, "hunter2", &mailer)
+        cp.account_signup(&email, "hunter2", &mailer)
             .await
             .expect("signup");
         let sent = mailer.sent();
@@ -447,17 +527,19 @@ mod tests {
 
         // Verify: single-use.
         cp.account_verify(&token).await.expect("verify");
-        assert!(matches!(cp.account_verify(&token).await, Err(AccountError::InvalidToken)));
-        assert_eq!(cp.account_verify(&token).await.unwrap_err().to_string(), "invalid or expired token");
-
-        // Duplicate signup (same email) rejected; duplicate username too.
         assert!(matches!(
-            cp.account_signup(&email, "alice2", "pw", &mailer).await,
-            Err(AccountError::DuplicateEmail(_))
+            cp.account_verify(&token).await,
+            Err(AccountError::InvalidToken)
         ));
+        assert_eq!(
+            cp.account_verify(&token).await.unwrap_err().to_string(),
+            "invalid or expired token"
+        );
+
+        // Duplicate signup (same email) rejected.
         assert!(matches!(
-            cp.account_signup(&unique_email("dup-user"), &username, "pw", &mailer).await,
-            Err(AccountError::DuplicateUsername(_))
+            cp.account_signup(&email, "pw", &mailer).await,
+            Err(AccountError::DuplicateEmail(_))
         ));
 
         // Wrong password → generic invalid credentials.
@@ -467,7 +549,10 @@ mod tests {
         ));
 
         let session = cp.account_login(&email, "hunter2").await.expect("login");
-        assert_eq!(cp.session_account(&session).await.unwrap().as_deref(), Some(email.as_str()));
+        assert_eq!(
+            cp.session_account(&session).await.unwrap().as_deref(),
+            Some(email.as_str())
+        );
 
         // Logout invalidates.
         cp.account_logout(&session).await.expect("logout");
@@ -475,37 +560,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn password_never_stored_in_plaintext() {
-        let Some(cp) = skip_without_redis() else { return; };
+    async fn account_record_has_no_username_field() {
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
         let mailer = MockMailer::new();
-        let email = unique_email("plaintext");
-        cp.account_signup(&email, &username_for(&email), "s3cret", &mailer).await.expect("signup");
+        let email = unique_email("uuid");
+        cp.account_signup(&email, "hunter2", &mailer)
+            .await
+            .expect("signup");
         let mut conn = cp.conn().await.unwrap();
         let json: String = conn.get(account_key(&email)).await.unwrap();
-        assert!(!json.contains("s3cret"), "password not in the record: {json}");
+        assert!(
+            !json.contains("username"),
+            "the record carries no username: {json}"
+        );
+        let account: AccountRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(account.uuid.len(), 36, "uuid is a v4 UUID string");
+        assert!(account.uuid.chars().filter(|c| *c == '-').count() == 4);
+    }
+
+    #[tokio::test]
+    async fn password_never_stored_in_plaintext() {
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
+        let mailer = MockMailer::new();
+        let email = unique_email("plaintext");
+        cp.account_signup(&email, "s3cret", &mailer)
+            .await
+            .expect("signup");
+        let mut conn = cp.conn().await.unwrap();
+        let json: String = conn.get(account_key(&email)).await.unwrap();
+        assert!(
+            !json.contains("s3cret"),
+            "password not in the record: {json}"
+        );
         assert!(json.contains("$2"), "bcrypt hash present: {json}");
     }
 
     #[tokio::test]
     async fn password_reset_round_trip_without_session() {
-        let Some(cp) = skip_without_redis() else { return; };
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
         let mailer = MockMailer::new();
         let email = unique_email("reset");
-        cp.account_signup(&email, &username_for(&email), "old-password", &mailer).await.expect("signup");
+        cp.account_signup(&email, "old-password", &mailer)
+            .await
+            .expect("signup");
         let verify_token = extract_token(&mailer.sent()[0].body);
         cp.account_verify(&verify_token).await.expect("verify");
 
         let mailer2 = MockMailer::new();
-        cp.request_password_reset(&email, &mailer2).await.expect("reset request");
+        cp.request_password_reset(&email, &mailer2)
+            .await
+            .expect("reset request");
         let sent = mailer2.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, email);
         let reset_token = extract_token(&sent[0].body);
 
-        cp.reset_password(&reset_token, "new-password").await.expect("reset");
+        cp.reset_password(&reset_token, "new-password")
+            .await
+            .expect("reset");
         // Old password no longer works; new one does.
-        assert!(matches!(cp.account_login(&email, "old-password").await, Err(AccountError::InvalidCredentials)));
-        cp.account_login(&email, "new-password").await.expect("new password login");
+        assert!(matches!(
+            cp.account_login(&email, "old-password").await,
+            Err(AccountError::InvalidCredentials)
+        ));
+        cp.account_login(&email, "new-password")
+            .await
+            .expect("new password login");
 
         // Reset token is single-use.
         assert!(matches!(
@@ -516,20 +642,29 @@ mod tests {
 
     #[tokio::test]
     async fn reset_unknown_email_is_indistinguishable() {
-        let Some(cp) = skip_without_redis() else { return; };
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
         let mailer = MockMailer::new();
         cp.request_password_reset(&unique_email("ghost"), &mailer)
             .await
             .expect("unknown email returns Ok");
-        assert!(mailer.sent().is_empty(), "no email sent for unknown account");
+        assert!(
+            mailer.sent().is_empty(),
+            "no email sent for unknown account"
+        );
     }
 
     #[tokio::test]
     async fn login_requires_active_account() {
-        let Some(cp) = skip_without_redis() else { return; };
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
         let mailer = MockMailer::new();
         let email = unique_email("pending");
-        cp.account_signup(&email, &username_for(&email), "hunter2", &mailer).await.expect("signup");
+        cp.account_signup(&email, "hunter2", &mailer)
+            .await
+            .expect("signup");
         assert!(matches!(
             cp.account_login(&email, "hunter2").await,
             Err(AccountError::NotVerified(_))
@@ -537,18 +672,19 @@ mod tests {
     }
 
     /// Tripwire for the send-failure rollback: a failed verify-email
-    /// send must undo the whole signup — the account record, the
-    /// username claim, AND the verify token (a single-use capability
-    /// for an account that no longer exists must not dangle for 24h).
+    /// send must undo the whole signup — the account record AND the
+    /// verify token (a single-use capability for an account that no
+    /// longer exists must not dangle for 24h).
     #[tokio::test]
     async fn signup_mail_failure_rolls_back_everything() {
-        let Some(cp) = skip_without_redis() else { return; };
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
         let mailer = MockMailer::new();
         mailer.fail_sends();
         let email = unique_email("mailfail");
-        let username = username_for(&email);
         assert!(matches!(
-            cp.account_signup(&email, &username, "pw", &mailer).await,
+            cp.account_signup(&email, "pw", &mailer).await,
             Err(AccountError::Mail(_))
         ));
         // No verify token survived pointing at the dead account. (Checked
@@ -569,10 +705,80 @@ mod tests {
             !values.into_iter().flatten().any(|v| v == email),
             "a dangling verify token survived the signup rollback"
         );
-        // The email + username are reusable: the rollback removed the
-        // account and the username claim.
-        cp.account_signup(&email, &username, "pw", &MockMailer::new())
+        // The email is reusable: the rollback removed the account.
+        cp.account_signup(&email, "pw", &MockMailer::new())
             .await
             .expect("re-signup after mail failure");
+    }
+
+    /// Account deletion unwires, never wipes: every machine's WG peer +
+    /// forwards + DNS + record, every invite, every session, and the
+    /// record are gone; a re-login is InvalidCredentials (no
+    /// enumeration breach — the account is simply absent).
+    #[tokio::test]
+    async fn account_delete_unwires_machines_and_sessions() {
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
+        crate::controlplane::set_forwarder_for_tests();
+        let mailer = MockMailer::new();
+        let email = unique_email("delete");
+        cp.account_signup(&email, "hunter2", &mailer)
+            .await
+            .expect("signup");
+        // Activate directly (the verify-token flow is T2's proven job).
+        let mut conn = cp.conn().await.unwrap();
+        let json: String = redis::AsyncCommands::get(&mut conn, account_key(&email))
+            .await
+            .unwrap();
+        let mut account: AccountRecord = serde_json::from_str(&json).unwrap();
+        account.status = AccountStatus::Active;
+        let _: () = redis::AsyncCommands::set(
+            &mut conn,
+            account_key(&email),
+            serde_json::to_string(&account).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // An enrolled machine + a session + an invite. The machine name
+        // is cleaned first (the store persists across runs).
+        let _ = cp.delete("deleteme").await;
+        let _: () = conn.del("fortress:alloc:next").await.unwrap();
+        let SignupOutcome::Created(_resp) = cp
+            .allocate_machine(
+                Some(&account.uuid),
+                "deleteme",
+                "lX+5lGEF1qDJEag13Kymyxy/SJH63LPxKTvMg50WE2E=",
+            )
+            .await
+            .expect("allocate")
+        else {
+            panic!("created");
+        };
+        let session = cp.account_login(&email, "hunter2").await.expect("login");
+        let invite_code = cp.invite_create(&email).await.expect("invite");
+
+        // Delete.
+        cp.account_delete(&email).await.expect("delete");
+
+        // Machines: unwired and the record is gone.
+        let machines = cp.list().await.unwrap();
+        assert!(!machines.iter().any(|m| m.name == "deleteme"));
+        // Sessions: the login session is dead.
+        assert_eq!(cp.session_account(&session).await.unwrap(), None);
+        // Invites: gone.
+        let invites = cp.invites_of(&email).await.unwrap();
+        assert!(!invites.iter().any(|(code, _)| code == &invite_code));
+        // The account record: gone — a second delete is NotFound.
+        assert!(matches!(
+            cp.account_delete(&email).await,
+            Err(AccountError::NotFound)
+        ));
+        // Login is impossible (the record is gone).
+        assert!(matches!(
+            cp.account_login(&email, "hunter2").await,
+            Err(AccountError::InvalidCredentials)
+        ));
     }
 }

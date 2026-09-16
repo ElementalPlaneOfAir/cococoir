@@ -13,7 +13,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use fortress_core::wg;
@@ -24,7 +24,7 @@ const DEFAULT_PREFIX: u8 = 24;
 /// Client-side tunnel config. All values are stable for a registered
 /// customer: the edge assigns the tunnel IP once (e.g. `10.10.0.3`) and
 /// it does not change across reboots.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     /// The tunnel interface name.
@@ -46,10 +46,10 @@ pub struct TunnelConfig {
     pub listen_port: u16,
 }
 
-fn default_iface() -> String {
+pub fn default_iface() -> String {
     DEFAULT_IFACE.to_string()
 }
-fn default_prefix() -> u8 {
+pub fn default_prefix() -> u8 {
     DEFAULT_PREFIX
 }
 
@@ -163,7 +163,10 @@ fn link_exists(iface: &str) -> bool {
 /// does not re-add it (idempotency — a blind re-add fails with
 /// "Address already assigned").
 fn addr_present(iface: &str, ip: &str) -> bool {
-    let Ok(output) = Command::new("ip").args(["addr", "show", "dev", iface]).output() else {
+    let Ok(output) = Command::new("ip")
+        .args(["addr", "show", "dev", iface])
+        .output()
+    else {
         return false;
     };
     addr_token_matches(&String::from_utf8_lossy(&output.stdout), ip)
@@ -172,7 +175,8 @@ fn addr_present(iface: &str, ip: &str) -> bool {
 /// True if any whitespace token in `ip addr show` output matches `ip`,
 /// ignoring the `/prefix` suffix (rendered as `10.10.0.3/24`).
 fn addr_token_matches(text: &str, ip: &str) -> bool {
-    text.split_whitespace().any(|token| token.split('/').next() == Some(ip))
+    text.split_whitespace()
+        .any(|token| token.split('/').next() == Some(ip))
 }
 
 /// Run a single external command (`ip` or `wg`), returning its stderr on
@@ -225,7 +229,10 @@ mod tests {
         // fails with "Address already assigned").
         let out = "1: wg0: <POINTOPOINT,NOARP> mtu 1420\n    inet 10.10.0.3/24 scope global wg0\n";
         assert!(addr_token_matches(out, "10.10.0.3"));
-        assert!(addr_token_matches(out, "10.10.0.3/24".split('/').next().unwrap()));
+        assert!(addr_token_matches(
+            out,
+            "10.10.0.3/24".split('/').next().unwrap()
+        ));
         assert!(!addr_token_matches(out, "10.10.0.4"));
     }
 

@@ -82,7 +82,12 @@ impl SmtpConfig {
 }
 
 /// Build the MIME message. Pure — unit-testable without a relay.
-pub fn message_for(from: &str, to: &str, subject: &str, body: &str) -> Result<Message, MailerError> {
+pub fn message_for(
+    from: &str,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> Result<Message, MailerError> {
     Ok(Message::builder()
         .from(from.parse()?)
         .to(to.parse()?)
@@ -165,8 +170,7 @@ impl MockMailer {
 
     /// Make subsequent `send` calls return `MockFailure` (relay outage).
     pub fn fail_sends(&self) {
-        self.fail
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.fail.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -249,8 +253,17 @@ mod tests {
 
     #[test]
     fn message_for_builds_expected_headers() {
-        let msg = message_for("accounts@example.com", "alice@example.com", "Verify", "link").unwrap();
-        assert_eq!(msg.envelope().from().unwrap().to_string(), "accounts@example.com");
+        let msg = message_for(
+            "accounts@example.com",
+            "alice@example.com",
+            "Verify",
+            "link",
+        )
+        .unwrap();
+        assert_eq!(
+            msg.envelope().from().unwrap().to_string(),
+            "accounts@example.com"
+        );
         assert_eq!(msg.envelope().to()[0].to_string(), "alice@example.com");
         let headers = msg.headers().to_string();
         assert!(headers.contains("Subject: Verify"), "headers: {headers}");

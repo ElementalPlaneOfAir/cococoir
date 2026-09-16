@@ -153,11 +153,8 @@ MAIL_FROM = { description = "Envelope From", required = false }
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "fortress-secret-test-{}-{}",
-            std::process::id(),
-            n
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fortress-secret-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         let toml_path = dir.join("secretspec.toml");
         let env_path = dir.join("edge.env");
@@ -202,8 +199,11 @@ MAIL_FROM = { description = "Envelope From", required = false }
         // The store-held wg0 key round-trips as a WireGuard private key.
         let wg_key = resolved_value(&resp, "WG_PRIVATE_KEY");
         assert_eq!(wg_key.len(), 44); // base64, 32 bytes
-        // The external store URL round-trips.
-        assert_eq!(resolved_value(&resp, "REDIS_URL"), "rediss://coord.example.net:6379");
+                                      // The external store URL round-trips.
+        assert_eq!(
+            resolved_value(&resp, "REDIS_URL"),
+            "rediss://coord.example.net:6379"
+        );
     }
 
     #[test]
@@ -243,7 +243,13 @@ MAIL_FROM = { description = "Envelope From", required = false }
         // back to the console.
         let resp = resolve_contract(&env_with_all_values());
         assert!(resp.missing_required.is_empty(), "no missing required");
-        for name in ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_FROM"] {
+        for name in [
+            "SMTP_HOST",
+            "SMTP_PORT",
+            "SMTP_USER",
+            "SMTP_PASS",
+            "MAIL_FROM",
+        ] {
             assert!(
                 resp.missing_optional.contains(&name.to_string()),
                 "{name} reported missing-optional"

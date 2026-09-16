@@ -98,7 +98,11 @@ pub struct EditorPageProps {
 }
 
 fn checked_attr(enabled: bool) -> Option<bool> {
-    if enabled { Some(true) } else { None }
+    if enabled {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 #[component]

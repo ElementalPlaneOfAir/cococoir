@@ -940,11 +940,13 @@ dependencies = [
 name = "fortress-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bcrypt",
  "chrono",
  "fortress-core",
  "momenta",
  "poem",
+ "reqwest",
  "rnix",
  "rowan",
  "serde",
@@ -985,6 +987,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
  "x25519-dalek",
 ]
 

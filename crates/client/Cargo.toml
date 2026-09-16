@@ -19,6 +19,8 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 bcrypt = "0.17"
 rnix = "0.14"
 rowan = "0.16"
+async-trait = "0.1.92"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 
 [dev-dependencies]
 poem = { workspace = true, features = ["test"] }

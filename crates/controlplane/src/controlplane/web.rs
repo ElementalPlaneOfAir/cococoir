@@ -18,9 +18,10 @@ use crate::controlplane::mail::Mailer;
 use crate::controlplane::{AppState, ControlPlane};
 use momenta::prelude::*;
 use poem::{
-    get, handler, post,
+    get, handler,
     http::{header, HeaderValue, StatusCode},
-    web::{Data, Form, Html, Query},
+    post,
+    web::{Data, Form, Html, Path, Query},
     IntoResponse, Request, Response, Route,
 };
 use serde::Deserialize;
@@ -48,7 +49,7 @@ fn mailer_or_500(state: &AppState) -> Result<&'static dyn Mailer, Response> {
     }
 }
 
-fn read_cookie(req: &Request, name: &str) -> Option<String> {
+pub(crate) fn read_cookie(req: &Request, name: &str) -> Option<String> {
     req.headers()
         .get(header::COOKIE)?
         .to_str()
@@ -295,7 +296,7 @@ pub fn Landing(props: &LandingProps) -> Node {
 
     // The hero's primary CTA: always the account/order path.
     let hero_cta = if props.logged_in {
-        rsx!(<a href="/" class="btn-zine btn-zine-red">"Go to my dashboard"</a>)
+        rsx!(<a href="/machines" class="btn-zine btn-zine-red">"Go to my machines"</a>)
     } else {
         rsx!(<a href="/register" class="btn-zine btn-zine-red">"Order a box"</a>)
     };
@@ -523,14 +524,15 @@ outputs = { self, nixpkgs, fortress, ... }: {
 
 pub struct SignupProps {
     pub email: String,
-    pub username: String,
     pub error: Option<String>,
 }
 
 #[component]
 pub fn SignupPage(props: &SignupProps) -> Node {
     let banner = match &props.error {
-        Some(message) => rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>),
+        Some(message) => {
+            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
+        }
         None => Node::Empty,
     };
     page_shell(
@@ -544,11 +546,6 @@ pub fn SignupPage(props: &SignupProps) -> Node {
                         <label class="form-control w-full">
                             <div class="label"><span class="label-text">"Email"</span></div>
                             <input type="email" name="email" value={&props.email} required class="input input-bordered"/>
-                        </label>
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Username"</span></div>
-                            <input type="text" name="username" value={&props.username} required class="input input-bordered"/>
-                            <div class="label"><span class="label-text text-xs text-base-content/50">"Lowercase letters, digits and hyphens — your devices live at username.example.com."</span></div>
                         </label>
                         <label class="form-control w-full">
                             <div class="label"><span class="label-text">"Password"</span></div>
@@ -574,7 +571,9 @@ pub struct LoginProps {
 #[component]
 pub fn LoginPage(props: &LoginProps) -> Node {
     let banner = match &props.error {
-        Some(message) => rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>),
+        Some(message) => {
+            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
+        }
         None => Node::Empty,
     };
     page_shell(
@@ -684,7 +683,9 @@ pub struct ResetProps {
 #[component]
 pub fn ResetPage(props: &ResetProps) -> Node {
     let banner = match &props.error {
-        Some(message) => rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>),
+        Some(message) => {
+            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
+        }
         None => Node::Empty,
     };
     page_shell(
@@ -708,12 +709,196 @@ pub fn ResetPage(props: &ResetProps) -> Node {
     )
 }
 
+// ── machines dashboard (the account's machines + invites) ──────────
+
+pub struct MachinesProps {
+    pub email: String,
+    pub machines: Vec<crate::controlplane::Machine>,
+    pub invites: Vec<(String, crate::controlplane::InviteRecord)>,
+    pub invited_code: Option<String>,
+    pub error: Option<String>,
+    /// The edge's public domain — invite share URLs derive from it,
+    /// never a hardcoded zone.
+    pub root_domain: String,
+}
+
+#[component]
+pub fn MachinesPage(props: &MachinesProps) -> Node {
+    let banner = match &props.error {
+        Some(message) => {
+            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
+        }
+        None => Node::Empty,
+    };
+    let machines_list: Vec<Node> = if props.machines.is_empty() {
+        vec![
+            rsx!(<p class="text-sm text-base-content/60">"No machines yet — invite one below."</p>),
+        ]
+    } else {
+        props
+            .machines
+            .iter()
+            .map(|m| {
+                rsx!(<li class="border-b border-base-200 py-1">
+                    <div>
+                        <span class="font-bold">{m.name.clone()}</span>
+                        <span class="text-xs text-base-content/50">{m.hostname.clone()}</span>
+                    </div>
+                </li>)
+            })
+            .collect()
+    };
+    let invites_list: Vec<Node> = if props.invites.is_empty() {
+        vec![rsx!(<p class="text-sm text-base-content/60">"No invites yet."</p>)]
+    } else {
+        props
+            .invites
+            .iter()
+            .map(|(code, record)| {
+                let waiting = record.status == crate::controlplane::InviteStatus::Waiting;
+                let fresh = Some(code.clone()) == props.invited_code;
+                let url = format!("https://{}/a/{code}", props.root_domain);
+                let status_label = match record.status {
+                    crate::controlplane::InviteStatus::Waiting => "waiting",
+                    crate::controlplane::InviteStatus::Approved => "approved",
+                    crate::controlplane::InviteStatus::Denied => "denied",
+                };
+                let candidate = match &record.device_pubkey {
+                    Some(pk) => rsx!(<p class="text-xs text-base-content/50 break-all">"Candidate: "{pk.clone()}</p>),
+                    None => Node::Empty,
+                };
+            let approve_form = if waiting {
+                rsx!(
+                    <form method="post" action={format!("/auth/invite/{code}/approve")} class="flex items-end gap-2">
+                        <label class="form-control w-full">
+                            <div class="label"><span class="label-text">"Name this machine"</span></div>
+                            <input type="text" name="name" required pattern="[a-z0-9][a-z0-9-]*" class="input input-bordered"/>
+                        </label>
+                        <button type="submit" class="btn btn-primary">"Approve"</button>
+                    </form>
+                )
+            } else {
+                Node::Empty
+            };
+            let actions = if waiting {
+                rsx!(
+                    <div class="flex gap-2">
+                        <form method="post" action={format!("/auth/invite/{code}/deny")}>
+                            <button type="submit" class="btn btn-ghost btn-sm">"Deny"</button>
+                        </form>
+                        <form method="post" action={format!("/auth/invite/{code}/revoke")}>
+                            <button type="submit" class="btn btn-ghost btn-sm">"Revoke"</button>
+                        </form>
+                    </div>
+                )
+            } else {
+                Node::Empty
+            };
+            let share = if fresh {
+                rsx!(
+                    <div class="text-xs text-base-content/70">
+                        "Share this link with the machine: "<code class="break-all">{url}</code>
+                    </div>
+                )
+            } else {
+                Node::Empty
+            };
+                rsx!(<li class="card bg-base-100 shadow-sm">
+                    <div class="card-body gap-2 py-4">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <code class="font-bold">{code.clone()}</code>
+                            <span class="badge badge-sm">{status_label}</span>
+                        </div>
+                        {candidate}
+                        {approve_form}
+                        {actions}
+                        {share}
+                    </div>
+                </li>)
+            })
+            .collect()
+    };
+    page_shell(
+        "Your machines",
+        rsx!(
+            <div class="flex flex-col gap-6">
+                <h1 class="text-2xl font-bold">"Your machines"</h1>
+                {banner}
+                <section class="flex flex-col gap-2">
+                    <h2 class="text-lg font-bold">"Machines"</h2>
+                    {machines_list}
+                </section>
+                <section class="flex flex-col gap-3">
+                    <h2 class="text-lg font-bold">"Invite a machine"</h2>
+                    <form method="post" action="/auth/invite">
+                        <button type="submit" class="btn btn-primary">"Generate invite link"</button>
+                    </form>
+                    {invites_list}
+                </section>
+                <p class="text-sm"><a href="/auth/logout" class="link">"Sign out"</a></p>
+            </div>
+        ),
+    )
+}
+
+/// The public page a machine's invite URL resolves to. The machine
+/// itself POSTs the API; a human landing here gets the handoff
+/// instructions.
+pub struct JoinProps {
+    pub code: String,
+}
+
+#[component]
+pub fn JoinPage(props: &JoinProps) -> Node {
+    page_shell(
+        "Join a machine",
+        rsx!(
+            <div class="card bg-base-100 shadow-sm">
+                <div class="card-body flex flex-col gap-4">
+                    <h1 class="card-title text-2xl">"Join a machine"</h1>
+                    <p class="text-sm text-base-content/70">
+                        "This link enrolls a machine into its owner's fortress. Paste it into the box's "
+                        <code>"Join network"</code>
+                        " screen — the owner then approves and names the machine from their dashboard."
+                    </p>
+                    <p class="text-xs text-base-content/50">"Invite code: "<code>{props.code.clone()}</code></p>
+                    <p class="text-sm"><a href="/" class="link">"Back to the front page"</a></p>
+                </div>
+            </div>
+        ),
+    )
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct MachinesForm {
+    pub name: Option<String>,
+}
+
+/// Redirect response for POST-then-GET form flows.
+fn see_other(location: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, location)
+        .finish()
+}
+
+/// The session email or a redirect to /login — every machines/auth
+/// invite handler starts here.
+async fn require_session(state: &AppState, req: &Request) -> Result<String, Response> {
+    let Some(cp) = state.cp else {
+        return Err(poem::http::StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    };
+    match session_email(cp, req).await {
+        Some(email) => Ok(email),
+        None => Err(see_other("/login")),
+    }
+}
+
 // ── form bodies ────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize)]
 struct SignupForm {
     email: Option<String>,
-    username: Option<String>,
     password: Option<String>,
 }
 
@@ -748,58 +933,64 @@ struct TokenQuery {
 
 #[handler]
 async fn landing(Data(state): Data<&AppState>, req: &Request) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
     let email = session_email(cp, req).await;
-    Html(component::<Landing>(LandingProps {
-        logged_in: email.is_some(),
-        email,
-    })
-    .to_html())
+    Html(
+        component::<Landing>(LandingProps {
+            logged_in: email.is_some(),
+            email,
+        })
+        .to_html(),
+    )
     .into_response()
 }
 
 #[handler]
 async fn signup_page() -> Response {
-    Html(component::<SignupPage>(SignupProps {
-        email: String::new(),
-        username: String::new(),
-        error: None,
-    })
-    .to_html())
+    Html(
+        component::<SignupPage>(SignupProps {
+            email: String::new(),
+            error: None,
+        })
+        .to_html(),
+    )
     .into_response()
 }
 
 #[handler]
-async fn signup(
-    Data(state): Data<&AppState>,
-
-    Form(form): Form<SignupForm>,
-) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
-    let mailer = match mailer_or_500(state) { Ok(mailer) => mailer, Err(resp) => return resp };
+async fn signup(Data(state): Data<&AppState>, Form(form): Form<SignupForm>) -> Response {
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    let mailer = match mailer_or_500(state) {
+        Ok(mailer) => mailer,
+        Err(resp) => return resp,
+    };
     let email = form.email.clone().unwrap_or_default();
-    let username = form.username.clone().unwrap_or_default();
-    let error = match (form.email.as_deref(), form.username.as_deref(), form.password.as_deref()) {
-        (Some(email), Some(username), Some(password)) => {
-            cp.account_signup(email, username, password, mailer).await.err()
-        }
+    let error = match (form.email.as_deref(), form.password.as_deref()) {
+        (Some(email), Some(password)) => cp.account_signup(email, password, mailer).await.err(),
         _ => Some(AccountError::InvalidEmail(email.clone())),
     };
     match error {
-        Some(err) => Html(component::<SignupPage>(SignupProps {
-            email,
-            username,
-            error: Some(account_error_message(&err)),
-        })
-        .to_html())
+        Some(err) => Html(
+            component::<SignupPage>(SignupProps {
+                email,
+                error: Some(account_error_message(&err)),
+            })
+            .to_html(),
+        )
         .into_response(),
         None => Html(
             component::<MessagePage>(MessageProps {
                 kind: MsgKind::Ok,
                 title: "Check your email".into(),
-                message: format!("A verification link was sent to {email}. It expires in 24 hours."),
+                message: format!(
+                    "A verification link was sent to {email}. It expires in 24 hours."
+                ),
             })
             .to_html(),
         )
@@ -809,32 +1000,35 @@ async fn signup(
 
 #[handler]
 async fn login_page() -> Response {
-    Html(component::<LoginPage>(LoginProps {
-        email: String::new(),
-        error: None,
-    })
-    .to_html())
+    Html(
+        component::<LoginPage>(LoginProps {
+            email: String::new(),
+            error: None,
+        })
+        .to_html(),
+    )
     .into_response()
 }
 
 #[handler]
-async fn login(
-    Data(state): Data<&AppState>,
-    Form(form): Form<LoginForm>,
-) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
+async fn login(Data(state): Data<&AppState>, Form(form): Form<LoginForm>) -> Response {
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
     let email = form.email.clone().unwrap_or_default();
     let result = match (form.email.as_deref(), form.password.as_deref()) {
         (Some(email), Some(password)) => cp.account_login(email, password).await,
         _ => Err(AccountError::InvalidCredentials),
     };
     match result {
-        Err(err) => Html(component::<LoginPage>(LoginProps {
-            email,
-            error: Some(account_error_message(&err)),
-        })
-        .to_html())
+        Err(err) => Html(
+            component::<LoginPage>(LoginProps {
+                email,
+                error: Some(account_error_message(&err)),
+            })
+            .to_html(),
+        )
         .into_response(),
         Ok(token) => Response::builder()
             .status(StatusCode::SEE_OTHER)
@@ -846,8 +1040,10 @@ async fn login(
 
 #[handler]
 async fn logout(Data(state): Data<&AppState>, req: &Request) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
     if let Some(token) = read_cookie(req, SESSION_COOKIE) {
         let _ = cp.account_logout(&token).await;
     }
@@ -874,10 +1070,7 @@ async fn verify(Query(query): Query<TokenQuery>) -> Response {
     // Deliberately NOT consumed here — an email-client prefetch of this
     // GET must not burn the single-use token. The confirm button POSTs
     // to /auth/verify to consume it.
-    Html(
-        component::<VerifyPage>(VerifyProps { token }).to_html(),
-    )
-    .into_response()
+    Html(component::<VerifyPage>(VerifyProps { token }).to_html()).into_response()
 }
 
 pub struct VerifyProps {
@@ -903,82 +1096,98 @@ pub fn VerifyPage(props: &VerifyProps) -> Node {
 }
 
 #[handler]
-async fn verify_confirm(
-    Data(state): Data<&AppState>,
-    Form(form): Form<VerifyForm>,
-) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
+async fn verify_confirm(Data(state): Data<&AppState>, Form(form): Form<VerifyForm>) -> Response {
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
     let Some(token) = form.token.as_deref() else {
-        return message_response(MsgKind::Err, "Verification failed", "This link is invalid or has expired.");
+        return message_response(
+            MsgKind::Err,
+            "Verification failed",
+            "This link is invalid or has expired.",
+        );
     };
     match cp.account_verify(token).await {
-        Ok(()) => message_response(MsgKind::Ok, "Email verified", "Your email is verified. You can log in now."),
-        Err(err) => message_response(MsgKind::Err, "Verification failed", &account_error_message(&err)),
+        Ok(()) => message_response(
+            MsgKind::Ok,
+            "Email verified",
+            "Your email is verified. You can log in now.",
+        ),
+        Err(err) => message_response(
+            MsgKind::Err,
+            "Verification failed",
+            &account_error_message(&err),
+        ),
     }
 }
 
 #[handler]
 async fn forgot_page() -> Response {
-    Html(component::<ForgotPage>(ForgotProps { sent: false })
-        .to_html())
-    .into_response()
+    Html(component::<ForgotPage>(ForgotProps { sent: false }).to_html()).into_response()
 }
 
 #[handler]
-async fn forgot(
-    Data(state): Data<&AppState>,
-
-    Form(form): Form<ForgotForm>,
-) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
-    let mailer = match mailer_or_500(state) { Ok(mailer) => mailer, Err(resp) => return resp };
+async fn forgot(Data(state): Data<&AppState>, Form(form): Form<ForgotForm>) -> Response {
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    let mailer = match mailer_or_500(state) {
+        Ok(mailer) => mailer,
+        Err(resp) => return resp,
+    };
     // No account enumeration: the response is identical whether or not
     // the email has an account.
     if let Some(email) = form.email.as_deref() {
         let _ = cp.request_password_reset(email, mailer).await;
     }
-    Html(component::<ForgotPage>(ForgotProps { sent: true })
-        .to_html())
-    .into_response()
+    Html(component::<ForgotPage>(ForgotProps { sent: true }).to_html()).into_response()
 }
 
 #[handler]
 async fn reset_page(Query(query): Query<TokenQuery>) -> Response {
     let Some(token) = query.token else {
-        return message_response(MsgKind::Err, "Invalid link", "This link is invalid or has expired.");
+        return message_response(
+            MsgKind::Err,
+            "Invalid link",
+            "This link is invalid or has expired.",
+        );
     };
-    Html(component::<ResetPage>(ResetProps {
-        token,
-        error: None,
-    })
-    .to_html())
-    .into_response()
+    Html(component::<ResetPage>(ResetProps { token, error: None }).to_html()).into_response()
 }
 
 #[handler]
-async fn reset(
-    Data(state): Data<&AppState>,
-    Form(form): Form<ResetForm>,
-) -> Response {
-
-    let cp = match cp_or_500(state) { Ok(cp) => cp, Err(resp) => return resp };
+async fn reset(Data(state): Data<&AppState>, Form(form): Form<ResetForm>) -> Response {
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
     let Some(token) = form.token.as_deref() else {
-        return message_response(MsgKind::Err, "Invalid link", "This link is invalid or has expired.");
+        return message_response(
+            MsgKind::Err,
+            "Invalid link",
+            "This link is invalid or has expired.",
+        );
     };
     let error = match form.password.as_deref() {
         Some(password) => cp.reset_password(token, password).await.err(),
         None => Some(AccountError::InvalidPassword("empty".into())),
     };
     match error {
-        Some(err) => Html(component::<ResetPage>(ResetProps {
-            token: token.to_string(),
-            error: Some(account_error_message(&err)),
-        })
-        .to_html())
+        Some(err) => Html(
+            component::<ResetPage>(ResetProps {
+                token: token.to_string(),
+                error: Some(account_error_message(&err)),
+            })
+            .to_html(),
+        )
         .into_response(),
-        None => message_response(MsgKind::Ok, "Password changed", "Your password is updated. Log in with it now."),
+        None => message_response(
+            MsgKind::Ok,
+            "Password changed",
+            "Your password is updated. Log in with it now.",
+        ),
     }
 }
 
@@ -1003,13 +1212,15 @@ fn message_response(kind: MsgKind, title: &str, message: &str) -> Response {
 pub(crate) fn account_error_message(err: &AccountError) -> String {
     match err {
         AccountError::InvalidEmail(_) => "That email address doesn't look valid.".into(),
-        AccountError::InvalidUsername(_) => "That username isn't valid — use lowercase letters, digits and hyphens.".into(),
-        AccountError::InvalidPassword(_) => "That password is invalid (must not be empty or longer than 72 bytes).".into(),
+        AccountError::InvalidPassword(_) => {
+            "That password is invalid (must not be empty or longer than 72 bytes).".into()
+        }
         AccountError::DuplicateEmail(_) => "An account with that email already exists.".into(),
-        AccountError::DuplicateUsername(_) => "That username is already taken.".into(),
         AccountError::NotFound => "Something went wrong with that account.".into(),
         AccountError::InvalidCredentials => "Incorrect email or password.".into(),
-        AccountError::NotVerified(_) => "Verify your email first — check your inbox for the confirmation link.".into(),
+        AccountError::NotVerified(_) => {
+            "Verify your email first — check your inbox for the confirmation link.".into()
+        }
         AccountError::InvalidToken => "This link is invalid or has expired.".into(),
         AccountError::Corrupt(_) => "Something went wrong on our side. Please try again.".into(),
         AccountError::Redis(_) => "Something went wrong on our side. Please try again.".into(),
@@ -1019,6 +1230,223 @@ pub(crate) fn account_error_message(err: &AccountError) -> String {
 
 /// The web routes. Mounted into the edge's app with the process
 /// `ControlPlane` + `Mailer` injected as poem `Data`.
+/// The machines dashboard's query params (the ?invited= highlight).
+#[derive(Debug, Deserialize)]
+struct MachinesQuery {
+    invited: Option<String>,
+}
+
+/// The logged-in machines dashboard, or a redirect to /login.
+#[handler]
+async fn machines(
+    Data(state): Data<&AppState>,
+    Query(query): Query<MachinesQuery>,
+    req: &Request,
+) -> Response {
+    let email = match require_session(state, req).await {
+        Ok(email) => email,
+        Err(resp) => return resp,
+    };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    let machines = cp.machines_of(&email).await.unwrap_or_default();
+    let invites = cp.invites_of(&email).await.unwrap_or_default();
+    Html(
+        component::<MachinesPage>(MachinesProps {
+            email,
+            machines,
+            invites,
+            invited_code: query.invited,
+            error: None,
+            root_domain: cp.root_domain.to_string(),
+        })
+        .to_html(),
+    )
+    .into_response()
+}
+
+/// Create an invite and return to the dashboard with the new code shown.
+#[handler]
+async fn machines_create_invite(Data(state): Data<&AppState>, req: &Request) -> Response {
+    let email = match require_session(state, req).await {
+        Ok(email) => email,
+        Err(resp) => return resp,
+    };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    match cp.invite_create(&email).await {
+        Ok(code) => see_other(&format!("/machines?invited={code}")),
+        Err(err) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Err,
+                title: "Couldn't create the invite".into(),
+                message: err.to_string(),
+            })
+            .to_html(),
+        )
+        .into_response(),
+    }
+}
+
+/// Approve a pending machine and name it.
+#[handler]
+async fn invite_approve(
+    Data(state): Data<&AppState>,
+    req: &Request,
+    Path(code): Path<String>,
+    Form(form): Form<MachinesForm>,
+) -> Response {
+    let email = match require_session(state, req).await {
+        Ok(email) => email,
+        Err(resp) => return resp,
+    };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    let Some(name) = form.name.as_deref().filter(|n| !n.is_empty()) else {
+        return see_other("/machines");
+    };
+    match cp.invite_approve(&email, &code, name).await {
+        Ok(_) => see_other("/machines"),
+        Err(err) => Html(component::<MessagePage>(MessageProps {
+            kind: MsgKind::Err,
+            title: "Couldn't approve the machine".into(),
+            message: match err {
+                crate::controlplane::InviteError::NameTaken(_) => format!(
+                    "The name {name} is already taken — generate a new invite and pick another."
+                ),
+                crate::controlplane::InviteError::InvalidName(_) => format!(
+                    "The name {name} isn't valid — 6+ characters, lowercase letters, digits, hyphens."
+                ),
+                other => other.to_string(),
+            },
+        })
+        .to_html())
+        .into_response(),
+    }
+}
+
+/// Deny a pending machine (burns the code).
+#[handler]
+async fn invite_deny(
+    Data(state): Data<&AppState>,
+    req: &Request,
+    Path(code): Path<String>,
+) -> Response {
+    let email = match require_session(state, req).await {
+        Ok(email) => email,
+        Err(resp) => return resp,
+    };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    match cp.invite_deny(&email, &code).await {
+        Ok(()) => see_other("/machines"),
+        Err(err) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Err,
+                title: "Couldn't deny the machine".into(),
+                message: err.to_string(),
+            })
+            .to_html(),
+        )
+        .into_response(),
+    }
+}
+
+/// Revoke a waiting invite (burns the code, machine not yet a candidate).
+#[handler]
+async fn invite_revoke(
+    Data(state): Data<&AppState>,
+    req: &Request,
+    Path(code): Path<String>,
+) -> Response {
+    let email = match require_session(state, req).await {
+        Ok(email) => email,
+        Err(resp) => return resp,
+    };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    match cp.invite_revoke(&email, &code).await {
+        Ok(()) => see_other("/machines"),
+        Err(err) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Err,
+                title: "Couldn't revoke the invite".into(),
+                message: err.to_string(),
+            })
+            .to_html(),
+        )
+        .into_response(),
+    }
+}
+
+/// The public invite URL page (`/a/{code}`).
+#[handler]
+async fn join_page(Path(code): Path<String>) -> Response {
+    Html(component::<JoinPage>(JoinProps { code }).to_html()).into_response()
+}
+
+/// Delete the logged-in account (POST form; the confirmation checkbox
+/// is required to be on). Unwires every machine, drops invites +
+/// sessions + the record; the box's data is never touched.
+#[handler]
+async fn account_delete(
+    Data(state): Data<&AppState>,
+    req: &Request,
+    Form(form): Form<AccountDeleteForm>,
+) -> Response {
+    let email = match require_session(state, req).await {
+        Ok(email) => email,
+        Err(resp) => return resp,
+    };
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    if form.confirm != Some("DELETE".to_string()) {
+        return Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Err,
+                title: "Deletion not confirmed".into(),
+                message: "Type DELETE in the confirmation field to delete your account.".into(),
+            })
+            .to_html(),
+        )
+        .into_response();
+    }
+    match cp.account_delete(&email).await {
+        Ok(()) => poem::Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(header::LOCATION, "/")
+            .header(header::SET_COOKIE, clear_session_cookie_header())
+            .finish(),
+
+        Err(err) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Err,
+                title: "Couldn't delete the account".into(),
+                message: account_error_message(&err),
+            })
+            .to_html(),
+        )
+        .into_response(),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AccountDeleteForm {
+    confirm: Option<String>,
+}
+
 pub fn web_routes() -> Route {
     Route::new()
         .at("/", get(landing))
@@ -1027,12 +1455,19 @@ pub fn web_routes() -> Route {
         .at("/forgot", get(forgot_page))
         .at("/reset", get(reset_page))
         .at("/verify", get(verify))
+        .at("/machines", get(machines))
+        .at("/a/:code", get(join_page))
         .at("/auth/signup", post(signup))
         .at("/auth/login", post(login))
         .at("/auth/logout", get(logout))
         .at("/auth/forgot", post(forgot))
         .at("/auth/reset", post(reset))
         .at("/auth/verify", post(verify_confirm))
+        .at("/auth/account/delete", post(account_delete))
+        .at("/auth/invite", post(machines_create_invite))
+        .at("/auth/invite/:code/approve", post(invite_approve))
+        .at("/auth/invite/:code/deny", post(invite_deny))
+        .at("/auth/invite/:code/revoke", post(invite_revoke))
 }
 
 #[cfg(test)]
@@ -1057,9 +1492,10 @@ mod tests {
     /// mailer, so web tests never fight `redis_store_round_trip` over
     /// the process singletons.
     fn test_app(cp: &'static ControlPlane, mailer: &'static dyn Mailer) -> impl Endpoint {
-        Route::new()
-            .nest("/", web_routes())
-            .data(AppState { cp: Some(cp), mailer: Some(mailer) })
+        Route::new().nest("/", web_routes()).data(AppState {
+            cp: Some(cp),
+            mailer: Some(mailer),
+        })
     }
 
     fn setup() -> Option<(&'static ControlPlane, &'static MockMailer)> {
@@ -1069,8 +1505,19 @@ mod tests {
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         let wg_subnet = WgSubnet::from_str("10.10.0.0/24").unwrap();
         let cp = Box::leak(Box::new(
-            ControlPlane::with_deps(&url, subnet, wg_subnet, "example.net", "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=", wg, dns)
-                .expect("control plane connects"),
+            ControlPlane::with_deps(
+                &url,
+                subnet,
+                wg_subnet,
+                "example.net",
+                "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=",
+                wg,
+                dns,
+            )
+            .expect("control plane connects")
+            .isolated_alloc(Box::leak(
+                format!("fortress:test-alloc:web-{}", std::process::id()).into_boxed_str(),
+            )),
         ));
         let mailer: &'static MockMailer = Box::leak(Box::new(MockMailer::new()));
         Some((cp, mailer))
@@ -1131,18 +1578,20 @@ mod tests {
         };
         let client = TestClient::new(test_app(cp, mailer));
         let email = unique_email("web");
-        let username = email.split('@').next().unwrap().to_string();
 
         // Signup via the form.
         let resp = client
             .post("/auth/signup")
             .content_type("application/x-www-form-urlencoded")
-            .body(format!("email={email}&username={username}&password=hunter2"))
+            .body(format!("email={email}&password=hunter2"))
             .send()
             .await;
         resp.assert_status(StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("A verification link was sent"), "shows check-your-email");
+        assert!(
+            body.contains("A verification link was sent"),
+            "shows check-your-email"
+        );
 
         // The mailer captured the magic link.
         let sent = mailer.sent();
@@ -1209,7 +1658,7 @@ mod tests {
             .await;
         resp.assert_status(StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("Signed in as"));
+        assert!(body.contains("Sign out"), "landing shows the signed-in nav");
         assert!(body.contains(&email));
 
         // Logout clears the session.
@@ -1229,7 +1678,7 @@ mod tests {
             .contains("Max-Age=0"));
         let resp = client.get("/").send().await;
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("Create an account"), "logged out landing");
+        assert!(body.contains("Create account"), "logged out landing");
     }
 
     #[tokio::test]
@@ -1240,12 +1689,11 @@ mod tests {
         };
         let client = TestClient::new(test_app(cp, mailer));
         let email = unique_email("webreset");
-        let username = email.split('@').next().unwrap().to_string();
 
         client
             .post("/auth/signup")
             .content_type("application/x-www-form-urlencoded")
-            .body(format!("email={email}&username={username}&password=old-password"))
+            .body(format!("email={email}&password=old-password"))
             .send()
             .await
             .assert_status(StatusCode::OK);
@@ -1272,7 +1720,10 @@ mod tests {
         let reset_token = extract_token(&mailer.sent()[1].body);
 
         // GET /reset renders the form; POST /auth/reset sets the password.
-        let resp = client.get(format!("/reset?token={reset_token}")).send().await;
+        let resp = client
+            .get(format!("/reset?token={reset_token}"))
+            .send()
+            .await;
         resp.assert_status(StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("Choose a new password"));
@@ -1313,11 +1764,10 @@ mod tests {
         };
         let client = TestClient::new(test_app(cp, mailer));
         let email = unique_email("webwrong");
-        let username = email.split('@').next().unwrap().to_string();
         client
             .post("/auth/signup")
             .content_type("application/x-www-form-urlencoded")
-            .body(format!("email={email}&username={username}&password=hunter2"))
+            .body(format!("email={email}&password=hunter2"))
             .send()
             .await
             .assert_status(StatusCode::OK);
@@ -1365,10 +1815,277 @@ mod tests {
         })
         .to_html();
         assert!(html.contains("Install"), "landing has an install section");
-        assert!(html.contains("github:ElementalPlaneOfAir/cococoir"), "flake input documented");
-        assert!(html.contains("fortress.services.jellyfin"), "service enable documented");
-        assert!(html.contains("nixos-rebuild switch"), "rebuild command documented");
-        assert!(html.contains("living-room"), "multi-machine example documented");
-        assert!(html.contains("nixosConfigurations"), "flake structure documented");
+        assert!(
+            html.contains("github:ElementalPlaneOfAir/cococoir"),
+            "flake input documented"
+        );
+        assert!(
+            html.contains("fortress.services.jellyfin"),
+            "service enable documented"
+        );
+        assert!(
+            html.contains("nixos-rebuild switch"),
+            "rebuild command documented"
+        );
+        assert!(
+            html.contains("living-room"),
+            "multi-machine example documented"
+        );
+        assert!(
+            html.contains("nixosConfigurations"),
+            "flake structure documented"
+        );
+    }
+
+    /// Sign up + verify + log in via the web forms; returns the session
+    /// cookie for subsequent requests.
+    async fn logged_in_session(client: &TestClient<impl Endpoint>, mailer: &MockMailer) -> String {
+        let email = unique_email("machines");
+        client
+            .post("/auth/signup")
+            .content_type("application/x-www-form-urlencoded")
+            .body(format!("email={email}&password=hunter2"))
+            .send()
+            .await
+            .assert_status(StatusCode::OK);
+        let verify_token = extract_token(&mailer.sent().last().unwrap().body);
+        client
+            .post("/auth/verify")
+            .content_type("application/x-www-form-urlencoded")
+            .body(format!("token={verify_token}"))
+            .send()
+            .await
+            .assert_status(StatusCode::OK);
+        let resp = client
+            .post("/auth/login")
+            .content_type("application/x-www-form-urlencoded")
+            .body(format!("email={email}&password=hunter2"))
+            .send()
+            .await;
+        resp.0
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("session cookie")
+            .to_str()
+            .unwrap()
+            .split("fortress_account_session=")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The machines dashboard requires a session: anonymous → /login.
+    #[tokio::test]
+    async fn machines_page_requires_session() {
+        let Some((cp, mailer)) = setup() else {
+            eprintln!("skipping: REDIS_URL not set");
+            return;
+        };
+        let client = TestClient::new(test_app(cp, mailer));
+        let resp = client.get("/machines").send().await;
+        resp.assert_status(StatusCode::SEE_OTHER);
+        assert!(resp
+            .0
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("/login"));
+    }
+
+    /// The public invite URL page renders handoff instructions.
+    #[tokio::test]
+    async fn join_page_renders_instructions() {
+        let Some((cp, mailer)) = setup() else {
+            eprintln!("skipping: REDIS_URL not set");
+            return;
+        };
+        let client = TestClient::new(test_app(cp, mailer));
+        let resp = client.get("/a/kowiqmzabc").send().await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("Join a machine"));
+        assert!(body.contains("kowiqmzabc"));
+    }
+
+    /// The dashboard flow over real forms: create an invite → the
+    /// machine begins via the API → the dashboard shows the candidate →
+    /// approve names it → the machine appears on the machines list.
+    /// Leftover machines from aborted runs are cleaned first.
+    #[tokio::test]
+    async fn machines_dashboard_invite_approve_flow() {
+        let Some((cp, mailer)) = setup() else {
+            eprintln!("skipping: REDIS_URL not set");
+            return;
+        };
+        crate::controlplane::set_forwarder_for_tests();
+        let _ = cp.delete("webbox1").await;
+        let _ = cp.delete("webbox2").await;
+        let client = TestClient::new(test_app(cp, mailer));
+        let session = logged_in_session(&client, mailer).await;
+        let cookie = format!("fortress_account_session={session}");
+
+        // The dashboard is empty at first.
+        let resp = client
+            .get("/machines")
+            .header(header::COOKIE, cookie.clone())
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("Invite a machine"));
+        assert!(body.contains("No machines yet"), "empty dashboard: {body}");
+
+        // Create an invite via the form → redirected to /machines?invited=.
+        let resp = client
+            .post("/auth/invite")
+            .header(header::COOKIE, cookie.clone())
+            .send()
+            .await;
+        resp.assert_status(StatusCode::SEE_OTHER);
+        let location = resp
+            .0
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let code = location
+            .strip_prefix("/machines?invited=")
+            .expect("redirect carries the code")
+            .to_string();
+        assert_eq!(code.len(), 10);
+
+        // The dashboard highlights the fresh code + its share URL.
+        let resp = client
+            .get(&location)
+            .header(header::COOKIE, cookie.clone())
+            .send()
+            .await;
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains(&code), "fresh invite rendered: {body}");
+
+        // The machine dials the invite (store level — the API surface is
+        // proven by `api_invites_round_trip`).
+        let pk = crate::controlplane::generate_wg_keypair().0;
+        cp.invite_begin(&code, &pk).await.expect("begin");
+
+        // The dashboard now shows the candidate + the approve form.
+        let resp = client
+            .get("/machines")
+            .header(header::COOKIE, cookie.clone())
+            .send()
+            .await;
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("Candidate"), "candidate pubkey shown");
+        assert!(body.contains("Approve"), "approve form shown");
+
+        // Approve with a name → the machine is listed with its hostname.
+        let resp = client
+            .post(format!("/auth/invite/{code}/approve"))
+            .header(header::COOKIE, cookie.clone())
+            .content_type("application/x-www-form-urlencoded")
+            .body("name=webbox1")
+            .send()
+            .await;
+        resp.assert_status(StatusCode::SEE_OTHER);
+        let resp = client
+            .get("/machines")
+            .header(header::COOKIE, cookie.clone())
+            .send()
+            .await;
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("webbox1"), "machine listed: {body}");
+        assert!(body.contains("webbox1.example.net"));
+
+        // A taken name is surfaced as a customer-facing error.
+        let code2 = {
+            let resp = client
+                .post("/auth/invite")
+                .header(header::COOKIE, cookie.clone())
+                .send()
+                .await;
+            let location = resp
+                .0
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            location
+                .strip_prefix("/machines?invited=")
+                .unwrap()
+                .to_string()
+        };
+        cp.invite_begin(&code2, &crate::controlplane::generate_wg_keypair().0)
+            .await
+            .expect("begin");
+        let resp = client
+            .post(format!("/auth/invite/{code2}/approve"))
+            .header(header::COOKIE, cookie.clone())
+            .content_type("application/x-www-form-urlencoded")
+            .body("name=webbox1")
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(
+            body.contains("already taken"),
+            "name-clash surfaced: {body}"
+        );
+    }
+
+    /// Account deletion over the web form: the unconfirmed POST is
+    /// refused; the confirmed POST unwires and clears the session.
+    #[tokio::test]
+    async fn account_delete_web_flow() {
+        let Some((cp, mailer)) = setup() else {
+            eprintln!("skipping: REDIS_URL not set");
+            return;
+        };
+        crate::controlplane::set_forwarder_for_tests();
+        let _ = cp.delete("webdeleteme").await;
+        let client = TestClient::new(test_app(cp, mailer));
+        let session = logged_in_session(&client, mailer).await;
+        let cookie = format!("fortress_account_session={session}");
+
+        // Unconfirmed → refused with instructions.
+        let resp = client
+            .post("/auth/account/delete")
+            .header(header::COOKIE, cookie.clone())
+            .content_type("application/x-www-form-urlencoded")
+            .body("confirm=no")
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("Deletion not confirmed"));
+
+        // Confirmed → redirect + cleared cookie.
+        let resp = client
+            .post("/auth/account/delete")
+            .header(header::COOKIE, cookie.clone())
+            .content_type("application/x-www-form-urlencoded")
+            .body("confirm=DELETE")
+            .send()
+            .await;
+        resp.assert_status(StatusCode::SEE_OTHER);
+        let clear = resp
+            .0
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(clear.contains("Max-Age=0"), "session cookie cleared");
+        // The account is gone: the session no longer resolves.
+        assert_eq!(cp.session_account(&session).await.unwrap(), None);
     }
 }

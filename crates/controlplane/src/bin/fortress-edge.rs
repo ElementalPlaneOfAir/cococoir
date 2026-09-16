@@ -62,9 +62,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<EdgeArgs, std::io::E
             out.dummy = true;
             continue;
         }
-        let value = args.next().ok_or_else(|| {
-            std::io::Error::other(format!("{arg} requires a value"))
-        })?;
+        let value = args
+            .next()
+            .ok_or_else(|| std::io::Error::other(format!("{arg} requires a value")))?;
         match arg.as_str() {
             "--redis-url" => out.redis_url = Some(value),
             "--subnet" => out.subnet = value,

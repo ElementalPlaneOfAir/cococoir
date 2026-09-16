@@ -15,10 +15,14 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use tokio::sync::watch;
-use tracing::{error, info};
 use tracing::span;
+use tracing::{error, info};
 
 use crate::dashboard;
+use crate::pairing::{
+    self, device_token_path, persisted_tunnel_state, substitute_tunnel_ip, tunnel_state_path,
+    EnrollError, HttpEdgeClient, InviteConfig,
+};
 use crate::tunnel::{self, TunnelConfig};
 use fortress_core::forwarder::{Config, Forward, Forwarder};
 use fortress_core::health::{HealthServer, StatusFunc};
@@ -36,6 +40,12 @@ struct ConfigFile {
     /// binds the tunnel IP.
     #[serde(default)]
     tunnel: Option<TunnelConfig>,
+    /// Optional invite enrollment: the box dials the owner's invite
+    /// URL, polls until approved, then persists the tunnel state. A
+    /// static `tunnel` AND an `invite` together are a config error —
+    /// a box is either Nix-wired or self-enrolled, never both.
+    #[serde(default)]
+    invite: Option<InviteConfig>,
 }
 
 /// CLI flags, mirroring the Go `flag` defaults.
@@ -77,14 +87,65 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
     };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Client-owned tunnel: generate + persist the WG keypair and bring
-    // wg0 up BEFORE the forwarder binds, so the forwarder's tunnel-IP
-    // listeners have an address. Fail-fast: if wg0 cannot come up, remote
-    // access is dead and the forwarder would only spin retrying binds.
-    if let Some(tunnel_cfg) = &cfg.tunnel {
+    if cfg.tunnel.is_some() && cfg.invite.is_some() {
+        error!("config: 'tunnel' and 'invite' are mutually exclusive — a box is Nix-wired OR self-enrolled");
+        return 1;
+    }
+
+    // Tunnel state resolution, in priority order:
+    //   1. A persisted enrollment (tunnel.json) — the box already joined;
+    //      no enrollment, no edge dependency at boot.
+    //   2. An invite in the config — enroll now (begin → poll → persist).
+    //   3. A legacy static tunnel in the Nix config — use as-is.
+    // Fail-fast: a tunnel that cannot come up leaves the forwarder with
+    // no addresses to bind, so remote access is dead.
+    let tunnel_cfg: Option<TunnelConfig> = if let Some(persisted) =
+        persisted_tunnel_state(&tunnel_state_path())
+    {
+        tracing::info!(ip = %persisted.ip, iface = %persisted.iface, "tunnel: persisted enrollment");
+        Some(persisted)
+    } else if let Some(invite) = &cfg.invite {
+        let key_path = tunnel::key_path();
+        let edge = match HttpEdgeClient::new(&invite.invite_url) {
+            Ok(edge) => edge,
+            Err(err) => {
+                error!(err = %err, "enroll: invite URL invalid");
+                return 1;
+            }
+        };
+        match pairing::enroll(
+            &edge,
+            invite,
+            &key_path,
+            &tunnel_state_path(),
+            &device_token_path(),
+            std::time::Duration::from_secs(5),
+            10_000,
+        )
+        .await
+        {
+            Ok(tunnel_cfg) => {
+                info!(ip = %tunnel_cfg.ip, iface = %tunnel_cfg.iface, "enrolled; tunnel state persisted");
+                Some(tunnel_cfg)
+            }
+            Err(EnrollError::Denied) => {
+                error!("enroll: the owner denied this machine's enrollment");
+                return 1;
+            }
+            Err(err) => {
+                error!(err = %err, "enroll failed");
+                return 1;
+            }
+        }
+    } else {
+        cfg.tunnel.clone()
+    };
+    if let Some(tunnel_cfg) = &tunnel_cfg {
         let key_path = tunnel::key_path();
         match tunnel::ensure_keypair(&key_path) {
-            Ok(pubkey) => tracing::info!(iface = %tunnel_cfg.iface, public_key = %pubkey, "wg0 keypair ensured"),
+            Ok(pubkey) => {
+                tracing::info!(iface = %tunnel_cfg.iface, public_key = %pubkey, "wg0 keypair ensured")
+            }
             Err(err) => {
                 error!(err = %err, "tunnel: keypair failed");
                 return 1;
@@ -97,8 +158,23 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
         tracing::info!(iface = %tunnel_cfg.iface, ip = %tunnel_cfg.ip, "wg0 up");
     }
 
+    // The forwards may reference the tunnel IP via the `{tunnel_ip}`
+    // placeholder (enrollment assigns it at runtime). Substitution is a
+    // no-op for configs with concrete addresses.
+    let resolved_forwards = tunnel_cfg
+        .as_ref()
+        .map(|t| substitute_tunnel_ip(&cfg.forwards, t))
+        .unwrap_or_else(|| cfg.forwards.clone());
+    let forwards_valid = resolved_forwards
+        .iter()
+        .all(|f| !f.dest_addr.contains("{tunnel_ip}"));
+    if !forwards_valid {
+        error!("config: a forward still references {{tunnel_ip}} but no tunnel state exists");
+        return 1;
+    }
+
     let forwarder = match Forwarder::new(Config {
-        forwards: cfg.forwards,
+        forwards: resolved_forwards,
         component: component.to_string(),
         ..Config::default()
     }) {
@@ -121,7 +197,8 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
             let auth = dashboard::auth::AuthMode::current().clone();
             let dashboard_shutdown = shutdown_rx.clone();
             Some(tokio::spawn(async move {
-                if let Err(err) = dashboard::serve(db, auth, config_path, dashboard_shutdown).await {
+                if let Err(err) = dashboard::serve(db, auth, config_path, dashboard_shutdown).await
+                {
                     error!(err = %err, "dashboard server exited with error");
                 }
             }))
@@ -196,7 +273,11 @@ async fn wait_for_signal() {
 /// Parses `-config`, `-log-format`, and `-health-addr` from argv,
 /// applying the binary's defaults for unset flags.
 fn parse_flags(component: &str, default_config: &str) -> Result<Flags, String> {
-    parse_flag_args(component, default_config, std::env::args().skip(1).collect())
+    parse_flag_args(
+        component,
+        default_config,
+        std::env::args().skip(1).collect(),
+    )
 }
 
 /// Core of [`parse_flags`], split out so tests can pass an explicit
@@ -212,7 +293,9 @@ fn parse_flag_args(
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        let value = args.next().ok_or_else(|| format!("{component}: flag {arg} requires a value"))?;
+        let value = args
+            .next()
+            .ok_or_else(|| format!("{component}: flag {arg} requires a value"))?;
         match arg.as_str() {
             "-config" => config_path = value,
             "-log-format" => log_format = value,
@@ -249,7 +332,14 @@ mod tests {
         let flags = parse_flag_args(
             "fortress-edge",
             "/etc/fortress-edge.json",
-            args(&["-config", "/tmp/x.json", "-log-format", "json", "-health-addr", "0.0.0.0:9090"]),
+            args(&[
+                "-config",
+                "/tmp/x.json",
+                "-log-format",
+                "json",
+                "-health-addr",
+                "0.0.0.0:9090",
+            ]),
         )
         .unwrap();
         assert_eq!(flags.config_path, "/tmp/x.json");
@@ -259,13 +349,23 @@ mod tests {
 
     #[test]
     fn parse_flags_rejects_unknown_flag() {
-        let err = parse_flag_args("fortress-edge", "/etc/fortress-edge.json", args(&["-bogus", "1"])).unwrap_err();
+        let err = parse_flag_args(
+            "fortress-edge",
+            "/etc/fortress-edge.json",
+            args(&["-bogus", "1"]),
+        )
+        .unwrap_err();
         assert!(err.contains("unknown flag"));
     }
 
     #[test]
     fn parse_flags_rejects_unknown_format() {
-        let err = parse_flag_args("fortress-edge", "/etc/fortress-edge.json", args(&["-log-format", "yaml"])).unwrap_err();
+        let err = parse_flag_args(
+            "fortress-edge",
+            "/etc/fortress-edge.json",
+            args(&["-log-format", "yaml"]),
+        )
+        .unwrap_err();
         assert!(err.contains("unknown format"));
     }
 
@@ -273,5 +373,23 @@ mod tests {
     fn config_file_rejects_unknown_field() {
         let err = serde_json::from_str::<ConfigFile>(r#"{"forwards":[],"bogus":1}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn config_file_parses_invite_shape() {
+        let cfg: ConfigFile = serde_json::from_str(
+            r#"{"forwards":[{"listen_addr":"0.0.0.0:80","dest_addr":"{tunnel_ip}:80","proto":"tcp"}],"invite":{"invite_url":"https://proletariat.tech/a/kowiqmz4xy","edge_endpoint":"62.238.111.21:51820","edge_allowed_ips":"10.10.0.0/24"}}"#,
+        )
+        .unwrap();
+        let invite = cfg.invite.expect("invite present");
+        assert_eq!(invite.iface, "wg0");
+        assert_eq!(invite.prefix, 24);
+        assert_eq!(invite.listen_port, 0);
+        let (base, code) = invite.parse().unwrap();
+        assert_eq!(base, "https://proletariat.tech");
+        assert_eq!(code, "kowiqmz4xy");
+        // A placeholder forward is legal in the file; validation that a
+        // tunnel state exists happens at boot.
+        assert!(cfg.forwards[0].dest_addr.contains("{tunnel_ip}"));
     }
 }

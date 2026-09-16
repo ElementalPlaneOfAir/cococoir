@@ -174,11 +174,10 @@ impl NixConfigFile {
     /// Only that value's byte span changes. Missing paths are an error,
     /// not an insertion — this arc does not create bindings.
     pub fn set_attrpath(&mut self, path: &[&str], replacement: &str) -> Result<(), SetError> {
-        let root = parse_root(&self.source).ok_or_else(|| {
-            SetError::InvalidValue("source file does not parse".to_string())
-        })?;
-        let node = find_value_node(&root, path)
-            .ok_or_else(|| SetError::NotFound(path.join(".")))?;
+        let root = parse_root(&self.source)
+            .ok_or_else(|| SetError::InvalidValue("source file does not parse".to_string()))?;
+        let node =
+            find_value_node(&root, path).ok_or_else(|| SetError::NotFound(path.join(".")))?;
         let span = node.text_range();
         let (start, end): (usize, usize) = (span.start().into(), span.end().into());
 
@@ -245,7 +244,11 @@ fn find_in_attrset(attrset: &ast::AttrSet, path: &[&str]) -> Option<SyntaxNode> 
         if names.is_empty() || names.len() > path.len() {
             continue;
         }
-        if !names.iter().zip(path.iter()).all(|(name, segment)| name == segment) {
+        if !names
+            .iter()
+            .zip(path.iter())
+            .all(|(name, segment)| name == segment)
+        {
             continue;
         }
         let value = kv.value()?;
@@ -265,11 +268,7 @@ fn find_in_attrset(attrset: &ast::AttrSet, path: &[&str]) -> Option<SyntaxNode> 
 /// matching entry contributes the segment at `path.len()` (for a dotted
 /// key that extends past the target) or recurses (for a nested or
 /// shorter prefix). Returns `false` when nothing at `path` exists.
-fn collect_child_keys(
-    attrset: &ast::AttrSet,
-    path: &[&str],
-    keys: &mut Vec<String>,
-) -> bool {
+fn collect_child_keys(attrset: &ast::AttrSet, path: &[&str], keys: &mut Vec<String>) -> bool {
     let mut found = false;
     for entry in attrset.entries() {
         let ast::Entry::AttrpathValue(kv) = entry else {
@@ -282,7 +281,11 @@ fn collect_child_keys(
         if names.is_empty() {
             continue;
         }
-        if !names.iter().zip(path.iter()).all(|(name, segment)| name == segment) {
+        if !names
+            .iter()
+            .zip(path.iter())
+            .all(|(name, segment)| name == segment)
+        {
             continue;
         }
         let Some(value) = kv.value() else {
@@ -314,7 +317,10 @@ fn attr_name(attr: &ast::Attr) -> Option<String> {
 /// interpolation (dynamic at runtime, so not a stable config value).
 fn literal_string(str: &ast::Str) -> Option<String> {
     let parts = str.normalized_parts();
-    if parts.iter().any(|p| matches!(p, InterpolPart::Interpolation(_))) {
+    if parts
+        .iter()
+        .any(|p| matches!(p, InterpolPart::Interpolation(_)))
+    {
         return None;
     }
     Some(
@@ -441,12 +447,12 @@ pub struct FortressConfig {
 impl FortressConfig {
     /// Extract the known fields from a file using `schema`'s paths.
     pub fn extract(file: &NixConfigFile, schema: &ConfigSchema) -> Self {
-        let hostname = file
-            .find_attrpath(&schema.hostname)
-            .and_then(|located| match located.value {
-                NixValue::Str(s) => Some(s),
-                _ => None,
-            });
+        let hostname =
+            file.find_attrpath(&schema.hostname)
+                .and_then(|located| match located.value {
+                    NixValue::Str(s) => Some(s),
+                    _ => None,
+                });
         let root_domain = file
             .find_attrpath(&schema.root_domain)
             .and_then(|located| match located.value {
@@ -559,7 +565,10 @@ in {
     #[test]
     fn rejects_malformed_input_without_panicking() {
         for garbage in ["", "{", "}{", "fortress = ", "not nix at all !!!", "}"] {
-            assert!(NixConfigFile::parse(garbage).is_err(), "should reject {garbage:?}");
+            assert!(
+                NixConfigFile::parse(garbage).is_err(),
+                "should reject {garbage:?}"
+            );
         }
     }
 
@@ -602,7 +611,9 @@ in {
         let file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
         assert!(file.find_attrpath(&["fortress", "nope"]).is_none());
         assert!(file.find_attrpath(&["nope"]).is_none());
-        assert!(file.find_attrpath(&["fortress", "services", "sonarr", "enable"]).is_none());
+        assert!(file
+            .find_attrpath(&["fortress", "services", "sonarr", "enable"])
+            .is_none());
         assert!(file.find_attrpath(&[]).is_none());
     }
 
@@ -641,8 +652,10 @@ in {
             .expect("edit succeeds");
 
         let updated = file.to_source();
-        let jellyfin_block_after = "services.jellyfin = {\n      enable = false;\n      public = true;\n    };";
-        let jellyfin_block_before = "services.jellyfin = {\n      enable = true;\n      public = true;\n    };";
+        let jellyfin_block_after =
+            "services.jellyfin = {\n      enable = false;\n      public = true;\n    };";
+        let jellyfin_block_before =
+            "services.jellyfin = {\n      enable = true;\n      public = true;\n    };";
         assert!(
             updated.contains(jellyfin_block_after),
             "only the value changed, surrounding text survives"
@@ -676,7 +689,11 @@ in {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
         let result = file.set_attrpath(&["fortress", "nonexistent"], "true");
         assert!(matches!(result, Err(SetError::NotFound(path)) if path == "fortress.nonexistent"));
-        assert_eq!(file.to_source(), VMTEST_STYLE, "failed edit must not touch the file");
+        assert_eq!(
+            file.to_source(),
+            VMTEST_STYLE,
+            "failed edit must not touch the file"
+        );
     }
 
     #[test]
@@ -684,14 +701,20 @@ in {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
         let result = file.set_attrpath(&["networking", "hostName"], "}");
         assert!(matches!(result, Err(SetError::InvalidValue(_))));
-        assert_eq!(file.to_source(), VMTEST_STYLE, "invalid edit must not touch the file");
+        assert_eq!(
+            file.to_source(),
+            VMTEST_STYLE,
+            "invalid edit must not touch the file"
+        );
     }
 
     #[test]
     fn set_then_set_back_round_trips() {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "false").unwrap();
-        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "true").unwrap();
+        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "false")
+            .unwrap();
+        file.set_attrpath(&["fortress", "services", "jellyfin", "enable"], "true")
+            .unwrap();
         assert_eq!(file.to_source(), VMTEST_STYLE);
     }
 
@@ -705,12 +728,22 @@ in {
         assert_eq!(config.services_enabled.get("jellyfin"), Some(&true));
         assert_eq!(config.services_enabled.get("cryptpad"), Some(&true));
         assert_eq!(config.services_enabled.get("media"), Some(&false));
-        assert_eq!(config.services_enabled.get("sonarr"), None, "not declared in file");
+        assert_eq!(
+            config.services_enabled.get("sonarr"),
+            None,
+            "not declared in file"
+        );
 
         let nicole = config.users.get("nicole").expect("nicole present");
-        assert_eq!(nicole.hashed_password.as_deref(), Some("$2b$10$abcdefghijklmnopqrstuv"));
+        assert_eq!(
+            nicole.hashed_password.as_deref(),
+            Some("$2b$10$abcdefghijklmnopqrstuv")
+        );
         assert!(nicole.is_admin());
-        assert!(nicole.groups_declared, "nicole declares groups in the fixture");
+        assert!(
+            nicole.groups_declared,
+            "nicole declares groups in the fixture"
+        );
         assert!(config.users.get("carl").is_none());
     }
 
@@ -735,10 +768,8 @@ in {
             .expect("users present under dotted prefix");
         assert_eq!(keys, vec!["carl".to_string(), "nicole".to_string()]);
 
-        let nested = NixConfigFile::parse(
-            "{ users.users = { nicole = { }; carl = { }; }; }",
-        )
-        .expect("nested keys parse");
+        let nested = NixConfigFile::parse("{ users.users = { nicole = { }; carl = { }; }; }")
+            .expect("nested keys parse");
         let keys = nested
             .attrset_keys(&["users", "users"])
             .expect("users present under nested prefix");
@@ -777,7 +808,10 @@ in {
     fn to_source_renders_bool_str_strlist() {
         assert_eq!(NixValue::Bool(true).to_source(), "true");
         assert_eq!(NixValue::Bool(false).to_source(), "false");
-        assert_eq!(NixValue::Str("vmtest".to_string()).to_source(), "\"vmtest\"");
+        assert_eq!(
+            NixValue::Str("vmtest".to_string()).to_source(),
+            "\"vmtest\""
+        );
         assert_eq!(
             NixValue::StrList(vec!["wheel".to_string(), "storage".to_string()]).to_source(),
             "[ \"wheel\" \"storage\" ]"
@@ -786,15 +820,24 @@ in {
 
     #[test]
     fn to_source_escapes_nix_string_characters() {
-        assert_eq!(NixValue::Str("say \"hi\"".to_string()).to_source(), "\"say \\\"hi\\\"\"");
+        assert_eq!(
+            NixValue::Str("say \"hi\"".to_string()).to_source(),
+            "\"say \\\"hi\\\"\""
+        );
         assert_eq!(NixValue::Str("a\\b".to_string()).to_source(), "\"a\\\\b\"");
-        assert_eq!(NixValue::Str("line\nbreak".to_string()).to_source(), "\"line\\nbreak\"");
+        assert_eq!(
+            NixValue::Str("line\nbreak".to_string()).to_source(),
+            "\"line\\nbreak\""
+        );
     }
 
     #[test]
     fn to_source_other_is_lossless_raw() {
         assert_eq!(NixValue::Other("true".to_string()).to_source(), "true");
-        assert_eq!(NixValue::Other("\"raw\"".to_string()).to_source(), "\"raw\"");
+        assert_eq!(
+            NixValue::Other("\"raw\"".to_string()).to_source(),
+            "\"raw\""
+        );
     }
 
     #[test]
@@ -805,7 +848,8 @@ in {
             (NixValue::Str("other".to_string()), true),
         ] {
             let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-            file.set_attrpath(&["networking", "hostName"], &value.to_source()).unwrap();
+            file.set_attrpath(&["networking", "hostName"], &value.to_source())
+                .unwrap();
             let reparse = NixConfigFile::parse(file.to_source().to_string()).unwrap();
             let reextract = reparse
                 .find_attrpath(&["networking", "hostName"])
