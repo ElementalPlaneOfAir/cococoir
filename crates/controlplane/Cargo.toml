@@ -15,6 +15,9 @@ poem.workspace = true
 poem-openapi.workspace = true
 momenta = "0.3.3"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
+# Explicit so the binary can install the provider before any rustls
+# client (redis rediss / reqwest) is built — rustls aborts otherwise.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 base64 = "0.22"
 rand_core = { version = "0.6", features = ["getrandom"] }

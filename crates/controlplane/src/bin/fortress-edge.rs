@@ -87,6 +87,14 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<EdgeArgs, std::io::E
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
+    // Install the rustls crypto provider before anything builds a rustls
+    // client (redis rediss, reqwest). With multiple provider features in
+    // the dep tree, rustls refuses to pick one itself and aborts — that
+    // was the edge crash-looping on boot (exit 101, restart counter N).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("rustls crypto provider must install exactly once");
+
     let args = parse_args(std::env::args().skip(1))?;
     let subnet = Subnet64::from_str(&args.subnet).map_err(std::io::Error::other)?;
     let wg_subnet = WgSubnet::from_str(&args.wg_subnet).map_err(std::io::Error::other)?;
