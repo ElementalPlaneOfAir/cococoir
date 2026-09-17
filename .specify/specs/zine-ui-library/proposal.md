@@ -98,34 +98,57 @@ swap, animation polish) is explicitly deferred.
 ## Tasks
 
 ### T1: web-ui crate — tokens, vendored Tailwind, shells, core components
-**Depends on:** none
-**Verification:** `cargo build -p web-ui`; unit test renders both shell
+**Depends on:** none — **DONE** (build + 6 lib tests green: variant
+split forces LOUD_CSS out of App output, inlined assets, empty-input
+assertions, card body layout, field skin)
+**Verification:** `cargo build -p fortress-web-ui`; unit test renders both shell
 variants and asserts loud-only classes absent in App
 **Files:** `crates/web-ui/{Cargo.toml,src/lib.rs,assets/tailwind-browser.js}`
 
 ### T2: landing migration
-**Depends on:** T1
-**Verification:** `cargo test -p fortress-controlplane --lib` (64 green);
+**Depends on:** T1 — **DONE** (82 controlplane tests green; screenshot
+`/tmp/opencode/zine-desktop-t2.png` pixel-matches the approved design;
+one real fix:
+`code_block` must inject trusted author text unescaped — momenta escapes
+dynamic text children, literal rsx text only)
+**Verification:** `cargo test -p fortress-controlplane --lib` (82 green);
 screenshot re-render matches approved zine screenshots
 **Files:** `crates/controlplane/src/controlplane/web.rs` (landing
 section), `crates/controlplane/Cargo.toml`
 
 ### T3: controlplane auth pages + machines dashboard migration
-**Depends on:** T1
+**Depends on:** T1 — **DONE** (82 controlplane tests green incl. full
+signup/verify/login/invite flows, re-run with REDIS_URL so the
+Redis-backed flow tests actually execute; visual check via the new
+`examples/auth_preview.rs`: zine-login.png, zine-machines-v2.png —
+machine states render as rubber stamps, App mode has no grain)
 **Verification:** existing auth/session/dashboard tests green; no CDN
 URLs or daisyUI classes in rendered pages (grep test)
 **Files:** `crates/controlplane/src/controlplane/web.rs` (non-landing
 pages)
 
 ### T4: client local dashboard migration
-**Depends on:** T1
+**Depends on:** T1 — **DONE** (72 client tests green; htmx 2.0.10
+vendored into web-ui alongside Tailwind 4.3.3, both inlined; visual
+check via the new `examples/dashboard_preview.rs`: zine-index.png,
+zine-editor.png — no grain in App mode, stamps for admin/password-set
+badges; daisyUI `navbar` flex behavior restored explicitly)
 **Verification:** `cargo test -p fortress-client` green (existing
 `data-theme` assertions updated to the new shell)
 **Files:** `crates/client/src/dashboard/components.rs`,
 `crates/client/src/dashboard/mod.rs`, `crates/client/Cargo.toml`
 
 ### T5: tripwire — no external asset origins in rendered pages
-**Depends on:** T2, T3, T4
+**Depends on:** T2, T3, T4 — **DONE** (`pages_have_no_external_asset_
+origins` in both crates' test modules: 82 controlplane + 72 client
+tests green). Judicial amendments applied: the vendored assets'
+provenance comment headers were stripped so the strong greps
+(`cdn.jsdelivr`, `cdnjs.cloudflare.com`, `url(http`, `<img src="http`,
+`<iframe src="http`, any `<link href="http`) are false-positive-free,
+and the controlplane tripwire now renders all 11 controlplane pages
+(incl. the logged-in landing, whose hero CTA is asserted to target
+`/machines` — the rewrite had silently changed it to `/`). The client
+tripwire covers all 3 client pages.
 **Verification:** shared test (or per-crate tests) asserting rendered
 HTML of every page contains no `cdn.jsdelivr` / external stylesheet or
 script URLs

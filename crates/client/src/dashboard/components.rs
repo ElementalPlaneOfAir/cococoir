@@ -1,6 +1,10 @@
 extern crate alloc;
 use momenta::prelude::*;
 
+use fortress_web_ui::{
+    card, htmx_script, shell, shell_with_head, zine_button, zine_submit, ShellVariant,
+};
+
 pub struct HtmxTestProps {
     pub count: usize,
 }
@@ -9,17 +13,17 @@ pub struct HtmxTestProps {
 pub fn HtmxTest(props: &HtmxTestProps) -> Node {
     let countstr = format!("{}", props.count);
     rsx!(
-    <div class="card bg-base-100 shadow-sm">
-        <div class="card-body">
-            <h2 class="card-title">"Page loads"</h2>
-            <p>"This page has been loaded " {countstr} " times."</p>
-            <div class="card-actions">
-                <button class="btn btn-primary btn-sm" data_hx_target="closest .card" data_hx_post="/update">
-                    "Increment"
-                </button>
-            </div>
-        </div>
-    </div>
+        {card("", rsx!(
+            <>
+                <h2 class="font-black uppercase">"Page loads"</h2>
+                <p class="text-sm dim">"This page has been loaded " {countstr} " times."</p>
+                <div>
+                    <button class="btn-zine btn-zine-red btn-zine-sm" data_hx_target="closest .zine-card" data_hx_post="/update">
+                        "Increment"
+                    </button>
+                </div>
+            </>
+        ))}
     )
 }
 
@@ -29,34 +33,29 @@ pub struct LoginPageProps {
 
 #[component]
 pub fn LoginPage(props: &LoginPageProps) -> Node {
-    rsx!(
-    <html lang="en" data_theme="dark">
-    <head>
-    <title>"Sign in"</title>
-    <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    </head>
-    <body class="min-h-screen flex items-center justify-center bg-base-200 p-4">
-    <div class="card w-full max-w-sm bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h1 class="card-title text-2xl">"Fortress"</h1>
-            <p class="text-sm text-base-content/60">"Sign in to the admin dashboard"</p>
-            <form method="post" action="/auth/login" class="flex flex-col gap-4">
-                <label class="input input-bordered flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke_width="2" stroke_linecap="round" stroke_linejoin="round" class="h-4 w-4 opacity-70">
-                    <path d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"/>
-                    </svg>
-                    <input id="password" type="password" name="password" required placeholder="Password" class="grow"/>
-                </label>
-                <button type="submit" class="btn btn-primary">"Sign in"</button>
-            </form>
-            {if props.error { rsx!(<div role="alert" class="alert alert-error"><span>"Incorrect password."</span></div>) } else { Node::Empty }}
-        </div>
-    </div>
-    </body>
-    </html>
+    let banner = if props.error {
+        rsx!(<div role="alert" class="alert-zine">"Incorrect password."</div>)
+    } else {
+        Node::Empty
+    };
+    shell(
+        "Sign in",
+        ShellVariant::App,
+        rsx!(
+            <main class="min-h-screen flex items-center justify-center p-4">
+                {card("w-full max-w-sm", rsx!(
+                    <>
+                        <h1 class="text-2xl font-black uppercase">"Fortress"</h1>
+                        <p class="text-sm dim">"Sign in to the admin dashboard"</p>
+                        <form method="post" action="/auth/login" class="flex flex-col gap-4">
+                            <input id="password" type="password" name="password" required placeholder="Password" class="zine-input"/>
+                            {zine_submit("Sign in", "")}
+                        </form>
+                        {banner}
+                    </>
+                ))}
+            </main>
+        ),
     )
 }
 
@@ -105,6 +104,19 @@ fn checked_attr(enabled: bool) -> Option<bool> {
     }
 }
 
+fn app_nav() -> Node {
+    rsx!(
+        <nav class="sticky top-0 z-40 flex items-center bg-paper border-b-2 border-ink px-6">
+            <div class="flex-1 flex items-center gap-2">
+                <span class="text-lg font-black uppercase tracking-tight">"Fortress"</span>
+            </div>
+            <div class="flex-none flex items-center gap-4">
+                {zine_button("/auth/logout", "Sign out", "btn-zine-sm")}
+            </div>
+        </nav>
+    )
+}
+
 #[component]
 pub fn EditorPage(props: &EditorPageProps) -> Node {
     let services_html = props
@@ -119,12 +131,12 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
                 " not declared in file — add manually".to_string()
             };
             rsx!(
-                <label class="flex items-center justify-between gap-4 rounded-xl bg-base-200/50 px-4 py-3">
+                <label class="flex items-center justify-between gap-4 border-2 border-ink px-4 py-3">
                     <span class="flex flex-col">
-                        <span class="font-medium">{service.display_name}</span>
-                        <span class="text-sm text-base-content/60">{service.description}{hint}</span>
+                        <span class="font-black">{service.display_name}</span>
+                        <span class="text-sm dim">{service.description}{hint}</span>
                     </span>
-                    <input type="checkbox" name={"svc_".to_string() + &service.nixname} value="true" checked={checked} disabled={disabled} class="toggle toggle-primary"/>
+                    <input type="checkbox" name={"svc_".to_string() + &service.nixname} value="true" checked={checked} disabled={disabled} class="zine-toggle"/>
                 </label>
             )
         })
@@ -135,15 +147,15 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
         .iter()
         .map(|user| {
             let admin_badge = if user.is_admin {
-                rsx!(<span class="badge badge-error badge-xs">"admin"</span>)
+                rsx!({fortress_web_ui::stamp_small("admin")})
             } else {
                 Node::Empty
             };
             let password_badge = if user.has_password {
-                rsx!(<span class="badge badge-neutral badge-xs">"password set"</span>)
+                rsx!({fortress_web_ui::stamp_small("password set")})
             } else {
                 Node::Empty
- };
+            };
             let groups = user.groups.join(", ");
             let disabled = checked_attr(!user.groups_declared);
             let hint = if user.groups_declared {
@@ -152,15 +164,15 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
                 " groups not declared in file — add manually".to_string()
             };
             rsx!(
-                <div class="flex items-center justify-between gap-4 rounded-xl bg-base-200/50 px-4 py-3">
+                <div class="flex items-center justify-between gap-4 border-2 border-ink px-4 py-3">
                     <span class="flex items-center gap-2">
-                        <span class="font-medium">{&user.username}</span>
+                        <span class="font-black">{&user.username}</span>
                         {admin_badge}
                         {password_badge}
                     </span>
                     <span class="flex flex-col items-end gap-1">
-                        <input type="text" name={"groups_".to_string() + &user.username} value={groups} disabled={disabled} class="input input-sm input-bordered w-64"/>
-                        <span class="text-xs text-base-content/50">{hint}</span>
+                        <input type="text" name={"groups_".to_string() + &user.username} value={groups} disabled={disabled} class="zine-input w-64"/>
+                        <span class="text-xs faint">{hint}</span>
                     </span>
                 </div>
             )
@@ -169,16 +181,16 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
 
     let error_banner = match &props.config_error {
         Some(message) => rsx!(
-            <div role="alert" class="alert alert-error">
-                <span>"Could not load the config file: " {message}</span>
+            <div role="alert" class="alert-zine">
+                "Could not load the config file: " {message}
             </div>
         ),
         None => Node::Empty,
     };
     let saved_banner = if props.saved {
         rsx!(
-            <div role="alert" class="alert alert-success">
-                <span>"Saved."</span>
+            <div role="alert" class="alert-zine-ok">
+                "Saved."
             </div>
         )
     } else {
@@ -186,103 +198,77 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
     };
     let save_error_banner = match &props.save_error {
         Some(message) => rsx!(
-            <div role="alert" class="alert alert-error">
-                <span>"Not saved: " {message}</span>
+            <div role="alert" class="alert-zine">
+                "Not saved: " {message}
             </div>
         ),
         None => Node::Empty,
     };
 
-    rsx!(
-    <html lang="en" data_theme="dark">
-    <head>
-    <title>"Fortress"</title>
-    <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.10/htmx.min.js"/>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    </head>
-    <body class="min-h-screen bg-base-200">
-    <div class="navbar bg-base-100 shadow-sm">
-        <div class="flex-1 px-2">
-            <span class="text-lg font-semibold">"Fortress"</span>
-        </div>
-        <div class="flex-none px-2">
-            <a href="/auth/logout" class="btn btn-ghost btn-sm">"Sign out"</a>
-        </div>
-    </div>
-    <main class="mx-auto flex max-w-2xl flex-col gap-4 p-6">
-        {error_banner}
-        {saved_banner}
-        {save_error_banner}
-        <form method="post" action="/" class="flex flex-col gap-6">
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h2 class="card-title">"System"</h2>
-                    <label class="form-control w-full">
-                        <div class="label"><span class="label-text">"Hostname"</span></div>
-                        <input type="text" name="hostname" value={&props.hostname} class="input input-bordered"/>
-                    </label>
-                    <label class="form-control w-full">
-                        <div class="label"><span class="label-text">"Base domain"</span></div>
-                        <input type="text" name="base_domain" value={&props.base_domain} class="input input-bordered"/>
-                    </label>
-                </div>
-            </div>
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-3">
-                    <h2 class="card-title">"Services"</h2>
-                    {services_html}
-                </div>
-            </div>
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-3">
-                    <h2 class="card-title">"Users"</h2>
-                    {users_html}
-                </div>
-            </div>
-            <button type="submit" class="btn btn-primary">"Save"</button>
-        </form>
-    </main>
-    </body>
-    </html>
+    shell_with_head(
+        "Fortress",
+        ShellVariant::App,
+        htmx_script(),
+        rsx!(
+            <>
+                {app_nav()}
+                <main class="mx-auto flex max-w-2xl flex-col gap-4 p-6">
+                    {error_banner}
+                    {saved_banner}
+                    {save_error_banner}
+                    <form method="post" action="/" class="flex flex-col gap-6">
+                        {card("", rsx!(
+                            <>
+                                <h2 class="font-black uppercase">"System"</h2>
+                                <label class="block">
+                                    <div class="tag dim mb-1">"Hostname"</div>
+                                    <input type="text" name="hostname" value={&props.hostname} class="zine-input"/>
+                                </label>
+                                <label class="block">
+                                    <div class="tag dim mb-1">"Base domain"</div>
+                                    <input type="text" name="base_domain" value={&props.base_domain} class="zine-input"/>
+                                </label>
+                            </>
+                        ))}
+                        {card("", rsx!(
+                            <>
+                                <h2 class="font-black uppercase">"Services"</h2>
+                                {services_html}
+                            </>
+                        ))}
+                        {card("", rsx!(
+                            <>
+                                <h2 class="font-black uppercase">"Users"</h2>
+                                {users_html}
+                            </>
+                        ))}
+                        {zine_submit("Save", "")}
+                    </form>
+                </main>
+            </>
+        ),
     )
 }
 
 #[component]
 pub fn IndexPage(props: &IndexProps) -> Node {
-    rsx!(
-    <html lang="en" data_theme="dark">
-    <head>
-    <title>"Fortress"</title>
-    <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.10/htmx.min.js"/>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    </head>
-    <body class="min-h-screen bg-base-200">
-    <div class="navbar bg-base-100 shadow-sm">
-        <div class="flex-1 px-2">
-            <span class="text-lg font-semibold">"Fortress"</span>
-        </div>
-        <div class="flex-none px-2">
-            <a href="/auth/logout" class="btn btn-ghost btn-sm">"Sign out"</a>
-        </div>
-    </div>
-    <main class="mx-auto flex max-w-5xl flex-col gap-6 p-6">
-        <div class="hero rounded-2xl bg-base-100 shadow-sm">
-            <div class="hero-content py-10 text-center">
-                <div class="max-w-md">
-                    <h1 class="text-4xl font-bold">"Hello " {&props.name}</h1>
-                    <p class="py-4 text-base-content/60">"Fortress admin dashboard"</p>
-                </div>
-            </div>
-        </div>
-        <HtmxTest count={props.count}/>
-    </main>
-    </body>
-    </html>
+    shell_with_head(
+        "Fortress",
+        ShellVariant::App,
+        htmx_script(),
+        rsx!(
+            <>
+                {app_nav()}
+                <main class="mx-auto flex max-w-5xl flex-col gap-6 p-6">
+                    {card("text-center", rsx!(
+                        <>
+                            <h1 class="text-4xl font-black uppercase">"Hello " {&props.name}</h1>
+                            <p class="dim">"Fortress admin dashboard"</p>
+                        </>
+                    ))}
+                    <HtmxTest count={props.count}/>
+                </main>
+            </>
+        ),
     )
 }

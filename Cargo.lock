@@ -944,6 +944,7 @@ dependencies = [
  "bcrypt",
  "chrono",
  "fortress-core",
+ "fortress-web-ui",
  "momenta",
  "poem",
  "reqwest",
@@ -968,6 +969,7 @@ dependencies = [
  "bcrypt",
  "dashmap",
  "fortress-core",
+ "fortress-web-ui",
  "hex",
  "hickory-resolver",
  "lettre",
@@ -1011,6 +1013,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "x25519-dalek",
+]
+
+[[package]]
+name = "fortress-web-ui"
+version = "0.1.0"
+dependencies = [
+ "momenta",
 ]
 
 [[package]]

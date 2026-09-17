@@ -14,6 +14,7 @@ tracing.workspace = true
 poem.workspace = true
 poem-openapi.workspace = true
 momenta = "0.3.3"
+fortress-web-ui = { path = "../web-ui" }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
 # Explicit so the binary can install the provider before any rustls
 # client (redis rediss / reqwest) is built — rustls aborts otherwise.

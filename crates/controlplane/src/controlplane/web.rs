@@ -17,6 +17,10 @@ use crate::controlplane::account::{AccountError, ResetOutcome, ResendVerifyOutco
 use crate::controlplane::mail::Mailer;
 use crate::controlplane::{AppState, ControlPlane};
 use momenta::prelude::*;
+use fortress_web_ui::{
+    card, code_block, field, section_heading, shell, stamp, stamp_small, tick_list, ticker,
+    torn, zine_button, zine_submit, FieldKind, ShellVariant,
+};
 use poem::{
     get, handler,
     http::{header, HeaderValue, StatusCode},
@@ -82,187 +86,19 @@ async fn session_email(cp: &'static ControlPlane, req: &Request) -> Option<Strin
     cp.session_account(&token).await.ok().flatten()
 }
 
-// ── pages (momenta + daisyUI, same as the client dashboard) ─────────
-
-/// The landing page's zine stylesheet: paper/ink/red palette, grain and
-/// halftone texture, stamp badges, hard-shadow cards, and the jagged
-/// section tears. Injected raw via `_dangerously_set_inner_html` because
-/// a `<style>` child would have its `>` and `/` escaped as text.
-const LANDING_CSS: &str = r#"
-  :root {
-    --paper: #f3eee3;
-    --ink: #16110b;
-    --red: #d02a1e;
-    --red-deep: #8f1410;
-  }
-  body {
-    background: var(--paper);
-    color: var(--ink);
-    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  }
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    pointer-events: none;
-    mix-blend-mode: multiply;
-    opacity: 0.5;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.22'/%3E%3C/svg%3E");
-  }
-  ::selection { background: var(--red); color: var(--paper); }
-  .bg-paper { background: var(--paper); }
-  .text-ink { color: var(--ink); }
-  .text-red { color: var(--red); font-weight: 700; }
-  .bg-red { background: var(--red); }
-  .border-ink { border-color: var(--ink); }
-  .dim { color: rgba(22, 17, 11, 0.72); }
-  .faint { color: rgba(22, 17, 11, 0.5); }
-  .tag { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-  .mark {
-    background: var(--red);
-    color: var(--paper);
-    padding: 0 0.18em;
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
-  }
-  .stamp {
-    display: inline-block;
-    border: 2.5px solid var(--red);
-    color: var(--red);
-    padding: 0.55rem 1rem;
-    font-weight: 700;
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    transform: rotate(-2deg);
-  }
-  .stamp-sm { padding: 0.3rem 0.7rem; border-width: 2px; font-size: 0.65rem; }
-  .btn-zine {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    color: var(--ink);
-    padding: 0.8rem 1.6rem;
-    font-weight: 700;
-    font-size: 0.9rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    text-decoration: none;
-    box-shadow: 6px 6px 0 var(--ink);
-    transition: transform 80ms, box-shadow 80ms;
-  }
-  .btn-zine:hover { transform: translate(3px, 3px); box-shadow: 3px 3px 0 var(--ink); }
-  .btn-zine-red { background: var(--red); color: var(--paper); }
-  .btn-zine-sm { padding: 0.45rem 0.8rem; font-size: 0.72rem; box-shadow: 4px 4px 0 var(--ink); }
-  .btn-zine-sm:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
-  .zine-card {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    box-shadow: 8px 8px 0 var(--ink);
-  }
-  .code-zine {
-    background: var(--ink);
-    color: var(--paper);
-    border-left: 6px solid var(--red);
-    padding: 1rem;
-    font-size: 0.8rem;
-    line-height: 1.55;
-    overflow-x: auto;
-    white-space: pre;
-  }
-  .stepnum {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.8rem;
-    height: 1.8rem;
-    flex: none;
-    background: var(--red);
-    color: var(--paper);
-    font-weight: 700;
-    border: 2px solid var(--ink);
-    box-shadow: 2px 2px 0 var(--ink);
-  }
-  .tick::before {
-    content: "»";
-    color: var(--red);
-    font-weight: 700;
-    margin-right: 0.5rem;
-  }
-  .crossed {
-    text-decoration: line-through;
-    text-decoration-color: var(--red);
-    text-decoration-thickness: 3px;
-  }
-  .chip {
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    box-shadow: 3px 3px 0 var(--ink);
-    padding: 0.4rem 0.8rem;
-    font-size: 0.82rem;
-  }
-  .link-zine {
-    color: var(--ink);
-    font-weight: 700;
-    text-transform: uppercase;
-    font-size: 0.78rem;
-    letter-spacing: 0.08em;
-    text-decoration: underline;
-    text-decoration-color: var(--red);
-    text-decoration-thickness: 3px;
-    text-underline-offset: 3px;
-  }
-  .halftone {
-    background-image: radial-gradient(circle, rgba(22, 17, 11, 0.13) 1.1px, transparent 1.2px);
-    background-size: 9px 9px;
-  }
-  .torn {
-    height: 16px;
-    background: var(--red);
-    clip-path: polygon(0 45%, 2% 75%, 4% 30%, 7% 80%, 10% 35%, 13% 75%, 16% 25%, 19% 70%, 22% 40%, 25% 85%, 28% 30%, 31% 70%, 34% 35%, 37% 80%, 40% 25%, 43% 75%, 46% 40%, 49% 85%, 52% 30%, 55% 70%, 58% 35%, 61% 80%, 64% 25%, 67% 70%, 70% 40%, 73% 85%, 76% 30%, 79% 75%, 82% 35%, 85% 80%, 88% 25%, 91% 70%, 94% 40%, 97% 80%, 100% 35%, 100% 100%, 0 100%);
-  }
-  .ticker { background: var(--red); color: var(--paper); overflow: hidden; border-bottom: 2px solid var(--ink); }
-  .ticker-track { display: flex; width: max-content; animation: ticker-scroll 36s linear infinite; }
-  .ticker-track span { display: inline-block; padding: 0.35rem 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; }
-  @keyframes ticker-scroll { to { transform: translateX(-50%); } }
-"#;
+// ── pages (momenta, styled by fortress-web-ui) ─────────
 
 /// The auth pages' shell: a centered, narrow column of forms.
 fn page_shell(title: &str, main: Node) -> Node {
-    rsx!(
-        <html lang="en" data_theme="dark">
-            <head>
-                <title>{title}</title>
-                <meta charset="UTF-8"/>
-                <meta name="viewport" content="width=device-width, initial-scale=1"/>
-                <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
-                <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
-            </head>
-            <body class="min-h-screen bg-base-200">
-                <main class="mx-auto flex max-w-md flex-col gap-4 p-6">{main}</main>
-            </body>
-        </html>
+    shell(
+        title,
+        ShellVariant::App,
+        rsx!(<main class="mx-auto flex max-w-md flex-col gap-4 p-6">{main}</main>),
     )
 }
 
-/// The landing page's shell: full-width, with the custom marketing CSS.
-fn landing_shell(main: Node) -> Node {
-    rsx!(
-        <html lang="en" data_theme="light">
-            <head>
-                <title>"Fortress — your home server, your rules"</title>
-                <meta charset="UTF-8"/>
-                <meta name="viewport" content="width=device-width, initial-scale=1"/>
-                <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"/>
-                <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
-                <style _dangerously_set_inner_html={LANDING_CSS}></style>
-            </head>
-            <body class="min-h-screen text-ink">{main}</body>
-        </html>
-    )
+fn error_banner(message: &str) -> Node {
+    rsx!(<div role="alert" class="alert-zine">{message}</div>)
 }
 
 /// A Fortress shield glyph, reused for the nav logo and footer.
@@ -287,192 +123,195 @@ pub fn Landing(props: &LandingProps) -> Node {
         rsx!(
             <>
                 <span class="tag dim hidden sm:inline">{props.email.as_deref().unwrap_or("")}</span>
-                <a href="/auth/logout" class="btn-zine btn-zine-sm">"Sign out"</a>
+                {zine_button("/auth/logout", "Sign out", "btn-zine-sm")}
             </>
         )
     } else {
-        rsx!(<a href="/register" class="btn-zine btn-zine-red btn-zine-sm">"Create account"</a>)
+        rsx!({zine_button("/register", "Create account", "btn-zine-red btn-zine-sm")})
     };
 
     // The hero's primary CTA: always the account/order path.
     let hero_cta = if props.logged_in {
-        rsx!(<a href="/machines" class="btn-zine btn-zine-red">"Go to my machines"</a>)
+        zine_button("/machines", "Go to my machines", "btn-zine-red")
     } else {
-        rsx!(<a href="/register" class="btn-zine btn-zine-red">"Order a box"</a>)
+        zine_button("/register", "Order a box", "btn-zine-red")
     };
 
-    let ticker_text =
-        "no masters · no clouds · your keys, your machine · worker cooperative · open source · agpl-3.0 · no ads · no tracking · ".repeat(4);
-
-    landing_shell(rsx!(
-        <>
-
-            <nav class="sticky top-0 z-40 bg-paper border-b-2 border-ink px-6">
-                <div class="flex-1 flex items-center gap-2">
-                    {shield_icon("h-6 w-6 text-red")}
-                    <span class="text-lg font-black uppercase tracking-tight">"Fortress"</span>
-                </div>
-                <div class="flex-none flex items-center gap-4">
-                    <a href="#install" class="tag dim hidden sm:inline">"Install"</a>
-                    {nav_auth}
-                </div>
-            </nav>
-
-            <div class="ticker" aria_hidden={true}>
-                <div class="ticker-track">
-                    <span>{ticker_text.clone()}</span>
-                    <span>{ticker_text.clone()}</span>
-                </div>
-            </div>
-
-            <header class="halftone px-6 pt-16 pb-14 text-center">
-                <div class="mx-auto max-w-3xl">
-                    <div class="stamp mb-8">"A worker cooperative · open source · NixOS"</div>
-                    <h1 class="text-5xl sm:text-6xl font-black uppercase leading-[1.02] tracking-tight">
-                        <span class="block">"Your home server."</span>
-                        <span class="block mt-3"><span class="mark">"Your data. Your rules."</span></span>
-                    </h1>
-                    <p class="mx-auto mt-8 max-w-xl text-lg dim">
-                        "Fortress replaces Google Docs, Dropbox, Netflix and Ring with a self-hosted box in your house — reachable from anywhere, with every key on your own hardware."
-                    </p>
-                    <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
-                        {hero_cta}
-                        <a href="#install" class="btn-zine">"Install it yourself"</a>
+    shell(
+        "Fortress — your home server, your rules",
+        ShellVariant::Loud,
+        rsx!(
+            <>
+                <nav class="sticky top-0 z-40 flex items-center bg-paper border-b-2 border-ink px-6">
+                    <div class="flex-1 flex items-center gap-2">
+                        {shield_icon("h-6 w-6 text-red")}
+                        <span class="text-lg font-black uppercase tracking-tight">"Fortress"</span>
                     </div>
-                    <div class="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
-                        <span class="tag dim">"Own your data"</span>
-                        <span class="text-red">"★"</span>
-                        <span class="tag dim">"Remote access built in"</span>
-                        <span class="text-red">"★"</span>
-                        <span class="tag dim">"One login for everything"</span>
-                        <span class="text-red">"★"</span>
-                        <span class="tag dim">"No subscription lock-in"</span>
+                    <div class="flex-none flex items-center gap-4">
+                        <a href="#install" class="tag dim hidden sm:inline">"Install"</a>
+                        {nav_auth}
                     </div>
-                </div>
-            </header>
+                </nav>
 
-            <div class="torn"></div>
+                {ticker("no masters · no clouds · your keys, your machine · worker cooperative · open source · agpl-3.0 · no ads · no tracking · ")}
 
-            <section class="px-6 py-12">
-                <div class="mx-auto max-w-5xl">
-                    <div class="flex flex-wrap items-center justify-center gap-4">
-                        <span class="tag dim mr-2">"Replaces:"</span>
-                        <div class="flex flex-wrap justify-center gap-4">
-                            <span class="chip"><span class="crossed">"Google Docs"</span>" → "<b class="text-red">"CryptPad"</b></span>
-                            <span class="chip"><span class="crossed">"Netflix"</span>" → "<b class="text-red">"Jellyfin"</b></span>
-                            <span class="chip">"+ Radarr, Sonarr, Lidarr, Prowlarr"</span>
-                            <span class="chip">"Nextcloud"<span class="stamp stamp-sm ml-2">"soon"</span></span>
+                <header class="halftone px-6 pt-16 pb-14 text-center">
+                    <div class="mx-auto max-w-3xl">
+                        <div class="mb-8">{stamp("A worker cooperative · open source · NixOS")}</div>
+                        <h1 class="text-5xl sm:text-6xl font-black uppercase leading-[1.02] tracking-tight">
+                            <span class="block">"Your home server."</span>
+                            <span class="block mt-3"><span class="mark">"Your data. Your rules."</span></span>
+                        </h1>
+                        <p class="mx-auto mt-8 max-w-xl text-lg dim">
+                            "Fortress replaces Google Docs, Dropbox, Netflix and Ring with a self-hosted box in your house — reachable from anywhere, with every key on your own hardware."
+                        </p>
+                        <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+                            {hero_cta}
+                            {zine_button("#install", "Install it yourself", "")}
+                        </div>
+                        <div class="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+                            <span class="tag dim">"Own your data"</span>
+                            <span class="text-red">"★"</span>
+                            <span class="tag dim">"Remote access built in"</span>
+                            <span class="text-red">"★"</span>
+                            <span class="tag dim">"One login for everything"</span>
+                            <span class="text-red">"★"</span>
+                            <span class="tag dim">"No subscription lock-in"</span>
                         </div>
                     </div>
-                </div>
-            </section>
+                </header>
 
-            <section class="px-6 py-14">
-                <div class="mx-auto max-w-5xl">
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-start justify-between gap-2">
-                                <h3 class="font-black uppercase text-lg leading-tight">"Your keys, your hardware"</h3>
-                                <span class="text-red text-xl font-black">"01"</span>
+                {torn()}
+
+                <section class="px-6 py-12">
+                    <div class="mx-auto max-w-5xl">
+                        <div class="flex flex-wrap items-center justify-center gap-4">
+                            <span class="tag dim mr-2">"Replaces:"</span>
+                            <div class="flex flex-wrap justify-center gap-4">
+                                <span class="chip"><span class="crossed">"Google Docs"</span>" → "<b class="text-red">"CryptPad"</b></span>
+                                <span class="chip"><span class="crossed">"Netflix"</span>" → "<b class="text-red">"Jellyfin"</b></span>
+                                <span class="chip">"+ Radarr, Sonarr, Lidarr, Prowlarr"</span>
+                                <span class="chip">"Nextcloud"<span class="ml-2">{stamp_small("soon")}</span></span>
                             </div>
-                            <p class="text-sm dim">"TLS and WireGuard keys never leave your house. Nobody else can decrypt your traffic — not even us."</p>
-                        </div>
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-start justify-between gap-2">
-                                <h3 class="font-black uppercase text-lg leading-tight">"Reachable anywhere"</h3>
-                                <span class="text-red text-xl font-black">"02"</span>
-                            </div>
-                            <p class="text-sm dim">"One encrypted tunnel to a box in the cloud. Jellyfin, docs, photos — from any phone, on any network, no port forwarding."</p>
-                        </div>
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-start justify-between gap-2">
-                                <h3 class="font-black uppercase text-lg leading-tight">"One login for everything"</h3>
-                                <span class="text-red text-xl font-black">"03"</span>
-                            </div>
-                            <p class="text-sm dim">"Every service signs in with the same account. Add a user once, they get every app — no per-app password sprawl."</p>
                         </div>
                     </div>
-                </div>
-            </section>
+                </section>
 
-            <section class="px-6 py-14">
-                <div class="mx-auto max-w-5xl">
-                    <h2 class="text-center text-3xl font-black uppercase mb-10"><span class="mark">"Two ways in"</span></h2>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <div class="zine-card p-6 flex flex-col gap-3 h-full">
-                            <div class="stamp stamp-sm w-fit">"Zero setup"</div>
-                            <h3 class="text-2xl font-black uppercase">"Buy a box"</h3>
-                            <p class="text-sm dim">"We assemble, install and ship a pre-configured Fortress. Plug it in, connect ethernet, and claim it with your account in under five minutes."</p>
-                            <ul class="flex flex-col gap-2 text-sm">
-                                <li class="tick">"Pre-installed NixOS + all services"</li>
-                                <li class="tick">"Encrypted offsite backups included"</li>
-                                <li class="tick">"Support from real humans"</li>
-                            </ul>
-                            <div class="mt-auto pt-3"><a href="/register" class="btn-zine btn-zine-red">"Get yours"</a></div>
-                        </div>
-                        <div class="zine-card p-6 flex flex-col gap-3 h-full">
-                            <div class="stamp stamp-sm w-fit">"Bring your own hardware"</div>
-                            <h3 class="text-2xl font-black uppercase">"Install on your machine"</h3>
-                            <p class="text-sm dim">"Fortress is a NixOS module. Point your flake at it, enable the services you want, rebuild. No setup wizard, no app store."</p>
-                            <ul class="flex flex-col gap-2 text-sm">
-                                <li class="tick">"Free forever, AGPL-3.0"</li>
-                                <li class="tick">"Run as many machines as you like"</li>
-                                <li class="tick">"Same remote access as a box"</li>
-                            </ul>
-                            <div class="mt-auto pt-3"><a href="#install" class="btn-zine">"See the install guide"</a></div>
+                <section class="px-6 py-14">
+                    <div class="mx-auto max-w-5xl">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-start justify-between gap-2">
+                                        <h3 class="font-black uppercase text-lg leading-tight">"Your keys, your hardware"</h3>
+                                        <span class="text-red text-xl font-black">"01"</span>
+                                    </div>
+                                    <p class="text-sm dim">"TLS and WireGuard keys never leave your house. Nobody else can decrypt your traffic — not even us."</p>
+                                </>
+                            ))}
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-start justify-between gap-2">
+                                        <h3 class="font-black uppercase text-lg leading-tight">"Reachable anywhere"</h3>
+                                        <span class="text-red text-xl font-black">"02"</span>
+                                    </div>
+                                    <p class="text-sm dim">"One encrypted tunnel to a box in the cloud. Jellyfin, docs, photos — from any phone, on any network, no port forwarding."</p>
+                                </>
+                            ))}
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-start justify-between gap-2">
+                                        <h3 class="font-black uppercase text-lg leading-tight">"One login for everything"</h3>
+                                        <span class="text-red text-xl font-black">"03"</span>
+                                    </div>
+                                    <p class="text-sm dim">"Every service signs in with the same account. Add a user once, they get every app — no per-app password sprawl."</p>
+                                </>
+                            ))}
                         </div>
                     </div>
-                </div>
-            </section>
+                </section>
 
-            <section id="install" class="px-6 py-14 scroll-mt-16">
-                <div class="mx-auto max-w-3xl">
-                    <h2 class="text-center text-3xl font-black uppercase mb-2">"Install on your own machines"</h2>
-                    <p class="text-center dim mb-10">"Runs on any x86-64 NixOS machine. Each machine is one file in your flake."</p>
+                <section class="px-6 py-14">
+                    <div class="mx-auto max-w-5xl">
+                        {section_heading("Two ways in")}
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            {card("h-full", rsx!(
+                                <>
+                                    <div class="w-fit">{stamp_small("Zero setup")}</div>
+                                    <h3 class="text-2xl font-black uppercase">"Buy a box"</h3>
+                                    <p class="text-sm dim">"We assemble, install and ship a pre-configured Fortress. Plug it in, connect ethernet, and claim it with your account in under five minutes."</p>
+                                    {tick_list(&["Pre-installed NixOS + all services", "Encrypted offsite backups included", "Support from real humans"])}
+                                    <div class="mt-auto pt-3">{zine_button("/register", "Get yours", "btn-zine-red")}</div>
+                                </>
+                            ))}
+                            {card("h-full", rsx!(
+                                <>
+                                    <div class="w-fit">{stamp_small("Bring your own hardware")}</div>
+                                    <h3 class="text-2xl font-black uppercase">"Install on your machine"</h3>
+                                    <p class="text-sm dim">"Fortress is a NixOS module. Point your flake at it, enable the services you want, rebuild. No setup wizard, no app store."</p>
+                                    {tick_list(&["Free forever, AGPL-3.0", "Run as many machines as you like", "Same remote access as a box"])}
+                                    <div class="mt-auto pt-3">{zine_button("#install", "See the install guide", "")}</div>
+                                </>
+                            ))}
+                        </div>
+                    </div>
+                </section>
 
-                    <div class="flex flex-col gap-8">
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-center gap-3">
-                                <span class="stepnum">"1"</span>
-                                <h3 class="font-black uppercase">"Add the flake input"</h3>
-                            </div>
-                            <pre class="code-zine">{r#"{
+                <section id="install" class="px-6 py-14 scroll-mt-16">
+                    <div class="mx-auto max-w-3xl">
+                        <h2 class="text-center text-3xl font-black uppercase mb-2">"Install on your own machines"</h2>
+                        <p class="text-center dim mb-10">"Runs on any x86-64 NixOS machine. Each machine is one file in your flake."</p>
+
+                        <div class="flex flex-col gap-8">
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-center gap-3">
+                                        <span class="stepnum">"1"</span>
+                                        <h3 class="font-black uppercase">"Add the flake input"</h3>
+                                    </div>
+                                    {code_block(r#"{
   inputs = {
     fortress.url = "github:ElementalPlaneOfAir/cococoir";
     inputs.nixpkgs.follows = "nixpkgs";
   };
-}"#}</pre>
-                        </div>
+}"#)}
+                                </>
+                            ))}
 
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-center gap-3">
-                                <span class="stepnum">"2"</span>
-                                <h3 class="font-black uppercase">"Import the module"</h3>
-                            </div>
-                            <pre class="code-zine">{r#"{
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-center gap-3">
+                                        <span class="stepnum">"2"</span>
+                                        <h3 class="font-black uppercase">"Import the module"</h3>
+                                    </div>
+                                    {code_block(r#"{
   imports = [ inputs.fortress.nixosModules.default ];
-}"#}</pre>
-                        </div>
+}"#)}
+                                </>
+                            ))}
 
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-center gap-3">
-                                <span class="stepnum">"3"</span>
-                                <h3 class="font-black uppercase">"Enable services and rebuild"</h3>
-                            </div>
-                            <pre class="code-zine">{r#"fortress.services.jellyfin = { enable = true; public = true; };
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-center gap-3">
+                                        <span class="stepnum">"3"</span>
+                                        <h3 class="font-black uppercase">"Enable services and rebuild"</h3>
+                                    </div>
+                                    {code_block(r#"fortress.services.jellyfin = { enable = true; public = true; };
 fortress.services.dex      = { enable = true; public = true; };
 
-sudo nixos-rebuild switch --flake .#mybox"#}</pre>
-                            <p class="text-sm dim">"Each service gets its own Caddy vhost with automatic TLS. Enable a service next to Dex and every user signs in with one account."</p>
-                        </div>
+sudo nixos-rebuild switch --flake .#mybox"#)}
+                                    <p class="text-sm dim">"Each service gets its own Caddy vhost with automatic TLS. Enable a service next to Dex and every user signs in with one account."</p>
+                                </>
+                            ))}
 
-                        <div class="zine-card p-6 flex flex-col gap-3">
-                            <div class="flex items-center gap-3">
-                                <span class="stepnum">"4"</span>
-                                <h3 class="font-black uppercase">"Repeat per machine"</h3>
-                            </div>
-                            <p class="text-sm dim">"One flake, many machines. Each machine is its own " <code class="text-red">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-red">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
-                            <pre class="code-zine">{r#"# flake.nix — one module, N machines
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-center gap-3">
+                                        <span class="stepnum">"4"</span>
+                                        <h3 class="font-black uppercase">"Repeat per machine"</h3>
+                                    </div>
+                                    <p class="text-sm dim">"One flake, many machines. Each machine is its own " <code class="text-red">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-red">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
+                                    {code_block(r#"# flake.nix — one module, N machines
 outputs = { self, nixpkgs, fortress, ... }: {
   nixosConfigurations = {
     living-room = nixpkgs.lib.nixosSystem {
@@ -497,29 +336,31 @@ outputs = { self, nixpkgs, fortress, ... }: {
       ];
     };
   };
-};"#}</pre>
-                            <p class="text-sm dim">"Each machine gets its own Caddy vhosts under your domain. Claim them all under one account for a single set of remote-access routes."</p>
+};"#)}
+                                    <p class="text-sm dim">"Each machine gets its own Caddy vhosts under your domain. Claim them all under one account for a single set of remote-access routes."</p>
+                                </>
+                            ))}
                         </div>
                     </div>
-                </div>
-            </section>
+                </section>
 
-            <div class="torn"></div>
+                {torn()}
 
-            <footer class="px-6 py-10 mt-2">
-                <div class="mx-auto max-w-5xl flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <div class="flex items-center gap-2">
-                        {shield_icon("h-5 w-5 text-red")}
-                        <span class="tag dim">"Fortress — a worker cooperative. AGPL-3.0."</span>
+                <footer class="px-6 py-10 mt-2">
+                    <div class="mx-auto max-w-5xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                        <div class="flex items-center gap-2">
+                            {shield_icon("h-5 w-5 text-red")}
+                            <span class="tag dim">"Fortress — a worker cooperative. AGPL-3.0."</span>
+                        </div>
+                        <div class="flex items-center gap-5">
+                            <a href="/register" class="link-zine">"Create account"</a>
+                            <a href="/login" class="link-zine">"Sign in"</a>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-5">
-                        <a href="/register" class="link-zine">"Create account"</a>
-                        <a href="/login" class="link-zine">"Sign in"</a>
-                    </div>
-                </div>
-            </footer>
-        </>
-    ))
+                </footer>
+            </>
+        ),
+    )
 }
 
 pub struct SignupProps {
@@ -530,15 +371,13 @@ pub struct SignupProps {
 #[component]
 pub fn SignupPage(props: &SignupProps) -> Node {
     let banner = match &props.error {
-        Some(message) => {
-            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
-        }
+        Some(message) => error_banner(message),
         None => Node::Empty,
     };
     let resend_link = match &props.error {
         Some(_) => rsx!(
-            <p class="text-sm text-base-content/60">
-                <a href="/auth/resend-verify" class="link">"Need the confirmation link resent?"</a>
+            <p class="text-sm dim">
+                <a href="/auth/resend-verify" class="link-zine">"Need the confirmation link resent?"</a>
             </p>
         ),
         None => Node::Empty,
@@ -546,28 +385,22 @@ pub fn SignupPage(props: &SignupProps) -> Node {
     page_shell(
         "Create an account",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Create an account"</h1>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Create an account"</h1>
                     {banner}
                     {resend_link}
                     <form method="post" action="/auth/signup" class="flex flex-col gap-4">
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Email"</span></div>
-                            <input type="email" name="email" value={&props.email} required class="input input-bordered"/>
-                        </label>
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Password"</span></div>
-                            <input type="password" name="password" required class="input input-bordered"/>
-                        </label>
-                        <button type="submit" class="btn btn-primary">"Sign up"</button>
+                        {field("Email", "email", FieldKind::Email, Some(&props.email), None)}
+                        {field("Password", "password", FieldKind::Password, None, None)}
+                        {zine_submit("Sign up", "")}
                     </form>
-                    <p class="text-sm text-base-content/60">
+                    <p class="text-sm dim">
                         "Already have an account? "
-                        <a href="/login" class="link">"Log in"</a>
+                        <a href="/login" class="link-zine">"Log in"</a>
                     </p>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -580,37 +413,29 @@ pub struct LoginProps {
 #[component]
 pub fn LoginPage(props: &LoginProps) -> Node {
     let banner = match &props.error {
-        Some(message) => {
-            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
-        }
+        Some(message) => error_banner(message),
         None => Node::Empty,
     };
     page_shell(
         "Log in",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Log in"</h1>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Log in"</h1>
                     {banner}
                     <form method="post" action="/auth/login" class="flex flex-col gap-4">
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Email"</span></div>
-                            <input type="email" name="email" value={&props.email} required class="input input-bordered"/>
-                        </label>
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Password"</span></div>
-                            <input type="password" name="password" required class="input input-bordered"/>
-                        </label>
-                        <button type="submit" class="btn btn-primary">"Log in"</button>
+                        {field("Email", "email", FieldKind::Email, Some(&props.email), None)}
+                        {field("Password", "password", FieldKind::Password, None, None)}
+                        {zine_submit("Log in", "")}
                     </form>
-                    <p class="text-sm text-base-content/60">
-                        <a href="/forgot" class="link">"Forgot your password?"</a>
+                    <p class="text-sm dim">
+                        <a href="/forgot" class="link-zine">"Forgot your password?"</a>
                     </p>
-                    <p class="text-sm text-base-content/60">
-                        <a href="/auth/resend-verify" class="link">"Need the confirmation link resent?"</a>
+                    <p class="text-sm dim">
+                        <a href="/auth/resend-verify" class="link-zine">"Need the confirmation link resent?"</a>
                     </p>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -628,22 +453,22 @@ pub struct MessageProps {
 
 #[component]
 pub fn MessagePage(props: &MessageProps) -> Node {
-    let (alert_class, icon) = match props.kind {
-        MsgKind::Ok => ("alert-success", "✓"),
-        MsgKind::Err => ("alert-error", "✗"),
+    let icon = match props.kind {
+        MsgKind::Ok => "✓",
+        MsgKind::Err => "✗",
     };
     page_shell(
         &props.title,
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">{&props.title}</h1>
-                    <div role="alert" class={"alert ".to_string() + alert_class}>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">{&props.title}</h1>
+                    <div role="alert" class="alert-zine">
                         <span>{icon} {&props.message}</span>
                     </div>
-                    <a href="/" class="btn btn-outline">"Go home"</a>
-                </div>
-            </div>
+                    {zine_button("/", "Go home", "")}
+                </>
+            ))}
         ),
     )
 }
@@ -668,13 +493,13 @@ pub fn ForgotPage(props: &ForgotProps) -> Node {
             return page_shell(
                 "Check your email",
                 rsx!(
-                    <div class="card bg-base-100 shadow-sm">
-                        <div class="card-body flex flex-col gap-4">
-                            <h1 class="card-title text-2xl">"Check your email"</h1>
-                            <p class="text-base-content/60">"A reset link is on its way. It expires in 24 hours."</p>
-                            <a href="/login" class="btn btn-primary">"Back to login"</a>
-                        </div>
-                    </div>
+                    {card("", rsx!(
+                        <>
+                            <h1 class="text-2xl font-black uppercase">"Check your email"</h1>
+                            <p class="dim">"A reset link is on its way. It expires in 24 hours."</p>
+                            {zine_button("/login", "Back to login", "btn-zine-red")}
+                        </>
+                    ))}
                 ),
             );
         }
@@ -682,14 +507,14 @@ pub fn ForgotPage(props: &ForgotProps) -> Node {
             return page_shell(
                 "No account with that email",
                 rsx!(
-                    <div class="card bg-base-100 shadow-sm">
-                        <div class="card-body flex flex-col gap-4">
-                            <h1 class="card-title text-2xl">"No account with that email"</h1>
-                            <p class="text-base-content/60">"There is no account registered with that address yet."</p>
-                            <a href="/register" class="btn btn-primary">"Sign up"</a>
-                            <a href="/forgot" class="link link-primary">"Try a different email"</a>
-                        </div>
-                    </div>
+                    {card("", rsx!(
+                        <>
+                            <h1 class="text-2xl font-black uppercase">"No account with that email"</h1>
+                            <p class="dim">"There is no account registered with that address yet."</p>
+                            {zine_button("/register", "Sign up", "btn-zine-red")}
+                            <a href="/forgot" class="link-zine">"Try a different email"</a>
+                        </>
+                    ))}
                 ),
             );
         }
@@ -698,18 +523,15 @@ pub fn ForgotPage(props: &ForgotProps) -> Node {
     page_shell(
         "Reset your password",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Reset your password"</h1>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Reset your password"</h1>
                     <form method="post" action="/auth/forgot" class="flex flex-col gap-4">
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Email"</span></div>
-                            <input type="email" name="email" required class="input input-bordered"/>
-                        </label>
-                        <button type="submit" class="btn btn-primary">"Send reset link"</button>
+                        {field("Email", "email", FieldKind::Email, None, None)}
+                        {zine_submit("Send reset link", "")}
                     </form>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -728,24 +550,24 @@ pub fn VerifyNoticePage(props: &VerifyNoticeProps) -> Node {
     page_shell(
         "Verify your email",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Verify your email"</h1>
-                    <p class="text-base-content/60">
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Verify your email"</h1>
+                    <p class="dim">
                         "The account for "
                         <span class="font-mono">{&props.email}</span>
                         " isn't verified yet. We'll email a fresh confirmation link — it expires in 24 hours."
                     </p>
                     <form method="post" action="/auth/resend-verify" class="flex flex-col gap-4">
                         <input type="hidden" name="email" value={&props.email}/>
-                        <button type="submit" class="btn btn-primary">"Resend confirmation link"</button>
+                        {zine_submit("Resend confirmation link", "")}
                     </form>
-                    <p class="text-sm text-base-content/60">
+                    <p class="text-sm dim">
                         "Used a different email? "
-                        <a href="/login" class="link">"Log in with another address"</a>
+                        <a href="/login" class="link-zine">"Log in with another address"</a>
                     </p>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -759,19 +581,16 @@ pub fn ResendPage(props: &ResendPageProps) -> Node {
     page_shell(
         "Resend confirmation link",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Resend confirmation link"</h1>
-                    <p class="text-base-content/60">"Enter the email you signed up with and we'll send a fresh link."</p>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Resend confirmation link"</h1>
+                    <p class="dim">"Enter the email you signed up with and we'll send a fresh link."</p>
                     <form method="post" action="/auth/resend-verify" class="flex flex-col gap-4">
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Email"</span></div>
-                            <input type="email" name="email" value={&props.email} required class="input input-bordered"/>
-                        </label>
-                        <button type="submit" class="btn btn-primary">"Send new link"</button>
+                        {field("Email", "email", FieldKind::Email, Some(&props.email), None)}
+                        {zine_submit("Send new link", "")}
                     </form>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -784,28 +603,23 @@ pub struct ResetProps {
 #[component]
 pub fn ResetPage(props: &ResetProps) -> Node {
     let banner = match &props.error {
-        Some(message) => {
-            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
-        }
+        Some(message) => error_banner(message),
         None => Node::Empty,
     };
     page_shell(
         "Choose a new password",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Choose a new password"</h1>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Choose a new password"</h1>
                     {banner}
                     <form method="post" action="/auth/reset" class="flex flex-col gap-4">
                         <input type="hidden" name="token" value={&props.token}/>
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"New password"</span></div>
-                            <input type="password" name="password" required class="input input-bordered"/>
-                        </label>
-                        <button type="submit" class="btn btn-primary">"Set password"</button>
+                        {field("New password", "password", FieldKind::Password, None, None)}
+                        {zine_submit("Set password", "")}
                     </form>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -826,31 +640,29 @@ pub struct MachinesProps {
 #[component]
 pub fn MachinesPage(props: &MachinesProps) -> Node {
     let banner = match &props.error {
-        Some(message) => {
-            rsx!(<div role="alert" class="alert alert-error"><span>{message}</span></div>)
-        }
+        Some(message) => error_banner(message),
         None => Node::Empty,
     };
     let machines_list: Vec<Node> = if props.machines.is_empty() {
         vec![
-            rsx!(<p class="text-sm text-base-content/60">"No machines yet — invite one below."</p>),
+            rsx!(<p class="text-sm dim">"No machines yet — invite one below."</p>),
         ]
     } else {
         props
             .machines
             .iter()
             .map(|m| {
-                rsx!(<li class="border-b border-base-200 py-1">
-                    <div>
-                        <span class="font-bold">{m.name.clone()}</span>
-                        <span class="text-xs text-base-content/50">{m.hostname.clone()}</span>
+                rsx!(<li class="border-b border-ink py-1 list-none">
+                    <div class="flex items-baseline gap-3">
+                        <span class="font-black">{m.name.clone()}</span>
+                        <span class="text-xs faint">{m.hostname.clone()}</span>
                     </div>
                 </li>)
             })
             .collect()
     };
     let invites_list: Vec<Node> = if props.invites.is_empty() {
-        vec![rsx!(<p class="text-sm text-base-content/60">"No invites yet."</p>)]
+        vec![rsx!(<p class="text-sm dim">"No invites yet."</p>)]
     } else {
         props
             .invites
@@ -865,17 +677,17 @@ pub fn MachinesPage(props: &MachinesProps) -> Node {
                     crate::controlplane::InviteStatus::Denied => "denied",
                 };
                 let candidate = match &record.device_pubkey {
-                    Some(pk) => rsx!(<p class="text-xs text-base-content/50 break-all">"Candidate: "{pk.clone()}</p>),
+                    Some(pk) => rsx!(<p class="text-xs faint break-all">"Candidate: "{pk.clone()}</p>),
                     None => Node::Empty,
                 };
             let approve_form = if waiting {
                 rsx!(
                     <form method="post" action={format!("/auth/invite/{code}/approve")} class="flex items-end gap-2">
-                        <label class="form-control w-full">
-                            <div class="label"><span class="label-text">"Name this machine"</span></div>
-                            <input type="text" name="name" required pattern="[a-z0-9][a-z0-9-]*" class="input input-bordered"/>
+                        <label class="block w-full">
+                            <div class="tag dim mb-1">"Name this machine"</div>
+                            <input type="text" name="name" required pattern="[a-z0-9][a-z0-9-]*" class="zine-input"/>
                         </label>
-                        <button type="submit" class="btn btn-primary">"Approve"</button>
+                        {zine_submit("Approve", "")}
                     </form>
                 )
             } else {
@@ -885,10 +697,10 @@ pub fn MachinesPage(props: &MachinesProps) -> Node {
                 rsx!(
                     <div class="flex gap-2">
                         <form method="post" action={format!("/auth/invite/{code}/deny")}>
-                            <button type="submit" class="btn btn-ghost btn-sm">"Deny"</button>
+                            <button type="submit" class="btn-zine btn-zine-sm">"Deny"</button>
                         </form>
                         <form method="post" action={format!("/auth/invite/{code}/revoke")}>
-                            <button type="submit" class="btn btn-ghost btn-sm">"Revoke"</button>
+                            <button type="submit" class="btn-zine btn-zine-sm">"Revoke"</button>
                         </form>
                     </div>
                 )
@@ -897,25 +709,29 @@ pub fn MachinesPage(props: &MachinesProps) -> Node {
             };
             let share = if fresh {
                 rsx!(
-                    <div class="text-xs text-base-content/70">
+                    <div class="text-xs dim">
                         "Share this link with the machine: "<code class="break-all">{url}</code>
                     </div>
                 )
             } else {
                 Node::Empty
             };
-                rsx!(<li class="card bg-base-100 shadow-sm">
-                    <div class="card-body gap-2 py-4">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <code class="font-bold">{code.clone()}</code>
-                            <span class="badge badge-sm">{status_label}</span>
-                        </div>
-                        {candidate}
-                        {approve_form}
-                        {actions}
-                        {share}
-                    </div>
-                </li>)
+                rsx!(
+                    <li>
+                        {card("", rsx!(
+                            <>
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <code class="font-black">{code.clone()}</code>
+                                    {stamp_small(status_label)}
+                                </div>
+                                {candidate}
+                                {approve_form}
+                                {actions}
+                                {share}
+                            </>
+                        ))}
+                    </li>
+                )
             })
             .collect()
     };
@@ -923,20 +739,24 @@ pub fn MachinesPage(props: &MachinesProps) -> Node {
         "Your machines",
         rsx!(
             <div class="flex flex-col gap-6">
-                <h1 class="text-2xl font-bold">"Your machines"</h1>
+                <h1 class="text-2xl font-black uppercase">"Your machines"</h1>
                 {banner}
                 <section class="flex flex-col gap-2">
-                    <h2 class="text-lg font-bold">"Machines"</h2>
-                    {machines_list}
+                    <h2 class="text-lg font-black uppercase">"Machines"</h2>
+                    <ul class="flex flex-col gap-1 list-none p-0 m-0">
+                        {machines_list}
+                    </ul>
                 </section>
                 <section class="flex flex-col gap-3">
-                    <h2 class="text-lg font-bold">"Invite a machine"</h2>
+                    <h2 class="text-lg font-black uppercase">"Invite a machine"</h2>
                     <form method="post" action="/auth/invite">
-                        <button type="submit" class="btn btn-primary">"Generate invite link"</button>
+                        {zine_submit("Generate invite link", "")}
                     </form>
-                    {invites_list}
+                    <ul class="flex flex-col gap-4 list-none p-0 m-0">
+                        {invites_list}
+                    </ul>
                 </section>
-                <p class="text-sm"><a href="/auth/logout" class="link">"Sign out"</a></p>
+                <p class="text-sm"><a href="/auth/logout" class="link-zine">"Sign out"</a></p>
             </div>
         ),
     )
@@ -954,18 +774,18 @@ pub fn JoinPage(props: &JoinProps) -> Node {
     page_shell(
         "Join a machine",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Join a machine"</h1>
-                    <p class="text-sm text-base-content/70">
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Join a machine"</h1>
+                    <p class="text-sm dim">
                         "This link enrolls a machine into its owner's fortress. Paste it into the box's "
                         <code>"Join network"</code>
                         " screen — the owner then approves and names the machine from their dashboard."
                     </p>
-                    <p class="text-xs text-base-content/50">"Invite code: "<code>{props.code.clone()}</code></p>
-                    <p class="text-sm"><a href="/" class="link">"Back to the front page"</a></p>
-                </div>
-            </div>
+                    <p class="text-xs faint">"Invite code: "<code>{props.code.clone()}</code></p>
+                    <p class="text-sm"><a href="/" class="link-zine">"Back to the front page"</a></p>
+                </>
+            ))}
         ),
     )
 }
@@ -1187,15 +1007,15 @@ pub fn VerifyPage(props: &VerifyProps) -> Node {
     page_shell(
         "Confirm your email",
         rsx!(
-            <div class="card bg-base-100 shadow-sm">
-                <div class="card-body flex flex-col gap-4">
-                    <h1 class="card-title text-2xl">"Confirm your email"</h1>
+            {card("", rsx!(
+                <>
+                    <h1 class="text-2xl font-black uppercase">"Confirm your email"</h1>
                     <form method="post" action="/auth/verify" class="flex flex-col gap-4">
                         <input type="hidden" name="token" value={&props.token}/>
-                        <button type="submit" class="btn btn-primary">"Confirm email"</button>
+                        {zine_submit("Confirm email", "")}
                     </form>
-                </div>
-            </div>
+                </>
+            ))}
         ),
     )
 }
@@ -2097,6 +1917,154 @@ mod tests {
         assert!(
             html.contains("nixosConfigurations"),
             "flake structure documented"
+        );
+    }
+
+    /// Tripwire: every rendered page must inline its assets, never
+    /// reference a third-party origin at runtime. The CDN creeping back
+    /// into one page is exactly the failure this catches.
+    #[test]
+    fn pages_have_no_external_asset_origins() {
+        let pages: Vec<(&str, String)> = vec![
+            (
+                "landing",
+                component::<Landing>(LandingProps {
+                    logged_in: false,
+                    email: None,
+                })
+                .to_html(),
+            ),
+            (
+                "landing-logged-in",
+                component::<Landing>(LandingProps {
+                    logged_in: true,
+                    email: Some("x@y".into()),
+                })
+                .to_html(),
+            ),
+            (
+                "signup",
+                component::<SignupPage>(SignupProps {
+                    email: String::new(),
+                    error: None,
+                })
+                .to_html(),
+            ),
+            (
+                "login",
+                component::<LoginPage>(LoginProps {
+                    email: String::new(),
+                    error: None,
+                })
+                .to_html(),
+            ),
+            (
+                "forgot",
+                component::<ForgotPage>(ForgotProps {
+                    outcome: ForgotOutcome::Prompt,
+                })
+                .to_html(),
+            ),
+            (
+                "reset",
+                component::<ResetPage>(ResetProps {
+                    token: "tok".into(),
+                    error: None,
+                })
+                .to_html(),
+            ),
+            (
+                "verify",
+                component::<VerifyPage>(VerifyProps {
+                    token: "tok".into(),
+                })
+                .to_html(),
+            ),
+            (
+                "resend",
+                component::<ResendPage>(ResendPageProps {
+                    email: String::new(),
+                })
+                .to_html(),
+            ),
+            (
+                "join",
+                component::<JoinPage>(JoinProps {
+                    code: "CODE".into(),
+                })
+                .to_html(),
+            ),
+            (
+                "message",
+                component::<MessagePage>(MessageProps {
+                    kind: MsgKind::Ok,
+                    title: "t".into(),
+                    message: "m".into(),
+                })
+                .to_html(),
+            ),
+            (
+                "machines",
+                component::<MachinesPage>(MachinesProps {
+                    email: "x@y".into(),
+                    machines: vec![crate::controlplane::Machine {
+                        name: "living-room".into(),
+                        owner: None,
+                        hostname: "living-room".into(),
+                        ipv6: String::new(),
+                        wg_ip: String::new(),
+                        wg_public_key: String::new(),
+                        device_token_hash: None,
+                    }],
+                    invites: vec![(
+                        "CODE".into(),
+                        crate::controlplane::InviteRecord {
+                            owner_email: "x@y".into(),
+                            status: crate::controlplane::InviteStatus::Waiting,
+                            device_pubkey: None,
+                        },
+                    )],
+                    invited_code: Some("CODE".into()),
+                    error: None,
+                    root_domain: "fortress.example".into(),
+                })
+                .to_html(),
+            ),
+        ];
+        for (name, html) in &pages {
+            for banned in [
+                "<script src=\"http",
+                "<link rel=\"stylesheet\" href=\"http",
+                "<img src=\"http",
+                "<iframe src=\"http",
+                "<link href=\"http",
+                "url(http",
+                "cdn.jsdelivr",
+                "cdnjs.cloudflare.com",
+            ] {
+                assert!(
+                    !html.contains(banned),
+                    "{name} references a third-party origin: {banned}"
+                );
+            }
+            assert!(
+                html.contains("--red: #d02a1e"),
+                "{name} must carry the zine tokens"
+            );
+        }
+        let landing_logged_in = &pages[1].1;
+        assert!(
+            landing_logged_in.contains(r#"href="/machines""#),
+            "logged-in hero CTA targets the machines dashboard"
+        );
+        let machines_html = &pages.last().unwrap().1;
+        assert!(
+            machines_html.contains("stamp stamp-sm"),
+            "invite status must render as a stamp"
+        );
+        assert!(
+            machines_html.contains("waiting"),
+            "invite status label must render"
         );
     }
 

@@ -513,8 +513,8 @@ mod tests {
         let first_body = first.0.into_body().into_string().await.expect("utf8 body");
         assert!(first_body.contains("alice"));
         assert!(first_body.contains(" 1 times."));
-        assert!(first_body.contains("data-theme=\"dark\""));
-        assert!(first_body.contains("daisyui@5"));
+        assert!(first_body.contains(r#"class="zine app""#), "app-mode shell");
+        assert!(first_body.contains("4.3.3"), "vendored tailwind runtime");
         let second = client.get("/hello/alice").send().await;
         let second_body = second.0.into_body().into_string().await.expect("utf8 body");
         assert!(second_body.contains(" 2 times."));
@@ -625,8 +625,56 @@ mod tests {
             .await
             .expect("utf8 body");
         assert!(body.contains("Sign in to the admin dashboard"));
-        assert!(body.contains("btn btn-primary"));
-        assert!(body.contains("data-theme=\"dark\""));
+        assert!(body.contains("btn-zine"), "zine submit button");
+        assert!(body.contains(r#"class="zine app""#), "app-mode shell");
+    }
+
+    /// Tripwire: dashboard pages inline their assets, never reference a
+    /// third-party origin at runtime.
+    #[test]
+    fn dashboard_pages_have_no_external_asset_origins() {
+        let login_html = component::<LoginPage>(LoginPageProps { error: false }).to_html();
+        let index_html = component::<IndexPage>(IndexProps {
+            name: "alice".into(),
+            count: 0,
+        })
+        .to_html();
+        let editor_html = component::<EditorPage>(EditorPageProps {
+            hostname: "living-room".into(),
+            base_domain: "x.example.com".into(),
+            services: vec![],
+            users: vec![],
+            config_error: None,
+            saved: false,
+            save_error: None,
+        })
+        .to_html();
+        for (name, html) in [
+            ("login", login_html),
+            ("index", index_html),
+            ("editor", editor_html),
+        ] {
+            for banned in [
+                "<script src=\"http",
+                "<link rel=\"stylesheet\" href=\"http",
+                "<img src=\"http",
+                "<iframe src=\"http",
+                "<link href=\"http",
+                "url(http",
+                "cdn.jsdelivr",
+                "cdnjs.cloudflare.com",
+                "daisyui",
+            ] {
+                assert!(
+                    !html.contains(banned),
+                    "{name} references a third-party origin: {banned}"
+                );
+            }
+            assert!(
+                html.contains("--red: #d02a1e"),
+                "{name} must carry the zine tokens"
+            );
+        }
     }
 
     #[tokio::test]
