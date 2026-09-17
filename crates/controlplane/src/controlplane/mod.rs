@@ -53,7 +53,7 @@ pub mod pairing;
 pub mod secret;
 pub mod web;
 pub mod wg;
-pub use account::{AccountError, AccountRecord, AccountStatus};
+pub use account::{AccountError, AccountRecord, AccountStatus, ResetOutcome};
 pub use auth::{verify_token, AdminKey};
 pub use dns::{
     get_dns_api, machine_hostname, reconcile_pass, remove_machine, resolve_aaaa,
@@ -1161,8 +1161,10 @@ impl UsersApi {
         }
     }
 
-    /// Request a password-reset link. Always succeeds for a well-formed
-    /// email — no account enumeration — matching the web `/forgot` form.
+    /// Request a password-reset link. The outcome is explicit: a known
+    /// email confirms the link is on its way, an unknown one says so —
+    /// enumeration is already possible via signup's duplicate-email
+    /// error, so a generic response protects nothing.
     #[oai(path = "/users/reset_password", method = "post")]
     async fn reset_password(
         &self,
@@ -1175,10 +1177,15 @@ impl UsersApi {
         let Some(mailer) = api_mailer(state) else {
             return UsersApiResponse::Internal(Json("internal error".to_string()));
         };
-        let _ = cp.request_password_reset(&req.email, mailer).await;
-        UsersApiResponse::Ok(Json(MessageBody {
-            message: "if that email has an account, a reset link is on its way".to_string(),
-        }))
+        match cp.request_password_reset(&req.email, mailer).await {
+            Ok(ResetOutcome::Sent) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "a reset link is on its way — check your inbox".to_string(),
+            })),
+            Ok(ResetOutcome::UnknownEmail) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "no account with that email — sign up first".to_string(),
+            })),
+            Err(err) => users_api_error(err),
+        }
     }
 
     /// Apply a new password with the single-use reset token.
@@ -2257,14 +2264,22 @@ mod tests {
             .await;
         assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
 
-        // Reset: request (always 200) → confirm with the link token →
-        // the new password logs in, the old one doesn't.
+        // Reset: request (known email → explicit sent message) → confirm
+        // with the link token → the new password logs in, the old one
+        // doesn't.
         let resp = client
             .post("/api/users/reset_password")
             .body_json(&serde_json::json!({ "email": email }))
             .send()
             .await;
         assert_eq!(resp.0.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.0.into_body().into_json().await.unwrap();
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("a reset link is on its way")
+        );
         let reset_token = extract_api_token(&mailer.sent()[1].body);
         let resp = client
             .post("/api/users/reset_password/confirm")

@@ -278,6 +278,17 @@ deletion unwires, never wipes.
   `MockMailer`; `SMTP_*`/`MAIL_FROM` optional secrets in
   `secretspec.toml` (absent → console). Proof: controlplane tests
   (mail + secret contract) + `nix flake check` all-pass.
+- **Reset outcome is explicit (2026-09-16):** signup already leaks
+  registration status (user-visible "already exists" error), so
+  reset-path silence was enumeration theater — now both the API
+  (`POST /api/users/reset_password` → "no account with that email —
+  sign up first") and the web forgot form (distinct "No account with
+  that email" page linking to /register) tell the truth; unknown emails
+  send nothing and infra errors surface as errors instead of a faked
+  success page. `ResetOutcome`/`ForgotOutcome` enums carry it. Proof:
+  79 controlplane tests green vs live Redis (incl. renamed
+  `reset_unknown_email_is_explicit_and_sends_nothing` + web
+  round-trip asserting both pages); clippy clean for touched code.
 - **Resend relay provisioned (2026-09-16):** SMTP_* secrets in the
   sops store (SMTP_HOST/USER/PASS — no provider-specific
   RESEND_API_KEY name), declared in the root toml's `provisioning`

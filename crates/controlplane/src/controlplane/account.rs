@@ -76,6 +76,20 @@ pub enum AccountError {
     Mail(#[from] crate::controlplane::mail::MailerError),
 }
 
+/// What a password-reset request did. The outcome is explicit because
+/// enumeration already is: signup rejects a duplicate email with a
+/// user-visible "already exists" error, so hiding the same fact here
+/// protected nothing while confusing legitimate users who typo'd or
+/// forgot which address they signed up with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetOutcome {
+    /// The email has an account; the single-use link went out.
+    Sent,
+    /// No account for that email; nothing was sent, and the caller says
+    /// so.
+    UnknownEmail,
+}
+
 /// `conn()` returns `ControlPlaneError`; the only error it can produce
 /// is a Redis failure, but map everything defensively so `?` is total.
 impl From<ControlPlaneError> for AccountError {
@@ -356,17 +370,19 @@ impl ControlPlane {
     }
 
     /// Request a password reset. Emails a single-use magic link (same
-    /// primitive as verify). Returns `Ok` for an unknown email too — no
-    /// account enumeration.
+    /// primitive as verify). Unknown emails return
+    /// [`ResetOutcome::UnknownEmail`] explicitly — enumeration is
+    /// already possible via signup's duplicate-email error, so silence
+    /// here buys nothing (see [`ResetOutcome`]).
     pub async fn request_password_reset(
         &self,
         email: &str,
         mailer: &dyn Mailer,
-    ) -> Result<(), AccountError> {
+    ) -> Result<ResetOutcome, AccountError> {
         let email = email.trim().to_lowercase();
         let mut conn = self.conn().await?;
         if !conn.exists(account_key(&email)).await? {
-            return Ok(());
+            return Ok(ResetOutcome::UnknownEmail);
         }
         let token = random_token();
         let _: () = conn
@@ -376,7 +392,7 @@ impl ControlPlane {
         mailer
             .send(&email, "Reset your fortress password", &reset_body(&link))
             .await?;
-        Ok(())
+        Ok(ResetOutcome::Sent)
     }
 
     /// Consume the single-use reset token and replace the password.
@@ -613,9 +629,11 @@ mod tests {
         cp.account_verify(&verify_token).await.expect("verify");
 
         let mailer2 = MockMailer::new();
-        cp.request_password_reset(&email, &mailer2)
+        let outcome = cp
+            .request_password_reset(&email, &mailer2)
             .await
             .expect("reset request");
+        assert_eq!(outcome, ResetOutcome::Sent, "known email confirms the send");
         let sent = mailer2.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, email);
@@ -641,14 +659,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reset_unknown_email_is_indistinguishable() {
+    async fn reset_unknown_email_is_explicit_and_sends_nothing() {
         let Some(cp) = skip_without_redis() else {
             return;
         };
         let mailer = MockMailer::new();
-        cp.request_password_reset(&unique_email("ghost"), &mailer)
+        let outcome = cp
+            .request_password_reset(&unique_email("ghost"), &mailer)
             .await
-            .expect("unknown email returns Ok");
+            .expect("unknown email still succeeds");
+        assert_eq!(outcome, ResetOutcome::UnknownEmail, "explicit outcome");
         assert!(
             mailer.sent().is_empty(),
             "no email sent for unknown account"

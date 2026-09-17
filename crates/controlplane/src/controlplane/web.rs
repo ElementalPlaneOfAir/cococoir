@@ -13,7 +13,7 @@
 //! reset link already follows this shape: `GET /reset?token=` renders
 //! the password form; the token is consumed by the `POST /auth/reset`.
 
-use crate::controlplane::account::AccountError;
+use crate::controlplane::account::{AccountError, ResetOutcome};
 use crate::controlplane::mail::Mailer;
 use crate::controlplane::{AppState, ControlPlane};
 use momenta::prelude::*;
@@ -636,25 +636,52 @@ pub fn MessagePage(props: &MessageProps) -> Node {
     )
 }
 
+/// The forgot-form outcome. Explicit, because enumeration already is:
+/// signup rejects duplicate emails with a user-visible error, so
+/// telling the truth here costs nothing and unblocks real users.
+pub enum ForgotOutcome {
+    Prompt,
+    Sent,
+    UnknownEmail,
+}
+
 pub struct ForgotProps {
-    pub sent: bool,
+    pub outcome: ForgotOutcome,
 }
 
 #[component]
 pub fn ForgotPage(props: &ForgotProps) -> Node {
-    if props.sent {
-        return page_shell(
-            "Check your email",
-            rsx!(
-                <div class="card bg-base-100 shadow-sm">
-                    <div class="card-body flex flex-col gap-4">
-                        <h1 class="card-title text-2xl">"Check your email"</h1>
-                        <p class="text-base-content/60">"If that email has an account, a reset link is on its way. It expires in 24 hours."</p>
-                        <a href="/login" class="btn btn-primary">"Back to login"</a>
+    match props.outcome {
+        ForgotOutcome::Sent => {
+            return page_shell(
+                "Check your email",
+                rsx!(
+                    <div class="card bg-base-100 shadow-sm">
+                        <div class="card-body flex flex-col gap-4">
+                            <h1 class="card-title text-2xl">"Check your email"</h1>
+                            <p class="text-base-content/60">"A reset link is on its way. It expires in 24 hours."</p>
+                            <a href="/login" class="btn btn-primary">"Back to login"</a>
+                        </div>
                     </div>
-                </div>
-            ),
-        );
+                ),
+            );
+        }
+        ForgotOutcome::UnknownEmail => {
+            return page_shell(
+                "No account with that email",
+                rsx!(
+                    <div class="card bg-base-100 shadow-sm">
+                        <div class="card-body flex flex-col gap-4">
+                            <h1 class="card-title text-2xl">"No account with that email"</h1>
+                            <p class="text-base-content/60">"There is no account registered with that address yet."</p>
+                            <a href="/register" class="btn btn-primary">"Sign up"</a>
+                            <a href="/forgot" class="link link-primary">"Try a different email"</a>
+                        </div>
+                    </div>
+                ),
+            );
+        }
+        ForgotOutcome::Prompt => {}
     }
     page_shell(
         "Reset your password",
@@ -1124,7 +1151,8 @@ async fn verify_confirm(Data(state): Data<&AppState>, Form(form): Form<VerifyFor
 
 #[handler]
 async fn forgot_page() -> Response {
-    Html(component::<ForgotPage>(ForgotProps { sent: false }).to_html()).into_response()
+    Html(component::<ForgotPage>(ForgotProps { outcome: ForgotOutcome::Prompt }).to_html())
+        .into_response()
 }
 
 #[handler]
@@ -1137,12 +1165,25 @@ async fn forgot(Data(state): Data<&AppState>, Form(form): Form<ForgotForm>) -> R
         Ok(mailer) => mailer,
         Err(resp) => return resp,
     };
-    // No account enumeration: the response is identical whether or not
-    // the email has an account.
-    if let Some(email) = form.email.as_deref() {
-        let _ = cp.request_password_reset(email, mailer).await;
-    }
-    Html(component::<ForgotPage>(ForgotProps { sent: true }).to_html()).into_response()
+    let Some(email) = form.email.as_deref() else {
+        return Html(component::<ForgotPage>(ForgotProps { outcome: ForgotOutcome::Prompt }).to_html())
+            .into_response();
+    };
+    let outcome = match cp.request_password_reset(email, mailer).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            return message_response(
+                MsgKind::Err,
+                "Reset failed",
+                &account_error_message(&err),
+            );
+        }
+    };
+    let outcome = match outcome {
+        ResetOutcome::Sent => ForgotOutcome::Sent,
+        ResetOutcome::UnknownEmail => ForgotOutcome::UnknownEmail,
+    };
+    Html(component::<ForgotPage>(ForgotProps { outcome }).to_html()).into_response()
 }
 
 #[handler]
@@ -1706,8 +1747,8 @@ mod tests {
             .await
             .assert_status(StatusCode::OK);
 
-        // Request a reset via the form — identical message for unknown
-        // emails (no enumeration), and the mailer got the link.
+        // Request a reset via the form — the known email gets an
+        // explicit sent page, and the mailer got the link.
         let resp = client
             .post("/auth/forgot")
             .content_type("application/x-www-form-urlencoded")
@@ -1716,8 +1757,21 @@ mod tests {
             .await;
         resp.assert_status(StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("If that email has an account"));
+        assert!(body.contains("A reset link is on its way"));
         let reset_token = extract_token(&mailer.sent()[1].body);
+
+        // An unknown email gets an explicit "no account" page (signup's
+        // duplicate-email error already leaks registration status, so
+        // this is consistency, not a leak).
+        let resp = client
+            .post("/auth/forgot")
+            .content_type("application/x-www-form-urlencoded")
+            .body("email=nobody-there@example.com")
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("No account with that email"));
 
         // GET /reset renders the form; POST /auth/reset sets the password.
         let resp = client
