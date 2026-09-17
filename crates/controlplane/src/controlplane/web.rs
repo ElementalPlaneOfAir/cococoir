@@ -13,7 +13,7 @@
 //! reset link already follows this shape: `GET /reset?token=` renders
 //! the password form; the token is consumed by the `POST /auth/reset`.
 
-use crate::controlplane::account::{AccountError, ResetOutcome};
+use crate::controlplane::account::{AccountError, ResetOutcome, ResendVerifyOutcome};
 use crate::controlplane::mail::Mailer;
 use crate::controlplane::{AppState, ControlPlane};
 use momenta::prelude::*;
@@ -535,6 +535,14 @@ pub fn SignupPage(props: &SignupProps) -> Node {
         }
         None => Node::Empty,
     };
+    let resend_link = match &props.error {
+        Some(_) => rsx!(
+            <p class="text-sm text-base-content/60">
+                <a href="/auth/resend-verify" class="link">"Need the confirmation link resent?"</a>
+            </p>
+        ),
+        None => Node::Empty,
+    };
     page_shell(
         "Create an account",
         rsx!(
@@ -542,6 +550,7 @@ pub fn SignupPage(props: &SignupProps) -> Node {
                 <div class="card-body flex flex-col gap-4">
                     <h1 class="card-title text-2xl">"Create an account"</h1>
                     {banner}
+                    {resend_link}
                     <form method="post" action="/auth/signup" class="flex flex-col gap-4">
                         <label class="form-control w-full">
                             <div class="label"><span class="label-text">"Email"</span></div>
@@ -596,6 +605,9 @@ pub fn LoginPage(props: &LoginProps) -> Node {
                     </form>
                     <p class="text-sm text-base-content/60">
                         <a href="/forgot" class="link">"Forgot your password?"</a>
+                    </p>
+                    <p class="text-sm text-base-content/60">
+                        <a href="/auth/resend-verify" class="link">"Need the confirmation link resent?"</a>
                     </p>
                 </div>
             </div>
@@ -695,6 +707,68 @@ pub fn ForgotPage(props: &ForgotProps) -> Node {
                             <input type="email" name="email" required class="input input-bordered"/>
                         </label>
                         <button type="submit" class="btn btn-primary">"Send reset link"</button>
+                    </form>
+                </div>
+            </div>
+        ),
+    )
+}
+
+/// Shown after a login attempt on an unverified account. The whole
+    /// point is the escape hatch: a verification link that got lost
+    /// (spam, a provisioning gap, a typo'd address) must be resendable —
+    /// the old state had no path out of "pending" except a fresh signup,
+    /// which the duplicate-email rule blocks.
+pub struct VerifyNoticeProps {
+    pub email: String,
+}
+
+#[component]
+pub fn VerifyNoticePage(props: &VerifyNoticeProps) -> Node {
+    page_shell(
+        "Verify your email",
+        rsx!(
+            <div class="card bg-base-100 shadow-sm">
+                <div class="card-body flex flex-col gap-4">
+                    <h1 class="card-title text-2xl">"Verify your email"</h1>
+                    <p class="text-base-content/60">
+                        "The account for "
+                        <span class="font-mono">{&props.email}</span>
+                        " isn't verified yet. We'll email a fresh confirmation link — it expires in 24 hours."
+                    </p>
+                    <form method="post" action="/auth/resend-verify" class="flex flex-col gap-4">
+                        <input type="hidden" name="email" value={&props.email}/>
+                        <button type="submit" class="btn btn-primary">"Resend confirmation link"</button>
+                    </form>
+                    <p class="text-sm text-base-content/60">
+                        "Used a different email? "
+                        <a href="/login" class="link">"Log in with another address"</a>
+                    </p>
+                </div>
+            </div>
+        ),
+    )
+}
+
+pub struct ResendPageProps {
+    pub email: String,
+}
+
+#[component]
+pub fn ResendPage(props: &ResendPageProps) -> Node {
+    page_shell(
+        "Resend confirmation link",
+        rsx!(
+            <div class="card bg-base-100 shadow-sm">
+                <div class="card-body flex flex-col gap-4">
+                    <h1 class="card-title text-2xl">"Resend confirmation link"</h1>
+                    <p class="text-base-content/60">"Enter the email you signed up with and we'll send a fresh link."</p>
+                    <form method="post" action="/auth/resend-verify" class="flex flex-col gap-4">
+                        <label class="form-control w-full">
+                            <div class="label"><span class="label-text">"Email"</span></div>
+                            <input type="email" name="email" value={&props.email} required class="input input-bordered"/>
+                        </label>
+                        <button type="submit" class="btn btn-primary">"Send new link"</button>
                     </form>
                 </div>
             </div>
@@ -1049,6 +1123,10 @@ async fn login(Data(state): Data<&AppState>, Form(form): Form<LoginForm>) -> Res
         _ => Err(AccountError::InvalidCredentials),
     };
     match result {
+        Err(AccountError::NotVerified(account_email)) => Html(
+            component::<VerifyNoticePage>(VerifyNoticeProps { email: account_email }).to_html(),
+        )
+        .into_response(),
         Err(err) => Html(
             component::<LoginPage>(LoginProps {
                 email,
@@ -1186,6 +1264,78 @@ async fn forgot(Data(state): Data<&AppState>, Form(form): Form<ForgotForm>) -> R
     Html(component::<ForgotPage>(ForgotProps { outcome }).to_html()).into_response()
 }
 
+/// Query for the resend page's optional prefill (?email=…).
+#[derive(Debug, Deserialize)]
+struct ResendQuery {
+    email: Option<String>,
+}
+
+#[handler]
+async fn resend_verify_page(Query(query): Query<ResendQuery>) -> Response {
+    Html(
+        component::<ResendPage>(ResendPageProps {
+            email: query.email.unwrap_or_default(),
+        })
+        .to_html(),
+    )
+    .into_response()
+}
+
+#[handler]
+async fn resend_verify(Data(state): Data<&AppState>, Form(form): Form<ForgotForm>) -> Response {
+    let cp = match cp_or_500(state) {
+        Ok(cp) => cp,
+        Err(resp) => return resp,
+    };
+    let mailer = match mailer_or_500(state) {
+        Ok(mailer) => mailer,
+        Err(resp) => return resp,
+    };
+    let Some(email) = form.email.as_deref() else {
+        return message_response(
+            MsgKind::Err,
+            "Missing email",
+            "Enter the email you signed up with.",
+        );
+    };
+    match cp.resend_verification(email, mailer).await {
+        Ok(ResendVerifyOutcome::Sent) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Ok,
+                title: "Check your email".into(),
+                message: format!(
+                    "A verification link was sent to {email}. It expires in 24 hours."
+                ),
+            })
+            .to_html(),
+        )
+        .into_response(),
+        Ok(ResendVerifyOutcome::AlreadyActive) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Ok,
+                title: "Already verified".into(),
+                message: "That email is already verified — you can log in.".into(),
+            })
+            .to_html(),
+        )
+        .into_response(),
+        Ok(ResendVerifyOutcome::UnknownEmail) => Html(
+            component::<MessagePage>(MessageProps {
+                kind: MsgKind::Err,
+                title: "No account".into(),
+                message: "No account with that email. Sign up instead.".into(),
+            })
+            .to_html(),
+        )
+        .into_response(),
+        Err(err) => message_response(
+            MsgKind::Err,
+            "Couldn't resend",
+            &account_error_message(&err),
+        ),
+    }
+}
+
 #[handler]
 async fn reset_page(Query(query): Query<TokenQuery>) -> Response {
     let Some(token) = query.token else {
@@ -1256,7 +1406,9 @@ pub(crate) fn account_error_message(err: &AccountError) -> String {
         AccountError::InvalidPassword(_) => {
             "That password is invalid (must not be empty or longer than 72 bytes).".into()
         }
-        AccountError::DuplicateEmail(_) => "An account with that email already exists.".into(),
+        AccountError::DuplicateEmail(_) => {
+            "An account with that email already exists. If you never verified it, resend the confirmation link.".into()
+        }
         AccountError::NotFound => "Something went wrong with that account.".into(),
         AccountError::InvalidCredentials => "Incorrect email or password.".into(),
         AccountError::NotVerified(_) => {
@@ -1502,6 +1654,7 @@ pub fn web_routes() -> Route {
         .at("/auth/login", post(login))
         .at("/auth/logout", get(logout))
         .at("/auth/forgot", post(forgot))
+        .at("/auth/resend-verify", get(resend_verify_page).post(resend_verify))
         .at("/auth/reset", post(reset))
         .at("/auth/verify", post(verify_confirm))
         .at("/auth/account/delete", post(account_delete))
@@ -1649,7 +1802,8 @@ mod tests {
             .await;
         resp.assert_status(StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
-        assert!(body.contains("Verify your email first"));
+        assert!(body.contains("isn't verified yet"));
+        assert!(body.contains("Resend confirmation link"));
 
         // GET /verify does NOT consume the token (prefetch guard).
         let resp = client.get(format!("/verify?token={token}")).send().await;
@@ -1720,6 +1874,61 @@ mod tests {
         let resp = client.get("/").send().await;
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("Create account"), "logged out landing");
+    }
+
+    #[tokio::test]
+    async fn resend_verify_web_round_trip() {
+        let Some((cp, mailer)) = setup() else {
+            eprintln!("skipping: REDIS_URL not set");
+            return;
+        };
+        let client = TestClient::new(test_app(cp, mailer));
+        let email = unique_email("webresend");
+
+        client
+            .post("/auth/signup")
+            .content_type("application/x-www-form-urlencoded")
+            .body(format!("email={email}&password=hunter2"))
+            .send()
+            .await
+            .assert_status(StatusCode::OK);
+        assert_eq!(mailer.sent().len(), 1, "one verify email at signup");
+
+        // Logging in lands on the verify-notice page with a resend form.
+        let resp = client
+            .post("/auth/login")
+            .content_type("application/x-www-form-urlencoded")
+            .body(format!("email={email}&password=hunter2"))
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("isn't verified yet"));
+        assert!(body.contains("action=\"/auth/resend-verify\""));
+
+        // The resend form sends a fresh link.
+        let resp = client
+            .post("/auth/resend-verify")
+            .content_type("application/x-www-form-urlencoded")
+            .body(format!("email={email}"))
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("A verification link was sent"));
+        assert_eq!(mailer.sent().len(), 2, "fresh link emailed");
+        assert_eq!(mailer.sent()[1].to, email);
+
+        // An unknown email on the resend form gets the explicit no-account page.
+        let resp = client
+            .post("/auth/resend-verify")
+            .content_type("application/x-www-form-urlencoded")
+            .body("email=nobody-resend@example.com")
+            .send()
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("No account with that email"));
     }
 
     #[tokio::test]
@@ -1857,7 +2066,7 @@ mod tests {
         );
         assert_eq!(
             account_error_message(&AccountError::DuplicateEmail("x".into())),
-            "An account with that email already exists."
+            "An account with that email already exists. If you never verified it, resend the confirmation link."
         );
     }
 

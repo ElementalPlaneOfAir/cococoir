@@ -168,6 +168,12 @@ impl MockMailer {
         self.sent.lock().expect("mock mailer lock").clone()
     }
 
+    /// Drop the captured messages so the next batch can be asserted
+    /// alone (index-based assertions don't work across signups).
+    pub fn clear(&self) {
+        self.sent.lock().expect("mock mailer lock").clear();
+    }
+
     /// Make subsequent `send` calls return `MockFailure` (relay outage).
     pub fn fail_sends(&self) {
         self.fail.store(true, std::sync::atomic::Ordering::SeqCst);

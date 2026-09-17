@@ -53,7 +53,7 @@ pub mod pairing;
 pub mod secret;
 pub mod web;
 pub mod wg;
-pub use account::{AccountError, AccountRecord, AccountStatus, ResetOutcome};
+pub use account::{AccountError, AccountRecord, AccountStatus, ResetOutcome, ResendVerifyOutcome};
 pub use auth::{verify_token, AdminKey};
 pub use dns::{
     get_dns_api, machine_hostname, reconcile_pass, remove_machine, resolve_aaaa,
@@ -1051,7 +1051,10 @@ fn users_api_error(err: AccountError) -> UsersApiResponse {
             UsersApiResponse::Unauthorized(Json("invalid email or password".to_string()))
         }
         AccountError::NotVerified(_) => {
-            UsersApiResponse::Forbidden(Json(account_error_message(&err)))
+            UsersApiResponse::Forbidden(Json(
+                "verify your email first — POST /api/users/resend_verification to resend the link"
+                    .to_string(),
+            ))
         }
         AccountError::InvalidToken => {
             UsersApiResponse::BadRequest(Json("invalid or expired token".to_string()))
@@ -1182,6 +1185,35 @@ impl UsersApi {
                 message: "a reset link is on its way — check your inbox".to_string(),
             })),
             Ok(ResetOutcome::UnknownEmail) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "no account with that email — sign up first".to_string(),
+            })),
+            Err(err) => users_api_error(err),
+        }
+    }
+
+    /// Resend the verification link for a pending account. The outcome
+    /// is explicit (see [`ResendVerifyOutcome`]): pending → link sent,
+    /// active → already verified, unknown → no account.
+    #[oai(path = "/users/resend_verification", method = "post")]
+    async fn resend_verification(
+        &self,
+        Data(state): Data<&AppState>,
+        Json(req): Json<ResetPasswordRequest>,
+    ) -> UsersApiResponse {
+        let Some(cp) = api_cp(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        let Some(mailer) = api_mailer(state) else {
+            return UsersApiResponse::Internal(Json("internal error".to_string()));
+        };
+        match cp.resend_verification(&req.email, mailer).await {
+            Ok(ResendVerifyOutcome::Sent) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "a verification link is on its way — check your inbox".to_string(),
+            })),
+            Ok(ResendVerifyOutcome::AlreadyActive) => UsersApiResponse::Ok(Json(MessageBody {
+                message: "that email is already verified — log in".to_string(),
+            })),
+            Ok(ResendVerifyOutcome::UnknownEmail) => UsersApiResponse::Ok(Json(MessageBody {
                 message: "no account with that email — sign up first".to_string(),
             })),
             Err(err) => users_api_error(err),

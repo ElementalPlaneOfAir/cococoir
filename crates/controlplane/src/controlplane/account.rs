@@ -90,6 +90,20 @@ pub enum ResetOutcome {
     UnknownEmail,
 }
 
+/// What a verification-email resend did. Explicit for the same reason as
+/// [`ResetOutcome`] — registration status already leaks via signup's
+/// duplicate-email error, so the caller can tell the truth instead of
+/// guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResendVerifyOutcome {
+    /// Pending account; a fresh single-use link went out.
+    Sent,
+    /// The account is already active — nothing to verify, no email sent.
+    AlreadyActive,
+    /// No account for that email; nothing was sent.
+    UnknownEmail,
+}
+
 /// `conn()` returns `ControlPlaneError`; the only error it can produce
 /// is a Redis failure, but map everything defensively so `?` is total.
 impl From<ControlPlaneError> for AccountError {
@@ -367,6 +381,39 @@ impl ControlPlane {
     pub async fn session_account(&self, session: &str) -> Result<Option<String>, AccountError> {
         let mut conn = self.conn().await?;
         Ok(conn.get(session_key(session)).await?)
+    }
+
+    /// Resend the verification link for a pending account. The outcome
+    /// is explicit for the same reason as [`ResetOutcome`]: signup's
+    /// duplicate-email error already leaks registration status, so the
+    /// caller can tell a pending account "sent", an active one
+    /// "already verified", and an unknown email "no account". The old
+    /// verify token is left to expire on its own TTL — both are
+    /// single-use GETDEL and point at the same email, so a stale one
+    /// is harmless.
+    pub async fn resend_verification(
+        &self,
+        email: &str,
+        mailer: &dyn Mailer,
+    ) -> Result<ResendVerifyOutcome, AccountError> {
+        let email = email.trim().to_lowercase();
+        let mut conn = self.conn().await?;
+        let Some(json): Option<String> = conn.get(account_key(&email)).await? else {
+            return Ok(ResendVerifyOutcome::UnknownEmail);
+        };
+        let account = account_from_json(json)?;
+        if account.status == AccountStatus::Active {
+            return Ok(ResendVerifyOutcome::AlreadyActive);
+        }
+        let token = random_token();
+        let _: () = conn
+            .set_ex(verify_key(&token), &email, VERIFY_TOKEN_TTL_SECS)
+            .await?;
+        let link = verify_link(self.root_domain, &token);
+        mailer
+            .send(&email, "Verify your fortress account", &verify_body(&link))
+            .await?;
+        Ok(ResendVerifyOutcome::Sent)
     }
 
     /// Request a password reset. Emails a single-use magic link (same
@@ -672,6 +719,55 @@ mod tests {
         assert!(
             mailer.sent().is_empty(),
             "no email sent for unknown account"
+        );
+    }
+
+    #[tokio::test]
+    async fn resend_verification_outcomes_cover_pending_active_unknown() {
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
+        let mailer = MockMailer::new();
+
+        let pending_email = unique_email("resend-pending");
+        cp.account_signup(&pending_email, "hunter2", &mailer)
+            .await
+            .expect("signup");
+        mailer.clear();
+
+        let outcome = cp
+            .resend_verification(&pending_email, &mailer)
+            .await
+            .expect("resend pending");
+        assert_eq!(outcome, ResendVerifyOutcome::Sent);
+        assert_eq!(mailer.sent().len(), 1, "fresh link emailed");
+        assert_eq!(mailer.sent()[0].to, pending_email);
+        assert!(
+            mailer.sent()[0].body.contains("token="),
+            "body has the new link"
+        );
+
+        let verify_token = extract_token(&mailer.sent()[0].body);
+        cp.account_verify(&verify_token).await.expect("verify");
+        mailer.clear();
+        let outcome = cp
+            .resend_verification(&pending_email, &mailer)
+            .await
+            .expect("resend active");
+        assert_eq!(outcome, ResendVerifyOutcome::AlreadyActive);
+        assert!(
+            mailer.sent().is_empty(),
+            "no email for an already-active account"
+        );
+
+        let outcome = cp
+            .resend_verification(&unique_email("resend-ghost"), &mailer)
+            .await
+            .expect("resend unknown");
+        assert_eq!(outcome, ResendVerifyOutcome::UnknownEmail);
+        assert!(
+            mailer.sent().is_empty(),
+            "no email for an unknown account"
         );
     }
 

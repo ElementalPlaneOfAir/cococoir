@@ -278,6 +278,18 @@ deletion unwires, never wipes.
   `MockMailer`; `SMTP_*`/`MAIL_FROM` optional secrets in
   `secretspec.toml` (absent → console). Proof: controlplane tests
   (mail + secret contract) + `nix flake check` all-pass.
+- **Verification emails can be resent (2026-09-16):** a lost
+  verification link was a dead end — login refused ("verify first"),
+  re-signup refused ("already exists") — so `resend_verification`
+  (`ResendVerifyOutcome::{Sent,AlreadyActive,UnknownEmail}`) mints a
+  fresh single-use link for a pending account, and the UI now routes
+  there: login on an unverified account renders a "Verify your email"
+  page with a resend form; `/auth/resend-verify` (GET form + POST) and
+  `POST /api/users/resend_verification` cover web + API; signup's
+  duplicate-email error and the login page point at it. Proof: 81
+  controlplane tests green vs live Redis (incl. new
+  `resend_verification_outcomes_cover_pending_active_unknown` +
+  `resend_verify_web_round_trip`); clippy clean for touched code.
 - **Reset outcome is explicit (2026-09-16):** signup already leaks
   registration status (user-visible "already exists" error), so
   reset-path silence was enumeration theater — now both the API
