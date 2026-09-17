@@ -34,7 +34,8 @@
   environment.etc = {
     # Operator SSH key (root). Debian's openssh reads this directly.
     "ssh/authorized_keys.d/root".text = ''
-      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@vermissian
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtpDAeIfLOlZE5y/SaHQ8h60nqbPSWdStRsvux6ECbk nicole@idol
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINBfMZjr6H4oK3qSBTxjZrMZptWXdzYC6QV4bdS892Ls nicole@vermissian
     '';
     # Caddy fronts the edge's own control plane at https://proletariat.tech
     # (apex A/AAAA -> edge IPv4 + ::1). It proxies the single merged edge
@@ -113,7 +114,7 @@
     # The binary shells out to `wg set` to install its runtime identity
     # into wg0; give the unit the wg binary on PATH (systemd's default
     # PATH lacks /run/current-system/sw/bin).
-    path = [ pkgs.wireguard-tools ];
+    path = [pkgs.wireguard-tools];
     serviceConfig = {
       Type = "simple";
       # The store URL is NOT a unit flag here: it is the secret REDIS_URL
