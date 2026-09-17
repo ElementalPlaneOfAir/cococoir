@@ -8,6 +8,9 @@
 #                                     endpoint + control-plane website)
 #   proletariat.tech              AAAA -> <server /64>::1
 #   *.example123.proletariat.tech AAAA -> customer /128 carved from the box /64
+#   resend._domainkey             TXT  -> Resend DKIM key
+#   rsend / send                  CNAME-> Resend envelope-from subdomains
+#   _dmarc                        TXT  -> DMARC (p=none, monitor mode)
 #
 # Single instance: no floats, no failover, DNS points at the one box.
 # A CNAME at the old domain bridges until a formal migration.
@@ -48,5 +51,45 @@ resource "hcloud_zone_rrset" "customer_aaaa" {
   type = "AAAA"
   records = [
     { value = local.customer_ipv6 },
+  ]
+}
+
+# Transactional mail: Resend serves the SmtpMailer (magic-link verify +
+# password reset). DKIM signs from proletariat.tech; the CNAMEs delegate
+# the envelope-from subdomains so Resend owns their SPF/bounce handling.
+# Verify the domain in the Resend dashboard after the first apply.
+resource "hcloud_zone_rrset" "resend_dkim" {
+  zone = hcloud_zone.proletariat.name
+  name = "resend._domainkey"
+  type = "TXT"
+  records = [
+    { value = "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDHulxstMhP8T4NRTBX3/T+MuYGxMCLGaJENwaGRh25Fr8RjPFQb1vrrmeSMduyDRfqpeMGkXIQHdgaS4Qa2F0lP5AztD4FJyHZgqseKQ6mC9XNKAsACD3HpIE6LJQG6F7FFIvwsEufiSmrU8yL3QwdsS7dOGrFn3CBGBBSvb2nOQIDAQAB" },
+  ]
+}
+
+resource "hcloud_zone_rrset" "resend_envelope_rsend" {
+  zone = hcloud_zone.proletariat.name
+  name = "rsend"
+  type = "CNAME"
+  records = [
+    { value = "rsend.forge.rmta.net." },
+  ]
+}
+
+resource "hcloud_zone_rrset" "resend_envelope_send" {
+  zone = hcloud_zone.proletariat.name
+  name = "send"
+  type = "CNAME"
+  records = [
+    { value = "send.forge.rmta.net." },
+  ]
+}
+
+resource "hcloud_zone_rrset" "dmarc" {
+  zone = hcloud_zone.proletariat.name
+  name = "_dmarc"
+  type = "TXT"
+  records = [
+    { value = "v=DMARC1; p=none" },
   ]
 }
