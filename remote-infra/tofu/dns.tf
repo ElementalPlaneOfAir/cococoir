@@ -58,12 +58,14 @@ resource "hcloud_zone_rrset" "customer_aaaa" {
 # password reset). DKIM signs from proletariat.tech; the CNAMEs delegate
 # the envelope-from subdomains so Resend owns their SPF/bounce handling.
 # Verify the domain in the Resend dashboard after the first apply.
+# Hetzner's API requires TXT values to carry their own double quotes —
+# the CNAMEs don't, TXTs do.
 resource "hcloud_zone_rrset" "resend_dkim" {
   zone = hcloud_zone.proletariat.name
   name = "resend._domainkey"
   type = "TXT"
   records = [
-    { value = "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDHulxstMhP8T4NRTBX3/T+MuYGxMCLGaJENwaGRh25Fr8RjPFQb1vrrmeSMduyDRfqpeMGkXIQHdgaS4Qa2F0lP5AztD4FJyHZgqseKQ6mC9XNKAsACD3HpIE6LJQG6F7FFIvwsEufiSmrU8yL3QwdsS7dOGrFn3CBGBBSvb2nOQIDAQAB" },
+    { value = "\"p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDHulxstMhP8T4NRTBX3/T+MuYGxMCLGaJENwaGRh25Fr8RjPFQb1vrrmeSMduyDRfqpeMGkXIQHdgaS4Qa2F0lP5AztD4FJyHZgqseKQ6mC9XNKAsACD3HpIE6LJQG6F7FFIvwsEufiSmrU8yL3QwdsS7dOGrFn3CBGBBSvb2nOQIDAQAB\"" },
   ]
 }
 
@@ -90,6 +92,6 @@ resource "hcloud_zone_rrset" "dmarc" {
   name = "_dmarc"
   type = "TXT"
   records = [
-    { value = "v=DMARC1; p=none" },
+    { value = "\"v=DMARC1; p=none\"" },
   ]
 }

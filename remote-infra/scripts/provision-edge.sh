@@ -82,7 +82,7 @@ echo "==> [5/6] write edge secrets (edge.env + secretspec.toml)"
 # The edge secrets resolve through the secretspec SDK: a value-free
 # secretspec.toml contract (deployed here) + a dotenv edge.env holding
 # the values (zone + token + root domain + admin key hash + the wg0
-# identity + the external store URL). The SDK reads secretspec.toml via
+# identity + the external store URL + the SMTP relay when configured). The SDK reads secretspec.toml via
 # a CWD walk from /etc/fortress (WorkingDirectory on the unit) and the
 # values from edge.env (0600, never in the repo). `-S provision` = token
 # + generated admin key + the wg0 identity + REDIS_URL (the external
@@ -101,13 +101,35 @@ ADMIN_KEY_HASH=$(printf '%s' "$ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 # Deploy the committed contract + the values file. The plaintext admin
 # key and WG private key never reach the box as files the operator
 # juggles — they resolve through the secretspec SDK from edge.env.
+# edge.env is built locally (0600 umask) and piped over ssh: no secret
+# ever sits on a remote shell command line. SMTP_* are appended only
+# when the relay is configured — absent means the box keeps the console
+# mailer. USER/PASS lines are written only when non-empty (a no-auth
+# relay must stay absent, not empty — the mailer reads Option<&str>).
+if [ -n "${SMTP_HOST:-}" ] && { [ -z "${SMTP_USER:-}" ] || [ -z "${SMTP_PASS:-}" ]; }; then
+  echo "SMTP_HOST is set but SMTP_USER/SMTP_PASS are empty — configure all three or none"
+  exit 1
+fi
+umask 077
+EDGE_ENV=$(mktemp)
+{
+  printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nWG_PRIVATE_KEY=%s\nREDIS_URL=%s\n' \
+    "$DNS_ZONE_ID" "$DOMAIN" "$DNS_TOKEN" "$DOMAIN" "$ADMIN_KEY_HASH" "$WG_PRIVATE_KEY" "$REDIS_URL"
+  if [ -n "${SMTP_HOST:-}" ]; then
+    printf 'SMTP_HOST=%s\n' "$SMTP_HOST"
+    [ -n "${SMTP_USER:-}" ] && printf 'SMTP_USER=%s\n' "$SMTP_USER"
+    [ -n "${SMTP_PASS:-}" ] && printf 'SMTP_PASS=%s\n' "$SMTP_PASS"
+  fi
+} > "$EDGE_ENV"
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "mkdir -p /etc/fortress && \
    cat > /etc/fortress/secretspec.toml && \
-   printf 'DNS_ZONE_ID=%s\nDNS_ZONE_NAME=%s\nDNS_TOKEN=%s\nROOT_DOMAIN=%s\nADMIN_KEY_HASH=%s\nWG_PRIVATE_KEY=%s\nREDIS_URL=%s\n' \
-     '$DNS_ZONE_ID' '${DOMAIN}' '$DNS_TOKEN' '${DOMAIN}' '$ADMIN_KEY_HASH' '$WG_PRIVATE_KEY' '$REDIS_URL' > /etc/fortress/edge.env && \
-   chmod 0600 /etc/fortress/edge.env && chmod 0644 /etc/fortress/secretspec.toml" \
+   chmod 0644 /etc/fortress/secretspec.toml" \
   < "$REPO_ROOT/crates/controlplane/secretspec.toml"
+ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
+  "cat > /etc/fortress/edge.env && chmod 0600 /etc/fortress/edge.env" \
+  < "$EDGE_ENV"
+rm -f "$EDGE_ENV"
 
 echo "==> [6/6] wire the WG tunnel interface"
 # The edge's WG identity is the store-held key (ADR-029, retained for a

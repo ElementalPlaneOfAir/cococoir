@@ -278,6 +278,17 @@ deletion unwires, never wipes.
   `MockMailer`; `SMTP_*`/`MAIL_FROM` optional secrets in
   `secretspec.toml` (absent → console). Proof: controlplane tests
   (mail + secret contract) + `nix flake check` all-pass.
+- **Resend relay provisioned (2026-09-16):** SMTP_* secrets in the
+  sops store (SMTP_HOST/USER/PASS — no provider-specific
+  RESEND_API_KEY name), declared in the root toml's `provisioning`
+  profile + `provision` scope; `provision-edge.sh` builds edge.env
+  locally (0600) and pipes it over ssh, appending SMTP_* only when
+  configured (USER/PASS lines only when non-empty — no-auth relays
+  stay absent, not empty). DKIM/SPF-CNAME/DMARC rrsets for
+  proletariat.tech in `tofu/dns.tf` (tofu validate green; applied on
+  next provision run, then verify in the Resend dashboard). Proof:
+  `bash -n` green + `secretspec export -S provision` emits all seven
+  keys incl. SMTP_*; live apply pending next provision run.
 - **T2 done (Account model + sessions + auth + reset):** Redis keys
   `fortress:account:{email}` (AccountRecord JSON: username, status
   pending→active, bcrypt password hash, plan), `fortress:username:{u}`
