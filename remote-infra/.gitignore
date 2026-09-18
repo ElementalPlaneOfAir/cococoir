@@ -1,10 +1,11 @@
-# Fortress remote-infra secrets and tofu state — never commit.
-# The API token comes from the HCLOUD_TOKEN env var. WireGuard
-# PRIVATE keys live here (public keys are read from here by tofu and
-# rendered into remote-infra/nix/, which is checked in).
-# .secrets/
+# Fortress remote-infra tofu state — never commit.
+# Secrets no longer live here: the store is the repo-root
+# secrets/secrets.enc.yaml (committed as age ciphertext), facts are
+# secrets/facts.json (committed plaintext). Anything committed
+# plaintext inside secrets/ is a bug — guarded by the L1 tripwire.
 .terraform/
 terraform.tfstate
 terraform.tfstate.*
 terraform.tfvars
 *.tfplan
+.terraform.lock.hcl

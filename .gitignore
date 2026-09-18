@@ -23,6 +23,10 @@ terraform.tfvars
 # never in the fortress source tree.
 sops/
 vars/
+
+# Plain-text decryptions of the secrets/ store must never land in git.
+secrets/*.dec.*
+secrets/plaintext/
 inventory.json
 
 *.qcow2

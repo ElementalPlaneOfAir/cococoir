@@ -16,6 +16,29 @@ tools exist, but the setup friction excludes 95% of people. Fortress
 removes the friction by shipping pre-configured hardware with
 deterministic, reproducible NixOS builds.
 
+## Install (container tier)
+
+macOS and regular Linux get one script — it detects the OS, installs
+docker (a no-op with a warning if it's already there) plus gum TUI,
+asks for a config folder, writes a small deployment flake into it,
+builds the full-OS container image, and boots the stack:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ElementalPlaneOfAir/cococoir/main/scripts/install.sh | bash
+```
+
+Then visit `https://jellyfin.vmtest.local:8443` (the script adds the
+`*.vmtest.local` /etc/hosts entries; self-signed demo cert; login
+`admin@example.com` / `password`).
+
+NixOS: the script skips the config-folder step (a NixOS install *is*
+the config), checks for docker, and otherwise prints the
+`virtualisation.docker.enable` snippet to add to `configuration.nix`.
+Honest boundary: the macOS path is untested — see
+`nixosConfigurations/fortress-container.nix` and the landmines in
+`docs/STATUS.md`.
+
+
 ## Current status
 
 - **v0 (shipped):** Go L4 TCP/UDP forwarder (`fortress-edge` +

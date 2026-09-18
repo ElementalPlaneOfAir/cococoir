@@ -260,13 +260,25 @@ pub fn Landing(props: &LandingProps) -> Node {
                 <section id="install" class="px-6 py-14 scroll-mt-16">
                     <div class="mx-auto max-w-3xl">
                         <h2 class="text-center text-3xl font-black uppercase mb-2">"Install on your own machines"</h2>
-                        <p class="text-center dim mb-10">"Runs on any x86-64 NixOS machine. Each machine is one file in your flake."</p>
+                        <p class="text-center dim mb-10">"macOS or regular Linux: the container tier in one command. NixOS: each machine is one file in your flake."</p>
 
                         <div class="flex flex-col gap-8">
                             {card("", rsx!(
                                 <>
                                     <div class="flex items-center gap-3">
                                         <span class="stepnum">"1"</span>
+                                        <h3 class="font-black uppercase">"macOS or Linux — no Nix yet"</h3>
+                                    </div>
+                                    <p class="text-sm dim mb-2">"Detects your OS, installs Docker (a warning + no-op if it's already there), writes a small deployment flake into a config folder you choose, builds the image, and boots the demo stack."</p>
+                                    {code_block("curl https://proletariat.tech/install.sh | bash")}
+                                    <p class="text-sm dim">"Then visit " <code class="text-red">"https://jellyfin.vmtest.local:8443"</code> " (the script adds the hosts entries; self-signed demo cert). Runs the demo tier in Docker — the full NixOS module below is the native path."</p>
+                                </>
+                            ))}
+
+                            {card("", rsx!(
+                                <>
+                                    <div class="flex items-center gap-3">
+                                        <span class="stepnum">"2"</span>
                                         <h3 class="font-black uppercase">"Add the flake input"</h3>
                                     </div>
                                     {code_block(r#"{
@@ -281,7 +293,7 @@ pub fn Landing(props: &LandingProps) -> Node {
                             {card("", rsx!(
                                 <>
                                     <div class="flex items-center gap-3">
-                                        <span class="stepnum">"2"</span>
+                                        <span class="stepnum">"3"</span>
                                         <h3 class="font-black uppercase">"Import the module"</h3>
                                     </div>
                                     {code_block(r#"{
@@ -293,7 +305,7 @@ pub fn Landing(props: &LandingProps) -> Node {
                             {card("", rsx!(
                                 <>
                                     <div class="flex items-center gap-3">
-                                        <span class="stepnum">"3"</span>
+                                        <span class="stepnum">"4"</span>
                                         <h3 class="font-black uppercase">"Enable services and rebuild"</h3>
                                     </div>
                                     {code_block(r#"fortress.services.jellyfin = { enable = true; public = true; };
@@ -307,7 +319,7 @@ sudo nixos-rebuild switch --flake .#mybox"#)}
                             {card("", rsx!(
                                 <>
                                     <div class="flex items-center gap-3">
-                                        <span class="stepnum">"4"</span>
+                                        <span class="stepnum">"5"</span>
                                         <h3 class="font-black uppercase">"Repeat per machine"</h3>
                                     </div>
                                     <p class="text-sm dim">"One flake, many machines. Each machine is its own " <code class="text-red">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-red">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
@@ -851,6 +863,13 @@ struct TokenQuery {
 }
 
 // ── handlers ───────────────────────────────────────────────────────
+
+#[handler]
+async fn install_sh() -> Response {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")
+        .body(include_str!("../../../../scripts/install.sh"))
+}
 
 #[handler]
 async fn landing(Data(state): Data<&AppState>, req: &Request) -> Response {
@@ -1463,6 +1482,7 @@ struct AccountDeleteForm {
 pub fn web_routes() -> Route {
     Route::new()
         .at("/", get(landing))
+        .at("/install.sh", get(install_sh))
         .at("/register", get(signup_page))
         .at("/login", get(login_page))
         .at("/forgot", get(forgot_page))
@@ -1582,6 +1602,35 @@ mod tests {
             let body = resp.0.into_body().into_string().await.unwrap();
             assert!(body.contains(needle), "{path} renders {needle}");
         }
+    }
+
+    /// Tripwire: `/install.sh` serves the real repo script, not a
+    /// stale copy — the landing one-liner must match what runs.
+    #[tokio::test]
+    async fn install_script_route_serves_the_repo_script() {
+        let Some((cp, mailer)) = setup() else {
+            eprintln!("skipping: REDIS_URL not set");
+            return;
+        };
+        let client = TestClient::new(test_app(cp, mailer));
+        let resp = client.get("/install.sh").send().await;
+        resp.assert_status(StatusCode::OK);
+        assert_eq!(
+            resp.0.headers()
+                .get(poem::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/x-shellscript; charset=utf-8"),
+            "shell content-type so `curl | bash` pipes through"
+        );
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(
+            body.contains("set -euo pipefail"),
+            "the served script is the repo install.sh"
+        );
+        assert!(
+            body.contains("GitHub") || body.contains("fortress-config"),
+            "the served script looks like the installer (config folder)"
+        );
     }
 
     #[tokio::test]
@@ -1898,6 +1947,13 @@ mod tests {
         })
         .to_html();
         assert!(html.contains("Install"), "landing has an install section");
+        assert!(
+            html.contains("curl https://proletariat.tech/install.sh | bash"),
+            "script one-liner documented"
+        );
+        assert!(
+            html.contains("macOS"), "macOS install path documented"
+        );
         assert!(
             html.contains("github:ElementalPlaneOfAir/cococoir"),
             "flake input documented"

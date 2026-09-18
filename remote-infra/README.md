@@ -9,21 +9,22 @@ deployment can be reviewed and modified in one place.
 ## Layout
 
 ```
+secrets/                     # THE folder a fresh-clone operator edits
+├── facts.json               # every public value (committed plaintext)
+└── secrets.enc.yaml         # sops store (committed as age ciphertext)
 remote-infra/
 ├── tofu/                    # OpenTofu: the source of truth
 │   ├── main.tf              # server, firewall, ssh key, address derivation
 │   ├── dns.tf               # proletariat.tech zone + records
 │   ├── render.tf            # renders the customer (NixOS) config from template
 │   ├── templates/           # example123.nix template
-│   ├── versions.tf          # hcloud + local providers
-│   └── terraform.tfvars.example
+│   └── versions.tf          # hcloud + local providers
 ├── nix/                     # RENDERED NixOS configs (checked in, public values)
 │   └── example123.nix       #   overwritten by tofu apply (customer box only)
 ├── system-manager/          # edge box config (stock Debian, no NixOS)
 │   └── edge.nix             #   applied via system-manager switch
-├── scripts/
-│   └── provision-edge.sh    # secretspec resolve -> tofu -> nix install -> system-manager -> wire WG
-└── .secrets/                # gitignored: secretspec provisioning store (token, admin key)
+└── scripts/
+    └── provision-edge.sh    # secretspec resolve -> tofu -> nix install -> system-manager -> wire WG
 ```
 
 ## Why this shape
@@ -39,12 +40,15 @@ remote-infra/
   (`cidrhost`) and flow into the DNS records, the customer NixOS
   config, and the provision script's WireGuard config. Change a
   variable → re-apply → everything stays consistent.
-- **Secrets never in git.** The Hetzner token + generated admin key
-  live in the secretspec provisioning store at `.secrets/`
-  (gitignored), resolved via `nix run .#secretspec -- export -P
-  provisioning -S <scope>`. WG identities are owned at runtime by the
-  edge binary — nothing here provisions key material. Only IPs land in
-  the rendered (checked-in) configs.
+- **Secrets: one folder, `secrets/`.** `facts.json` holds every
+  public value plaintext (committed — diffable in review). The Hetzner
+  token + generated admin key live in the sops store
+  `secrets/secrets.enc.yaml` (age-encrypted at rest, committed as
+  ciphertext — re-point `age_recipients` in `secretspec.toml` to your
+  own public key before use), resolved via `nix run .#secretspec --
+  export -P provisioning -S <scope>`. WG identities are owned at
+  runtime by the edge binary — nothing here provisions key material.
+  Only IPs land in the rendered (checked-in) configs.
 
 ## The IPv6 model being provisioned
 
@@ -64,18 +68,18 @@ challenge traffic rides the same blind forwards as everything else.
 ## Setup
 
 ```bash
-# 1. Set the Hetzner token in the secretspec provisioning store
-#    (never committed). Create a write-enabled token at
-#    console.hetzner.cloud -> Security -> API Tokens.
+# 1. Re-encrypt the store to YOUR age key (public key already in
+#    secretspec.toml's age_recipients — replace it, run sops updatekeys).
+#    Then set a write-enabled Hetzner token (console.hetzner.cloud ->
+#    Security -> API Tokens) in the provisioning store:
 nix run .#secretspec -- set HETZNER_TOKEN '<your-token>' \
   -p provisioning_store -P provisioning -f ./secretspec.toml --reason "first-time setup"
 
 # 2. Tooling.
 nix develop  # or: nix shell nixpkgs#opentofu nixpkgs#jq
 
-# 3. Variables.
-cp tofu/terraform.tfvars.example tofu/terraform.tfvars
-# edit: domain, customer, ssh_public_key
+# 3. Values. Edit secrets/facts.json — domain, customer,
+#    ssh_public_key, server type/location, WG subnet/port, all of it.
 
 # 4. Provision everything.
 bash scripts/provision-edge.sh
@@ -106,7 +110,8 @@ at runtime).
 
 Everything is declarative. To change something:
 
-- **Server/location/image**: `tofu/variables.tf`, re-apply.
+- **Server/location/image**: `secrets/facts.json`, then re-run
+  `scripts/provision-edge.sh`.
 - **Another customer**: add a `/128` derivation in `main.tf`, a record
   in `dns.tf`; the WG peer is registered via the control plane's
   `/signup` at runtime (deferred); re-apply + rebuild.

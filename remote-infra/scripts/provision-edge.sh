@@ -12,9 +12,10 @@
 # Secrets resolve through the secretspec CLI, pinned to 0.19 via the
 # repo flake (`nix run .#secretspec`) — the devshell's `secretspec`
 # comes from devenv's own nixpkgs and lacks the file provider backend.
-# The provisioning profile is the single store at remote-infra/.secrets
-# (gitignored), an age-encrypted SOPS file since the 2026-09-07
-# migration; scopes carve it per consumer: `token` for tofu
+# Operators edit exactly one folder: secrets/facts.json (all public
+# values, committed) and secrets/secrets.enc.yaml (the age-encrypted
+# SOPS store, committed as ciphertext). The provisioning profile is the
+# single store; scopes carve it per consumer: `token` for tofu
 # (HCLOUD_TOKEN), `provision` for edge.env (token + admin key).
 #
 # Prereqs:
@@ -27,10 +28,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 TOFU_DIR="tofu"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-# The standalone provisioning toml at the repo root (operator-side only),
-# so the file: provider root (`./remote-infra/.secrets`) resolves against
-# the repo root.
+TOFU_ROOT="$(git rev-parse --show-toplevel)/secrets"
+# The standalone provisioning toml at the repo root (operator-side
+# only), so the sops provider root (`./secrets`) resolves against the
+# repo root.
 TOML="$REPO_ROOT/secretspec.toml"
+FACTS="$TOFU_ROOT/facts.json"
+
+[ -f "$FACTS" ] || { echo "missing $FACTS — it is the committed source of all public tofu values"; exit 1; }
 
 command -v tofu >/dev/null || command -v opentofu >/dev/null \
   || { echo "missing opentofu (the 'tofu' binary)"; exit 1; }
@@ -47,7 +52,7 @@ echo "==> [2/6] tofu apply"
 (
   cd "$TOFU_DIR"
   "$TOFU" init
-  "$TOFU" apply -auto-approve
+  "$TOFU" apply -auto-approve -var-file="$FACTS"
 )
 
 EDGE_IPV4=$("$TOFU" -chdir="$TOFU_DIR" output -raw edge_ipv4)
