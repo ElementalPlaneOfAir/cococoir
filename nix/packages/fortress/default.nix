@@ -23,16 +23,32 @@
 let
   craneLib = crane.mkLib pkgs;
   # The workspace root (this file lives at nix/packages/fortress/, so
-  # the root is three levels up). `cleanCargoSource` keeps only what
-  # cargo needs (Cargo.toml/lock + src) but drops `secretspec.toml` (an
-  # unknown extension) — and `declare_secrets!` reads that toml at
-  # compile time relative to CARGO_MANIFEST_DIR. So layer the tomls back
-  # on top.
+  # the root is three levels up). crane's own `cleanCargoSource` keeps
+  # only .rs / .toml / Cargo.lock / .cargo/config — and nested
+  # cleanSourceWith layers compose conjunctively, so a filter applied
+  # on top of an already-filtered tree can NOT resurrect files the
+  # inner filter dropped (verified empirically 2026-09-18). So the
+  # filter below is a UNION evaluated directly against the raw tree:
+  #   - the .rs / .toml / Cargo.lock / .cargo/config rules crane keeps
+  #   - `secretspec.toml`              (crates/*/secretspec.toml — read
+  #                                    at compile time by declare_secrets!)
+  #   - `*.js` under any `/assets/`    vendored SPA assets (crates/web-ui)
+  #   - `install.sh`                   scripts/install.sh (include_str! in
+  #                                    crates/controlplane/…/web.rs)
+  # Files outside the allowlist are pruned; the junk dirs (.git,
+  # .direnv, target, result) survive as empty, fileless dirs.
   src = lib.cleanSourceWith {
-    src = craneLib.cleanCargoSource ../../..;
+    src = ../../..;
     filter = path: type:
-      (lib.cleanSourceFilter path type)
-      || (baseNameOf path == "secretspec.toml");
+      (type == "directory")
+      || (lib.any (suffix: lib.hasSuffix suffix (baseNameOf path)) [
+        ".rs"
+        ".toml"
+      ])
+      || (baseNameOf path == "Cargo.lock")
+      || (baseNameOf path == "secretspec.toml")
+      || (lib.hasSuffix ".js" (baseNameOf path) && lib.hasInfix "/assets/" path)
+      || (baseNameOf path == "install.sh");
   };
   commonArgs = {
     inherit src;

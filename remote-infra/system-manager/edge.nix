@@ -114,7 +114,7 @@
     # The binary shells out to `wg set` to install its runtime identity
     # into wg0; give the unit the wg binary on PATH (systemd's default
     # PATH lacks /run/current-system/sw/bin).
-    path = [pkgs.wireguard-tools];
+    path = [ pkgs.wireguard-tools ];
     serviceConfig = {
       Type = "simple";
       # The store URL is NOT a unit flag here: it is the secret REDIS_URL
