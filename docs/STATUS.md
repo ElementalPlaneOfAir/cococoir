@@ -39,21 +39,32 @@ Regenerated: 2026-09-18T02:10:40Z — git a58ea1d
   (container tier)" section added.
 
 ## Works
-
-- **axum + dioxus migration scaffold + Redis tier split (2026-09-18,
-  ADR-033 pending)** — branch `axum-dioxus-migration`: (1) the site
-  crate `crates/site` serves `/install.sh` (embedded repo script) and
-  a path-based `/docs/{slug}` markdown wiki rendered with
-  pulldown-cmark (dioxus fullstack rsx scaffold lands next session —
-  it needs the `wasm32-unknown-unknown` client target, not yet
-  installed); (2) the store-backed test tier that requires a real
-  Redis is features-gated behind `redis-tests` (default off):
+- **axum + dioxus fullstack site (2026-09-18, ADR-033 in
+  progress)** — branch `axum-dioxus-migration`: the site crate
+  `crates/site` is dioxus 0.7 fullstack on axum 0.8. Plain axum
+  routes (hard, they win) serve `/install.sh` (embedded repo script)
+  and the pulldown-cmark markdown wiki `/docs{,/{slug}}`; the dioxus
+  SSR application is the router fallback (currently the `/` landing
+  with the curl card; app pages move here next). SSR is wired with
+  the `serve_api_application` chain — `serve_dioxus_application`'s
+  static-assets step panics without a dx-CLI `public/` dir, so it is
+  deliberately skipped until the wasm client bundle exists
+  (`hyper`-plate web feature is wired in
+  Cargo.toml; `dx`-CLI web/hydration build UNTESTED — the wasm
+  stdlib is confirmed present in the system toolchain). The
+  store-backed test tier that requires a real Redis is features-gated
+  behind `redis-tests` on the controlplane (default off):
   `cargo test -p fortress-controlplane` = pure surfaces only,
-  `--features redis-tests` = the deployment set. Proof: default tier
-  green (80 pass / 0.21s, zero Redis reachable) + deployment tier
-  green with valkey-server online (83 pass / 12s, incl.
-  redis_store_round_trip + api_invites + api_users). README +
-  `docs/STATUS.md` TODO-cleanup entry landed.
+  `--features redis-tests` = the deployment set. Proof: fortress-site
+  tests 7/7 (incl. SSR landing renders the curl card, install.sh
+  content-type tripwire, docs index/page renders) + live boot smoke
+  (200 on `/`, `/install.sh` correct content-type, `/docs/nixos`)
+  + workspace `cargo build` clean + controlplane tiers green
+  (80/0.21s default; 83/12s with valkey online). OPEN: the crane src
+  filter gained a `.md`-under-content/docs rule (include_str! needs
+  it) — the full `nix build` of fortress with the filtered src is not
+  yet proven (vendor+deps drvs evaluated; the native compile wasn't
+  reached in-session).
 
 - **secrets/ single-folder provisioning config (2026-09-18,
   secrets-folder-refactor)** — all operator-editable provisioning values

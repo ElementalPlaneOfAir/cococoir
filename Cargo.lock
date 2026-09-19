@@ -1172,6 +1172,7 @@ dependencies = [
  "dioxus-stores",
  "dioxus-web",
  "manganis",
+ "serde",
  "subsecond",
  "warnings",
 ]
@@ -1714,6 +1715,7 @@ dependencies = [
  "dioxus-core-types",
  "dioxus-devtools",
  "dioxus-document",
+ "dioxus-fullstack-core",
  "dioxus-history",
  "dioxus-html",
  "dioxus-interpreter-js",
@@ -2011,8 +2013,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dioxus",
- "fortress-web-ui",
- "momenta",
+ "dioxus-cli-config",
  "pulldown-cmark",
  "tokio",
  "tower",

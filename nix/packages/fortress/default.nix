@@ -32,6 +32,8 @@ let
   #   - the .rs / .toml / Cargo.lock / .cargo/config rules crane keeps
   #   - `secretspec.toml`              (crates/*/secretspec.toml — read
   #                                    at compile time by declare_secrets!)
+  #   - `*.md` under /content/docs/    the site wiki markdown
+  #                                    (include_str! in crates/site)
   #   - `*.js` under any `/assets/`    vendored SPA assets (crates/web-ui)
   #   - `install.sh`                   scripts/install.sh (include_str! in
   #                                    crates/controlplane/…/web.rs)
@@ -47,6 +49,7 @@ let
       ])
       || (baseNameOf path == "Cargo.lock")
       || (baseNameOf path == "secretspec.toml")
+      || (lib.hasSuffix ".md" (baseNameOf path) && lib.hasInfix "/content/docs/" path)
       || (lib.hasSuffix ".js" (baseNameOf path) && lib.hasInfix "/assets/" path)
       || (baseNameOf path == "install.sh");
   };

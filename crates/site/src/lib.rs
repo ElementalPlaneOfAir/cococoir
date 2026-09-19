@@ -1,15 +1,38 @@
-//! SPDX-License-Identifier: AGPL-3.0-or-later
-//!
-//! The site crate: the static surfaces in one axum router. The doc
-//! renderer takes real markdown from `content/docs/` (the only
-//! editable surface), renders it with pulldown-cmark at request
-//! time, and inlines the zine tokens + doc CSS — the zero-third-
-//! party-origin law carries over from the box's pages. The dioxus
-//! fullstack rsx scaffold for the stateful pages lands next session
-//! (it needs the `wasm32-unknown-unknown` client target, not yet
-//! installed on this toolchain); the poem controlplane continues to
-//! host the app pages (register/login/machines) until that cut.
-use pulldown_cmark::{html, Options, Parser};
+//! The site crate, one dioxus fullstack surface: plain axum routes for
+//! `/install.sh` and the markdown wiki (document-origin-only rendering
+//! law), plus dioxus SSR for the stateful pages. The axum tier is
+//! disabled when the client (`dx --platform web`) compiles with
+//! `--no-default-features --features web`, since axum cannot run on
+//! wasm.
+use dioxus::prelude::*;
+
+#[component]
+pub fn App() -> Element {
+    rsx! {
+        Router::<Route> {}
+    }
+}
+
+#[derive(Clone, Routable, Debug, PartialEq)]
+pub enum Route {
+    #[route("/")]
+    Home {},
+}
+
+#[component]
+pub fn Home() -> Element {
+    rsx! {
+        main {
+            h1 { "Fortress" }
+            p { "Your own private internet: chat, files, pics and videos of the backend." }
+            pre { class: "install", "curl https://proletariat.tech/install.sh | bash" }
+            a { href: "/docs", "Read the docs" }
+        }
+        style { {doc_css()} }
+    }
+}
+
+pub fn doc_css() -> &'static str { DOC_CSS }
 
 pub const DOC_CSS: &str = r#"
   :root { --paper: #f3eee3; --ink: #16110b; --red: #d02a1e; --red-deep: #8f1410; }
@@ -103,9 +126,9 @@ pub fn doc_html(slug: &str) -> Result<String, DocError> {
         .find(|(s, ..)| *s == slug)
         .expect("page_exists gates slugs to DOC_PAGES entries");
     let md: &str = page.3;
-    let parser = Parser::new_ext(md, Options::ENABLE_TASKLISTS);
+    let parser = ::pulldown_cmark::Parser::new_ext(md, ::pulldown_cmark::Options::ENABLE_TASKLISTS);
     let mut out = String::with_capacity(md.len());
-    html::push_html(&mut out, parser);
+    ::pulldown_cmark::html::push_html(&mut out, parser);
     Ok(doc_code_restyle(&out))
 }
 
@@ -113,57 +136,172 @@ fn doc_code_restyle(rendered: &str) -> String {
     rendered.replace("<pre><code>", "<pre><code class=\"doc-code\">")
 }
 
-// ── axum surface ──────────────────────────────────────────────────
+// ── axum surface (server tier only) ───────────────────────────────
 
-use axum::extract::Path;
-use axum::http::header;
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+#[cfg(feature = "server")]
+pub use server::fullstack_router;
 
-async fn install_sh_route() -> Response {
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
-        include_str!("../../../scripts/install.sh"),
-    )
-        .into_response()
-}
+#[cfg(feature = "server")]
+mod server {
+    use super::*;
+    use axum::extract::Path;
+    use axum::http::header;
+    use axum::http::StatusCode;
+    use axum::response::{Html, IntoResponse, Response};
+    use axum::routing::get;
+    use axum::Router;
 
-async fn docs_index_route() -> Response {
-    let items: Vec<String> = DOC_PAGES
-        .iter()
-        .map(|(slug, title, _, _)| {
-            let title: &str = title;
-            format!("<li><a href=\"/docs/{slug}\">{title}</a></li>")
-        })
-        .collect();
-    let index = format!("<ul>{}</ul>", items.join(""));
-    Html(format!("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Fortress — Docs</title><style>{DOC_CSS}</style></head><body><main><h1>Docs</main></main>{index}</body></html>", index = index))
-        .into_response()
-}
-
-async fn docs_page_route(Path(slug): Path<String>) -> Response {
-    if page_exists(&slug).is_err() {
-        return (StatusCode::NOT_FOUND, "no such doc").into_response();
+    async fn install_sh_route() -> Response {
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
+            include_str!("../../../scripts/install.sh"),
+        )
+            .into_response()
     }
-    let body = doc_html(&slug).expect("page_exists gated the slug");
-    let doc = format!(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Fortress — Docs</title><style>{DOC_CSS}</style></head><body><article class=\"doc\">{body}</article></body></html>"
-    );
-    Html(doc).into_response()
+
+    async fn docs_index_route() -> Response {
+        let items: Vec<String> = DOC_PAGES
+            .iter()
+            .map(|(slug, title, _, _)| {
+                let title: &str = title;
+                format!("<li><a href=\"/docs/{slug}\">{title}</a></li>")
+            })
+            .collect();
+        let index = format!("<ul>{}</ul>", items.join(""));
+        Html(format!(
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Fortress — Docs</title><style>{}</style></head><body><main><h1>Docs</h1></main>{index}</body></html>",
+            DOC_CSS,
+            index = index
+        ))
+        .into_response()
+    }
+
+    async fn docs_page_route(Path(slug): Path<String>) -> Response {
+        if page_exists(&slug).is_err() {
+            return (StatusCode::NOT_FOUND, "no such doc").into_response();
+        }
+        let body = doc_html(&slug).expect("page_exists gated the slug");
+        let doc = format!(
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Fortress — Docs</title><style>{}</style></head><body><article class=\"doc\">{body}</article></body></html>",
+            DOC_CSS
+        );
+        Html(doc).into_response()
+    }
+
+    /// The site router: hard routes first (they win), then the dioxus
+    /// SSR application as fallback for everything else (the `/`
+    /// landing, later the app pages). SSR is wired with the
+    /// `serve_api_application` chain — no dx-generated asset dir to
+    /// serve, so the static-assets step (which panics without a
+    /// `public/` dir) is deliberately skipped.
+    pub fn fullstack_router() -> Router {
+        use dioxus::prelude::dioxus_server::{DioxusRouterExt, FullstackState, ServeConfig};
+        Router::new()
+            .route("/install.sh", get(install_sh_route))
+            .route("/docs", get(docs_index_route))
+            .route("/docs/{page}", get(docs_page_route))
+            .with_state(FullstackState::headless())
+            .register_server_functions()
+            .fallback(get(FullstackState::render_handler))
+            .with_state(FullstackState::new(ServeConfig::new(), App))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tower::ServiceExt;
+
+        #[tokio::test]
+        async fn install_sh_serves_the_repo_script() {
+            let response = fullstack_router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/install.sh")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "text/x-shellscript; charset=utf-8"
+            );
+        }
+
+        #[tokio::test]
+        async fn landing_ssr_renders_the_curl_card() {
+            let response = fullstack_router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Vec<u8> = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            let body = String::from_utf8(body).unwrap();
+            assert!(
+                body.contains("curl https://proletariat.tech/install.sh | bash"),
+                "the landing renders the curl card: {body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn docs_index_lists_every_page() {
+            let response = fullstack_router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/docs")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Vec<u8> = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            let body = String::from_utf8(body).unwrap();
+            for (slug, ..) in DOC_PAGES {
+                assert!(body.contains(slug), "docs index lists '{slug}'");
+            }
+        }
+
+        #[tokio::test]
+        async fn docs_page_renders_markdown() {
+            let response = fullstack_router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/docs/nixos")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Vec<u8> = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            let body = String::from_utf8(body).unwrap();
+            assert!(
+                body.contains("<h2"),
+                "the nixos doc renders headings: {body}"
+            );
+        }
+    }
 }
 
-pub fn site_routes() -> Router {
-    Router::new()
-        .route("/install.sh", get(install_sh_route))
-        .route("/docs", get(docs_index_route))
-        .route("/docs/{page}", get(docs_page_route))
-}
-
-#[cfg(test)]
-mod tests {
+#[cfg(all(test, feature = "server"))]
+mod doc_tests {
     use super::*;
 
     #[test]
@@ -192,35 +330,5 @@ mod tests {
     #[test]
     fn unknown_slug_is_not_found_loudly() {
         assert!(doc_html("no-such-page").is_err());
-    }
-
-    #[tokio::test]
-    async fn install_sh_serves_the_repo_script() {
-        use axum::body::Body;
-        use tower::ServiceExt;
-        assert_eq!(
-            site_routes()
-                .oneshot(axum::http::Request::builder().uri("/install.sh").body(axum::body::Body::empty()).unwrap())
-                .await
-                .unwrap()
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .unwrap(),
-            "text/x-shellscript; charset=utf-8"
-        );
-    }
-
-    #[tokio::test]
-    async fn docs_index_lists_every_page() {
-        use tower::ServiceExt;
-        let response = site_routes()
-            .oneshot(axum::http::Request::builder().uri("/docs").body(axum::body::Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let body: Vec<u8> = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec();
-        let body = String::from_utf8(body).unwrap();
-        for (slug, ..) in DOC_PAGES {
-            assert!(body.contains(slug), "docs index lists '{slug}'");
-        }
     }
 }
