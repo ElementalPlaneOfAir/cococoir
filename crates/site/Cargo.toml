@@ -1,0 +1,17 @@
+[package]
+name = "fortress-site"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+momenta = "0.3.3"
+fortress-web-ui = { path = "../web-ui" }
+axum = "0.8"
+dioxus = { version = "0.7", features = ["web", "server", "router"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

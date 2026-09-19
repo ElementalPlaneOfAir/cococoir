@@ -35,6 +35,14 @@ hex = "0.4"
 bcrypt = "0.17"
 uuid = { version = "1", features = ["v4"] }
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 poem = { workspace = true, features = ["test"] }
+
+[features]
+# Default tiers: `cargo test -p fortress-controlplane` runs the pure
+# L0/L1 surfaces only. The store-backed tier that requires a real
+# Redis (the "inside a deployment" set) is behind this flag:
+#   cargo test -p fortress-controlplane --features redis-tests
+redis-tests = []

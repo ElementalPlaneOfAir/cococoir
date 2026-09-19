@@ -1585,6 +1585,7 @@ mod tests {
     /// run a Redis). Proves the full signup→list→delete round trip
     /// against the actual store, including the routing table + live
     /// forwarder mutation.
+    #[cfg(feature = "redis-tests")]
     #[tokio::test]
     async fn redis_store_round_trip() {
         let url = match std::env::var("REDIS_URL") {
@@ -2033,6 +2034,7 @@ mod tests {
     /// approve names it → poll delivers the tunnel config + device
     /// token once → the token rotates the key without AdminKey. Skipped
     /// unless REDIS_URL is set.
+    #[cfg(feature = "redis-tests")]
     #[tokio::test]
     async fn api_invites_round_trip() {
         use crate::controlplane::dns::MockDnsApiClient;
@@ -2205,6 +2207,7 @@ mod tests {
         assert_eq!(resp.0.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "redis-tests")]
     #[tokio::test]
     async fn api_users_round_trip() {
         use crate::controlplane::dns::MockDnsApiClient;

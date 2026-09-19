@@ -122,6 +122,9 @@ install_docker() {
       warn "Docker not found. On NixOS it belongs in configuration.nix, not a script:"
       msg "  # add to your configuration.nix, then nixos-rebuild switch:"
       msg "  virtualisation.docker.enable = true;"
+      msg "Full NixOS walk-through: https://proletariat.tech/docs/nixos"
+      msg "Stopping here — re-run once docker is enabled."
+      exit 0
       ;;
   esac
   if [ "$OS" != nixos ]; then

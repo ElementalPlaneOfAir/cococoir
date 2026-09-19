@@ -40,6 +40,21 @@ Regenerated: 2026-09-18T02:10:40Z — git a58ea1d
 
 ## Works
 
+- **axum + dioxus migration scaffold + Redis tier split (2026-09-18,
+  ADR-033 pending)** — branch `axum-dioxus-migration`: (1) the site
+  crate `crates/site` serves `/install.sh` (embedded repo script) and
+  a path-based `/docs/{slug}` markdown wiki rendered with
+  pulldown-cmark (dioxus fullstack rsx scaffold lands next session —
+  it needs the `wasm32-unknown-unknown` client target, not yet
+  installed); (2) the store-backed test tier that requires a real
+  Redis is features-gated behind `redis-tests` (default off):
+  `cargo test -p fortress-controlplane` = pure surfaces only,
+  `--features redis-tests` = the deployment set. Proof: default tier
+  green (80 pass / 0.21s, zero Redis reachable) + deployment tier
+  green with valkey-server online (83 pass / 12s, incl.
+  redis_store_round_trip + api_invites + api_users). README +
+  `docs/STATUS.md` TODO-cleanup entry landed.
+
 - **secrets/ single-folder provisioning config (2026-09-18,
   secrets-folder-refactor)** — all operator-editable provisioning values
   live in `secrets/`: `facts.json` (every public tofu value, committed
