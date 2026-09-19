@@ -180,12 +180,14 @@ Regenerated: 2026-09-19T15:31:18Z — git 2de6cd2
 - **Local edge dev loop via `--dummy`** (2026-09-15) — the real edge
   binary runs on a dev box with no secrets/wg0/DNS: injected mock
   WG/DNS clients, console mailer, real forwarder + Redis store + HTTP
-  wiring. `--dummy` compiles ONLY into debug builds (`cfg!`
+  wiring.   `--dummy` compiles ONLY into debug builds (`cfg!`
   `debug_assertions`) — a release edge rejects it (tripwire tests in
   both profiles). `nix run .#dashboard-dev` now boots a throwaway
-  redis + the dummy edge at :8081. Proof: `cargo test -p
-  fortress-controlplane` PASS; debug boot served `/` 200 +
-  `/api/healthz` ok; release `--dummy` errors.
+  redis + the dummy edge at :8081 + the fortress-site crate at :8082
+  (site process added to nix/dev/process-compose.nix). Proof:
+  `cargo test -p fortress-controlplane` PASS; debug boot served `/`
+  200 + `/api/healthz` ok; release `--dummy` errors; pc run 2026-09-18
+  served site landing + `/docs/nixos` 200 and the edge API 200.
 
 - **Accounts + machine enrollment, T4–T9 (2026-09-16, ADR-032).** The
   self-serve onboarding layer: account = email + internal UUID (no

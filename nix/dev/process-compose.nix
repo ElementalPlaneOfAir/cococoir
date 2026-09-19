@@ -55,5 +55,12 @@
         exec ${pkgs.cargo}/bin/cargo run --quiet --bin fortress-edge -- --dummy --subnet fd00::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081
       '';
     };
+    # The site crate (landing, /docs wiki, /install.sh) on 8082.
+    # Plain axum + dioxus SSR; independent of the edge's Redis.
+    site = {
+      command = ''
+        exec ${pkgs.cargo}/bin/cargo run --quiet --bin fortress-site
+      '';
+    };
   };
 }
