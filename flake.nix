@@ -34,6 +34,13 @@
       url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Wasm toolchains (rust-bin with a wasm32-unknown-unknown target) —
+    # the documented path for cross-target Rust builds with crane
+    # (crane.dev custom-toolchain + trunk examples).
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs: let
@@ -136,6 +143,14 @@
         devAdminHash =
           "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
       in {
+        packages = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          # The fortress-site wasm bundle: dx 0.7.10 client build +
+          # the SSR server binary. ADR-033's deployable site artifact.
+          siteBundle = realPkgs.callPackage ./nix/packages/site {
+            crane = inputs.crane;
+            rustOverlay = inputs.rust-overlay;
+          };
+        };
         checks = import ./nix/tests {
           inherit (withCrane system) pkgs;
           sopsModule = inputs.sops-nix.nixosModules.sops;

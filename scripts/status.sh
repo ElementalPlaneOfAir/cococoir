@@ -56,7 +56,13 @@ fi
 # secret file and `git add`s it (tfvars habit, or `git add secrets/`).
 # Assert the tracked file list never contains a terraform.tfvars or a
 # non-encrypted file under secrets/.
-leaked=$(git ls-files -- secrets remote-infra/tofu | grep -Ev 'secrets/.*\.enc\.' | grep -E '(^|/)terraform\.tfvars|^secrets/' || true)
+# facts.json is the sanctioned exception: every value in it is
+# public-by-design (tofu vars that replaced terraform.tfvars) — it is
+# allowlisted here explicitly, so any OTHER plaintext file under
+# secrets/ still trips this.
+leaked=$(git ls-files -- secrets remote-infra/tofu \
+  | grep -Ev 'secrets/.*\.enc\.|^secrets/facts\.json$' \
+  | grep -E '(^|/)terraform\.tfvars|^secrets/' || true)
 if [ -n "$leaked" ]; then
   echo "status.sh: PLAINTEXT SECRETS/CONFIG TRACKED IN GIT:" >&2
   echo "$leaked" | sed 's/^/  LEAKED: /' >&2

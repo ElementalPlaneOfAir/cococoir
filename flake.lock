@@ -247,8 +247,29 @@
         "import-tree": "import-tree",
         "jellarr": "jellarr",
         "nixpkgs": "nixpkgs",
+        "rust-overlay": "rust-overlay",
         "sops-nix": "sops-nix",
         "system-manager": "system-manager"
+      }
+    },
+    "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1789802016,
+        "narHash": "sha256-QVFfArbYaQMGK4dFV+5RUL72Ci+hNHVhaF/R9qJfDhs=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "26a71e661c47bd21a05d06fec749f3f7c75e9d12",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
       }
     },
     "sops-nix": {
