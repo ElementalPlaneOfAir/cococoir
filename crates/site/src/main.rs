@@ -4,10 +4,12 @@ mod server_main {
 
     #[tokio::main]
     pub async fn run() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:8082")
+        // 0.0.0.0 — the site is a public surface (the edge on :8081
+        // binds the same way); 127.0.0.1 would strand it on the dev box.
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:8082")
             .await
-            .expect("fortress-site: reserve 127.0.0.1:8082");
-        println!("fortress-site serving on 127.0.0.1:8082");
+            .expect("fortress-site: reserve 0.0.0.0:8082");
+        println!("fortress-site serving on 0.0.0.0:8082");
         axum::serve(listener, fullstack_router())
             .await
             .expect("fortress-site: serve");
