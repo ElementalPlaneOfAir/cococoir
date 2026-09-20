@@ -831,8 +831,8 @@ pub fn control_plane() -> &'static ControlPlane {
 /// boot secrets (`--dummy`). The WG key is a valid x25519 base64 string
 /// so the pubkey derivation (`ControlPlane::edge_public_key`) works if a
 /// dev box is ever used for a real signup round trip.
-const DUMMY_ROOT_DOMAIN: &str = "dev.local";
-const DUMMY_EDGE_WG_PRIV: &str = "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=";
+pub const DUMMY_ROOT_DOMAIN: &str = "dev.local";
+pub const DUMMY_EDGE_WG_PRIV: &str = "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=";
 
 /// Initialize the process globals, hydrating the live forwarder from
 /// Redis before it becomes visible. Order matters: forwarder → control
@@ -1495,7 +1495,7 @@ impl ControlPlane {
     /// parallel store-backed tests never race one allocation clock
     /// (INCR is atomic, but one test's counter cleanup must not reset
     /// another test's clock mid-flight).
-    pub(crate) fn isolated_alloc(mut self, key: &'static str) -> Self {
+    pub fn isolated_alloc(mut self, key: &'static str) -> Self {
         self.alloc_key = key;
         self
     }

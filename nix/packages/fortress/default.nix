@@ -51,6 +51,8 @@ let
       || (baseNameOf path == "secretspec.toml")
       || (lib.hasSuffix ".md" (baseNameOf path) && lib.hasInfix "/content/docs/" path)
       || (lib.hasSuffix ".js" (baseNameOf path) && lib.hasInfix "/assets/" path)
+      # the site's committed zine shell (include_str! in crates/site)
+      || (baseNameOf path == "index.html" && lib.hasInfix "/crates/site/public/" path)
       || (baseNameOf path == "install.sh");
   };
   commonArgs = {

@@ -76,6 +76,57 @@ This session: T0 + T1 (scaffold compiles, smoke test at L0),
 STATUS.md updated in same commit. Poem application tier continues
 to serve the public site until T2/T3.
 
+## T2a cut (register + login + session round-trip, 2026-09-19)
+
+Architecture decision: the dioxus site **embeds the ControlPlane**
+(server-gated `fortress-controlplane` dep), not an HTTP call to
+poem. Matches AC4's one-binary end state; reuses the account domain
+methods; adds no poem API surface. Verified against dioxus 0.7.10
+source: `#[server]` fn bodies are `#[cfg(feature = "server")]`-gated
+(dioxus-fullstack-macro src/lib.rs:502/526), so the wasm tier never
+compiles the controlplane dep; `Form<T>` is a supported input
+encoding (dioxus-fullstack payloads/form.rs:3), and `FullstackContext`
+exposes both request extraction and `add_response_header` for the
+session cookie.
+
+**UI ergonomics — no htmx replication.** The poem surface is
+form-POST-then-server-rerenders; the dioxus surface uses fullstack
+ergonomics instead: dioxus components hold form state (`use_signal`),
+call `#[server]` fns that return typed outcomes (serde structs), and
+the server fn sets the `fortress_account_session` HttpOnly cookie via
+`FullstackContext::add_response_header` on success. No `<form
+action>` round-trips, no partial-page re-render.
+
+Cut contents:
+- T2a1: site gains `fortress-controlplane` (server-gated) + serde.
+- T2a2: boot wiring — site server main inits a forwarder-free
+  ControlPlane against Redis (account methods are pure Redis+mailer;
+  the site must NOT own the forwarder/wg0, that is the edge's job).
+- T2a3: `#[server]` fns `signup`, `login`, `logout`, `current_session`
+  reading the cookie from `headers: HeaderMap` and setting it on the
+  response via `add_response_header`.
+- T2a4: dioxus `RegisterPage`/`LoginPage` components + routes; the
+  landing's `logged_in` flag wired to a `current_session` call.
+- T2a5: L0 round-trip tests against the new surface (redis-gated),
+  proving signup→verify→login→session→logout against real Redis.
+
+Deferred to T2b: forgot/reset/verify/resend/verify-notice pages,
+the machines dashboard + invites, `/a/:code` join page.
+
+**T2a DONE (2026-09-20)** — all five tasks landed. Proof:
+`cargo test -p fortress-site` = 9/9 incl. the redis-gated
+`signup_verify_login_logout_fullstack_round_trip` driving the real
+surface end-to-end (REDIS_URL=redis://127.0.0.1:6379); live-server
+smoke (debug bundle, `--dummy`) showed signup→verify→login→logged-in
+landing→logout→logged-out landing against :8082; `nix flake check`
+PASS; `nix build .#siteBundle` PASS; wasm tier `cargo check` clean.
+Deliberately did NOT build a `verify` page yet — only the server fn
+(needed for the lifecycle round trip). Amended from the original
+plan where reality bit: the server-fn endpoint paths are relative to
+the `/api` prefix (dioxus concats prefix+route), and the `src` fileset
+only sees git-tracked files (account.rs must be `git add`-ed before
+the nix build sees it).
+
 ## Strongest objection
 
 The machines dashboard is a *wired re-render+React-style* surface

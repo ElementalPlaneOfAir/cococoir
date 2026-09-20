@@ -7,15 +7,22 @@ license = "AGPL-3.0-or-later"
 [dependencies]
 dioxus = { version = "0.7", features = ["fullstack", "router"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+fortress-web-ui = { path = "../web-ui" }
+serde.workspace = true
 
 dioxus-cli-config = { version = "0.7", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] , optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
+# The account + session domain logic, embedded in-process on the server
+# tier only. The dioxus `#[server]` fn bodies that touch it are
+# `#[cfg(feature = "server")]`-gated, so the wasm client tier never
+# compiles this dependency.
+fortress-controlplane = { path = "../controlplane", optional = true }
 
 [features]
 default = ["server"]
-server = ["dioxus/server", "dep:axum", "dep:tokio", "dep:tower", "dioxus-cli-config"]
+server = ["dioxus/server", "dep:axum", "dep:tokio", "dep:tower", "dioxus-cli-config", "dep:fortress-controlplane"]
 web = ["dioxus/web"]
 
 [dev-dependencies]

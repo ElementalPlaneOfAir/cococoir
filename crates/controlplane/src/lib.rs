@@ -8,5 +8,10 @@ pub mod controlplane;
 pub use controlplane::{
     app, control_plane, forwarder, generate_wg_keypair, init_globals, validate_machine_name,
     AdminKey, ControlPlane, ControlPlaneError, DnsApiClient, DnsError, HetznerDns, Machine,
-    MockDnsApiClient, RealWgClient, SignupResponse, Subnet64, WgClient, WgError, WgSubnet,
+    MockDnsApiClient, MockWgClient, RealWgClient, SignupResponse, Subnet64, WgClient, WgError,
+    WgSubnet, DUMMY_EDGE_WG_PRIV, DUMMY_ROOT_DOMAIN,
+};
+pub use controlplane::web::{
+    account_error_message, clear_session_cookie_header, read_cookie_from_headers,
+    session_cookie_header, SESSION_COOKIE,
 };

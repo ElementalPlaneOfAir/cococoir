@@ -6,6 +6,8 @@
 //! wasm.
 use dioxus::prelude::*;
 
+pub mod account;
+
 #[component]
 pub fn App() -> Element {
     rsx! {
@@ -17,18 +19,200 @@ pub fn App() -> Element {
 pub enum Route {
     #[route("/")]
     Home {},
+    #[route("/register")]
+    Register {},
+    #[route("/login")]
+    Login {},
+}
+
+/// Shared auth-page shell: the zine app column (narrow, centered).
+fn auth_shell(children: Element) -> Element {
+    rsx! {
+        main {
+            class: "mx-auto flex max-w-md flex-col gap-4 p-6",
+            {children}
+        }
+    }
+}
+
+#[component]
+pub fn Register() -> Element {
+    let mut email = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let error = use_signal(|| None::<String>);
+    let navigator = use_navigator();
+
+    let submit = move |event: Event<FormData>| {
+        event.prevent_default();
+        let email = email();
+        let password = password();
+        let mut error = error;
+        let navigator = navigator.clone();
+        spawn(async move {
+            match account::signup(email, password).await {
+                Ok(account::SignupOutcome::Created) => {
+                    error.set(None);
+                    navigator.push(Route::Home {});
+                }
+                Ok(account::SignupOutcome::Error { message }) => error.set(Some(message)),
+                Err(err) => error.set(Some(err.to_string())),
+            }
+        });
+    };
+
+    let banner = error().map(|message| {
+        rsx! {
+            div {
+                role: "alert",
+                class: "alert-zine",
+                "{message}"
+            }
+        }
+    });
+
+    auth_shell(rsx! {
+        div {
+            class: "flex flex-col gap-4",
+            h1 { class: "text-2xl font-black uppercase", "Create an account" }
+            {banner}
+            form {
+                class: "flex flex-col gap-4",
+                onsubmit: submit,
+                label {
+                    class: "block",
+                    div { class: "tag dim mb-1", "Email" }
+                    input {
+                        class: "zine-input",
+                        r#type: "email",
+                        name: "email",
+                        required: true,
+                        value: email(),
+                        oninput: move |event| email.set(event.value()),
+                    }
+                }
+                label {
+                    class: "block",
+                    div { class: "tag dim mb-1", "Password" }
+                    input {
+                        class: "zine-input",
+                        r#type: "password",
+                        name: "password",
+                        required: true,
+                        value: password(),
+                        oninput: move |event| password.set(event.value()),
+                    }
+                }
+                button {
+                    r#type: "submit",
+                    class: "btn-zine btn-zine-red",
+                    "Sign up"
+                }
+            }
+            p { class: "text-sm dim", "Already have an account? " }
+            a { class: "link-zine", href: "/login", "Log in" }
+        }
+    })
+}
+
+#[component]
+pub fn Login() -> Element {
+    let mut email = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let error = use_signal(|| None::<String>);
+    let navigator = use_navigator();
+
+    let submit = move |event: Event<FormData>| {
+        event.prevent_default();
+        let email = email();
+        let password = password();
+        let mut error = error;
+        let navigator = navigator.clone();
+        spawn(async move {
+            match account::login(email, password).await {
+                Ok(account::LoginOutcome::Ok) => {
+                    error.set(None);
+                    navigator.push(Route::Home {});
+                }
+                Ok(account::LoginOutcome::NeedsVerification { email }) => {
+                    error.set(Some(format!("Verify {email} first — check your inbox for the confirmation link.")));
+                }
+                Ok(account::LoginOutcome::Error { message }) => error.set(Some(message)),
+                Err(err) => error.set(Some(err.to_string())),
+            }
+        });
+    };
+
+    let banner = error().map(|message| {
+        rsx! {
+            div {
+                role: "alert",
+                class: "alert-zine",
+                "{message}"
+            }
+        }
+    });
+
+    auth_shell(rsx! {
+        div {
+            class: "flex flex-col gap-4",
+            h1 { class: "text-2xl font-black uppercase", "Log in" }
+            {banner}
+            form {
+                class: "flex flex-col gap-4",
+                onsubmit: submit,
+                label {
+                    class: "block",
+                    div { class: "tag dim mb-1", "Email" }
+                    input {
+                        class: "zine-input",
+                        r#type: "email",
+                        name: "email",
+                        required: true,
+                        value: email(),
+                        oninput: move |event| email.set(event.value()),
+                    }
+                }
+                label {
+                    class: "block",
+                    div { class: "tag dim mb-1", "Password" }
+                    input {
+                        class: "zine-input",
+                        r#type: "password",
+                        name: "password",
+                        required: true,
+                        value: password(),
+                        oninput: move |event| password.set(event.value()),
+                    }
+                }
+                button {
+                    r#type: "submit",
+                    class: "btn-zine btn-zine-red",
+                    "Log in"
+                }
+            }
+            p { class: "text-sm dim" }
+            a { class: "link-zine", href: "/forgot", "Forgot your password?" }
+        }
+    })
 }
 
 #[component]
 pub fn Home() -> Element {
+    // The landing is static marketing content, but the navbar + hero
+    // CTA reflect the session — resolved through a server function so
+    // SSR renders the right state and the client re-checks after
+    // hydration.
+    let session = use_server_future(account::current_session)?;
+    let (logged_in, email) = match session.read().as_ref() {
+        Some(Ok(account::SessionState::LoggedIn { email })) => (true, Some(email.clone())),
+        _ => (false, None),
+    };
     rsx! {
-        main {
-            h1 { "Fortress" }
-            p { "Your own private internet: chat, files, pics and videos of the backend." }
-            pre { class: "install", "curl https://proletariat.tech/install.sh | bash" }
-            a { href: "/docs", "Read the docs" }
+        div {
+            dangerous_inner_html: fortress_web_ui::landing_html(
+                &fortress_web_ui::LandingProps { logged_in, email },
+            ),
         }
-        style { {doc_css()} }
     }
 }
 
@@ -142,14 +326,70 @@ fn doc_code_restyle(rendered: &str) -> String {
 pub use server::fullstack_router;
 
 #[cfg(feature = "server")]
-mod server {
+pub mod server {
     use super::*;
-    use axum::extract::Path;
+    use axum::extract::{Path, Request};
     use axum::http::header;
+    use axum::http::HeaderMap as AxumHeaderMap;
     use axum::http::StatusCode;
+    use axum::middleware::{self, Next};
     use axum::response::{Html, IntoResponse, Response};
     use axum::routing::get;
     use axum::Router;
+    use dioxus::prelude::dioxus_fullstack::FullstackContext;
+    use dioxus::prelude::dioxus_server::FullstackState;
+    use dioxus::prelude::dioxus_server::{
+        DioxusRouterExt, ServeConfig, ServerFnError,
+    };
+
+    /// The embedded account plane + mailer, injected into every request
+    /// as an axum extension so both SSR rendering and the `#[server]`
+    /// account functions can reach it. `&'static` like the controlplane
+    /// singleton it wraps — built once at boot, lives for the process.
+    pub struct SiteBackend {
+        pub cp: &'static fortress_controlplane::ControlPlane,
+        pub mailer: &'static dyn fortress_controlplane::controlplane::mail::Mailer,
+    }
+
+    /// The backend for the current request, or `None` when the router
+    /// was built without one (SSR-only tests, or a mis-wired boot).
+    fn current_backend() -> Option<&'static SiteBackend> {
+        FullstackContext::current().and_then(|ctx| ctx.extension::<&'static SiteBackend>())
+    }
+
+    /// The backend or a server-fn error — for the `#[server]` account
+    /// functions (which can't return an axum `Response` directly).
+    pub fn backend() -> Result<&'static SiteBackend, ServerFnError> {
+        current_backend().ok_or_else(|| ServerFnError::new("site backend not wired into request"))
+    }
+
+    /// Read the session cookie out of the request headers (works for
+    /// both the poem and axum surfaces — shared contract).
+    pub fn read_session_cookie(headers: &AxumHeaderMap) -> Option<String> {
+        fortress_controlplane::read_cookie_from_headers(headers, fortress_controlplane::SESSION_COOKIE)
+    }
+
+    /// Set the session cookie on the current response.
+    pub fn set_session_cookie(token: &str) -> Result<(), ServerFnError> {
+        let ctx = FullstackContext::current()
+            .ok_or_else(|| ServerFnError::new("no fullstack context for session cookie"))?;
+        ctx.add_response_header(
+            header::SET_COOKIE,
+            fortress_controlplane::session_cookie_header(token),
+        );
+        Ok(())
+    }
+
+    /// Clear the session cookie on the current response.
+    pub fn clear_session_cookie() -> Result<(), ServerFnError> {
+        let ctx = FullstackContext::current()
+            .ok_or_else(|| ServerFnError::new("no fullstack context for session cookie"))?;
+        ctx.add_response_header(
+            header::SET_COOKIE,
+            fortress_controlplane::clear_session_cookie_header(),
+        );
+        Ok(())
+    }
 
     async fn install_sh_route() -> Response {
         (
@@ -191,12 +431,22 @@ mod server {
 
     /// The site router: hard routes first (they win), then the dioxus
     /// SSR application as fallback for everything else (the `/`
-    /// landing, later the app pages). SSR is wired with the
+    /// landing, the app pages). SSR is wired with the
     /// `serve_api_application` chain — no dx-generated asset dir to
     /// serve, so the static-assets step (which panics without a
     /// `public/` dir) is deliberately skipped.
-    pub fn fullstack_router() -> Router {
-        use dioxus::prelude::dioxus_server::{DioxusRouterExt, FullstackState, ServeConfig};
+    ///
+    /// `backend` is injected into every request's axum extensions; the
+    /// account server functions (`#[server]`) and the SSR components
+    /// both read it from `FullstackContext`. `None` (SSR-only tests)
+    /// renders the landing + docs but the account routes 500.
+    pub fn fullstack_router(backend: Option<&'static SiteBackend>) -> Router {
+        let inject_backend = middleware::from_fn(move |mut request: Request, next: Next| {
+            if let Some(backend) = backend {
+                request.extensions_mut().insert(backend);
+            }
+            next.run(request)
+        });
         Router::new()
             .route("/install.sh", get(install_sh_route))
             .route("/docs", get(docs_index_route))
@@ -205,6 +455,7 @@ mod server {
             .register_server_functions()
             .fallback(get(FullstackState::render_handler))
             .with_state(FullstackState::new(ServeConfig::new(), App))
+            .layer(inject_backend)
     }
 
     #[cfg(test)]
@@ -212,9 +463,13 @@ mod server {
         use super::*;
         use tower::ServiceExt;
 
+        fn ssr_router() -> Router {
+            fullstack_router(None)
+        }
+
         #[tokio::test]
         async fn install_sh_serves_the_repo_script() {
-            let response = fullstack_router()
+            let response = ssr_router()
                 .oneshot(
                     axum::http::Request::builder()
                         .uri("/install.sh")
@@ -232,7 +487,7 @@ mod server {
 
         #[tokio::test]
         async fn landing_ssr_renders_the_curl_card() {
-            let response = fullstack_router()
+            let response = ssr_router()
                 .oneshot(
                     axum::http::Request::builder()
                         .uri("/")
@@ -255,7 +510,7 @@ mod server {
 
         #[tokio::test]
         async fn docs_index_lists_every_page() {
-            let response = fullstack_router()
+            let response = ssr_router()
                 .oneshot(
                     axum::http::Request::builder()
                         .uri("/docs")
@@ -277,7 +532,7 @@ mod server {
 
         #[tokio::test]
         async fn docs_page_renders_markdown() {
-            let response = fullstack_router()
+            let response = ssr_router()
                 .oneshot(
                     axum::http::Request::builder()
                         .uri("/docs/nixos")
@@ -297,12 +552,219 @@ mod server {
                 "the nixos doc renders headings: {body}"
             );
         }
+
+        // ── store-backed round trip (needs a real Redis) ────────────
+
+        /// A control plane + mailer for the round-trip test, built
+        /// against the REDIS_URL the same way the controlplane's own
+        /// store-backed tests are. `None` when REDIS_URL is unset. The
+        /// `MockMailer` is returned separately so the test can read
+        /// captured mail (the backend only holds the `&dyn Mailer`).
+        fn test_backend() -> Option<(&'static SiteBackend, &'static fortress_controlplane::controlplane::mail::MockMailer)> {
+            let url = match std::env::var("REDIS_URL") {
+                Ok(url) if !url.is_empty() => url,
+                _ => return None,
+            };
+            let wg: &'static fortress_controlplane::MockWgClient =
+                Box::leak(Box::new(fortress_controlplane::MockWgClient::new()));
+            let dns: &'static fortress_controlplane::MockDnsApiClient =
+                Box::leak(Box::new(fortress_controlplane::MockDnsApiClient::new()));
+            let subnet = fortress_controlplane::Subnet64::from_str("2a01:4f8:c17:1::/64")
+                .expect("test subnet parses");
+            let wg_subnet = fortress_controlplane::WgSubnet::from_str("10.10.0.0/24")
+                .expect("test wg subnet parses");
+            let cp = fortress_controlplane::ControlPlane::with_deps(
+                &url,
+                subnet,
+                wg_subnet,
+                "example.net",
+                "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=",
+                wg,
+                dns,
+            )
+            .expect("test control plane connects");
+            let mailer: &'static fortress_controlplane::controlplane::mail::MockMailer =
+                Box::leak(Box::new(fortress_controlplane::controlplane::mail::MockMailer::new()));
+            let backend: &'static SiteBackend = Box::leak(Box::new(SiteBackend {
+                cp: Box::leak(Box::new(cp)),
+                mailer,
+            }));
+            Some((backend, mailer))
+        }
+
+        fn unique_email(label: &str) -> String {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            format!("{label}-{}-{}@example.com", std::process::id(), nanos)
+        }
+
+        fn extract_token(body: &str) -> String {
+            let start = body.find("token=").expect("link present") + "token=".len();
+            body[start..].lines().next().unwrap().trim().to_string()
+        }
+
+        async fn json_post(router: &Router, uri: &str, body: &str) -> Response {
+            router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+
+        /// The T2a acceptance test: signup → verify → login (session
+        /// cookie set) → landing shows the signed-in user → logout
+        /// clears it — all against the *new* fullstack surface, not
+        /// the poem form handlers.
+        #[tokio::test]
+        async fn signup_verify_login_logout_fullstack_round_trip() {
+            let Some((backend, mailer)) = test_backend() else {
+                eprintln!("skipping: REDIS_URL not set");
+                return;
+            };
+            let router = fullstack_router(Some(backend));
+            let email = unique_email("fullstack");
+
+            // Signup (server function).
+            let resp = json_post(
+                &router,
+                "/api/auth/signup",
+                &format!(r#"{{"email":"{email}","password":"hunter2"}}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let sent = mailer.sent();
+            assert_eq!(sent.len(), 1, "signup emails one verification link");
+            assert_eq!(sent[0].to, email);
+            let token = extract_token(&sent[0].body);
+
+            // Verify (server function) — the account becomes active.
+            let resp = json_post(
+                &router,
+                "/api/auth/verify",
+                &format!(r#"{{"token":"{token}"}}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            // Login (server function) — response carries the session cookie.
+            let resp = json_post(
+                &router,
+                "/api/auth/login",
+                &format!(r#"{{"email":"{email}","password":"hunter2"}}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let set_cookie = resp
+                .headers()
+                .get(header::SET_COOKIE)
+                .expect("login sets the session cookie")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(set_cookie.contains("fortress_account_session="));
+            assert!(set_cookie.contains("HttpOnly"));
+            let session = set_cookie
+                .split("fortress_account_session=")
+                .nth(1)
+                .and_then(|rest| rest.split(';').next())
+                .expect("cookie value");
+
+            // The cookie makes the SSR landing show the signed-in user.
+            let resp = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/")
+                        .header(header::COOKIE, format!("fortress_account_session={session}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body: Vec<u8> = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            let body = String::from_utf8(body).unwrap();
+            assert!(body.contains("Sign out"), "signed-in nav: {body}");
+            assert!(body.contains(&email), "nav shows the account email");
+
+            // Logout (server function) — the cookie is cleared.
+            let resp = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/api/auth/logout")
+                        .header(header::COOKIE, format!("fortress_account_session={session}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(resp
+                .headers()
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0"));
+
+            // The cleared cookie means the landing is logged out again.
+            let resp = router.clone().oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            let body: Vec<u8> = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec();
+            let body = String::from_utf8(body).unwrap();
+            assert!(body.contains("Create account"), "logged-out nav: {body}");
+        }
     }
 }
 
 #[cfg(all(test, feature = "server"))]
 mod doc_tests {
     use super::*;
+
+    /// The committed index.html must be the zine shell regenerated
+    /// from web-ui with the wasm client script in the post-main slot
+    /// (dioxus's SSR streams post-#main content as the bundle loader).
+    #[test]
+    fn public_index_carries_the_zine_shell() {
+        let committed = include_str!("../public/index.html");
+        let expected = fortress_web_ui::index_shell_html(
+            "Fortress — your home server, your rules",
+        )
+        .replace(
+            "<div id=\"main\"></div></body>",
+            "<div id=\"main\"></div><script type=\"module\" async src=\"/./wasm/fortress-site.js\"></script></body>",
+        );
+        assert_eq!(
+            committed,
+            expected,
+            "public/index.html is stale against the zine shell — regenerate with: cargo run -p fortress-web-ui --example write_index > crates/site/public/index.html (then re-insert the wasm script line before </body>)"
+        );
+    }
 
     #[test]
     fn doc_pages_have_valid_unique_relative_fragments() {

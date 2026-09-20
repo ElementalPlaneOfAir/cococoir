@@ -68,6 +68,8 @@ let
       # fileFilter's file.name is the basename, so anchor the filter on
       # the content dir itself.
       (lib.fileset.fileFilter (file: file.hasExt "md") ../../../crates/site/content)
+      # vendored web-ui assets (tailwind/htmx), include_str!-ed
+      (lib.fileset.fileFilter (file: file.hasExt "js") ../../../crates/web-ui/assets)
       (lib.fileset.maybeMissing ../../../scripts/install.sh)
       (lib.fileset.maybeMissing ../../../crates/site/public/index.html)
     ];

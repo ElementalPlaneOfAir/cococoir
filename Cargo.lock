@@ -2014,7 +2014,10 @@ dependencies = [
  "axum",
  "dioxus",
  "dioxus-cli-config",
+ "fortress-controlplane",
+ "fortress-web-ui",
  "pulldown-cmark",
+ "serde",
  "tokio",
  "tower",
 ]
