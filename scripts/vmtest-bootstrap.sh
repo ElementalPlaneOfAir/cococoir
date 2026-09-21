@@ -351,9 +351,91 @@ if [ -n "$TOKEN" ]; then
     PAYLOAD=$(echo "$ID_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null || \
       python3 -c "import base64,sys; print(base64.urlsafe_b64decode(sys.stdin.read().strip() + '==').decode())" 2>/dev/null)
     echo "$PAYLOAD" | jq '{email, preferred_username, groups, name}' 2>/dev/null || echo "  (could not decode)"
+    ISS=$(echo "$PAYLOAD" | jq -r '.iss // empty' 2>/dev/null || true)
+    if printf '%s' "$ISS" | grep -q '^http://127.0.0.1:'; then
+      pass "dex token iss" "loopback ($ISS)"
+    else
+      fail "dex token iss" "${ISS:-missing}"
+    fi
   fi
 else
   fail "dex password grant" "no token"
+fi
+
+echo ""
+echo "─── I2P plane SSO flow (hermetic, Host-pinned) ───"
+# The .i2p vhosts are plain-HTTP Caddy sites bound to loopback; the
+# i2pd tunnel terminates at Caddy on 127.0.0.1:80. --resolve pins the
+# .i2p names to loopback so this flow runs exactly as an I2P client
+# would drive it (same Host, same cookie jar), with no I2P network
+# needed. It walks the REAL SSO chain end to end: plugin authorize →
+# issuer rewrite → dex login → dex callback → callback rewrite →
+# plugin session established.
+JAR=/tmp/i2p-sso-cookies
+rm -f "$JAR"
+I2P_CURL=(curl -s --resolve jellyfin.vmtest.i2p:80:127.0.0.1 --resolve auth.vmtest.i2p:80:127.0.0.1 --max-time 30)
+
+jf2_code=$("${I2P_CURL[@]}" -o /dev/null -w '%{http_code}' \
+  http://jellyfin.vmtest.i2p/health 2>/dev/null || echo 000)
+case "$jf2_code" in
+  200) pass "i2p jellyfin ingress" "200" ;;
+  *)   fail "i2p jellyfin ingress" "$jf2_code" ;;
+esac
+
+DX_DISC=$("${I2P_CURL[@]}" \
+  http://auth.vmtest.i2p/dex/.well-known/openid-configuration 2>/dev/null || echo "")
+if printf '%s' "$DX_DISC" | grep -q '"issuer": *"http://127.0.0.1:5556/dex"'; then
+  pass "i2p dex discovery" "loopback issuer served"
+else
+  fail "i2p dex discovery" "issuer mismatch or unreachable"
+fi
+
+START_LOC=$("${I2P_CURL[@]}" -c "$JAR" -D - -o /dev/null \
+  http://jellyfin.vmtest.i2p/sso/OIDC/Start/dex 2>/dev/null \
+  | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | head -1)
+case "$START_LOC" in
+  http://auth.vmtest.i2p/dex/auth*) pass "i2p authorize rewrite" "auth.vmtest.i2p" ;;
+  *) fail "i2p authorize rewrite" "got ${START_LOC:-none}" ;;
+esac
+
+LOGIN_HTML=$("${I2P_CURL[@]}" -b "$JAR" -c "$JAR" "$START_LOC" 2>/dev/null || echo "")
+ACTION=$(printf '%s' "$LOGIN_HTML" | grep -o 'action="[^"]*"' | head -1 | sed 's/^action="//;s/"$//')
+case "$ACTION" in
+  http*) : ;;
+  /*)    ACTION="http://auth.vmtest.i2p$ACTION" ;;
+  *)     ACTION="http://auth.vmtest.i2p/$ACTION" ;;
+esac
+
+"${I2P_CURL[@]}" -b "$JAR" -c "$JAR" -D /tmp/i2p-h1 -o /tmp/i2p-b1 \
+  --data-urlencode "login=admin@example.com" \
+  --data-urlencode "password=password" \
+  "$ACTION" 2>/dev/null
+NEXT_LOC=$(grep -i '^location:' /tmp/i2p-h1 2>/dev/null | tr -d '\r' | sed 's/^[Ll]ocation: //p' | head -1)
+
+# dex may render the approval screen instead of redirecting; approve it.
+if [ -z "$NEXT_LOC" ]; then
+  APP_ACTION=$(printf '%s' "$(cat /tmp/i2p-b1 2>/dev/null)" | grep -o 'action="[^"]*"' | head -1 | sed 's/^action="//;s/"$//')
+  case "$APP_ACTION" in
+    http*) : ;;
+    /*)    APP_ACTION="http://auth.vmtest.i2p$APP_ACTION" ;;
+    *)     APP_ACTION="http://auth.vmtest.i2p/$APP_ACTION" ;;
+  esac
+  NEXT_LOC=$("${I2P_CURL[@]}" -b "$JAR" -c "$JAR" -D - -o /dev/null \
+    --data-urlencode "approval=approve" "$APP_ACTION" 2>/dev/null \
+    | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | head -1)
+fi
+
+case "$NEXT_LOC" in
+  https://jellyfin.vmtest.local/sso/OIDC/Callback/dex*) pass "i2p dex login" "callback issued (registered clearnet)" ;;
+  *) fail "i2p dex login" "got ${NEXT_LOC:-none}" ;;
+esac
+
+I2P_CB=${NEXT_LOC/https:\/\/jellyfin.vmtest.local/http://jellyfin.vmtest.i2p}
+CB_HTML=$("${I2P_CURL[@]}" -b "$JAR" "$I2P_CB" 2>/dev/null || echo "")
+if printf '%s' "$CB_HTML" | grep -q "Completing authentication"; then
+  pass "i2p SSO session" "plugin exchanged the code at loopback"
+else
+  fail "i2p SSO session" "$(printf '%s' "$CB_HTML" | grep -o 'Authentication failed[^<]*' | head -1 || echo 'no callback page')"
 fi
 
 echo ""

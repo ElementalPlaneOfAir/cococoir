@@ -85,6 +85,10 @@ let
     sonarr_key=$(cat ${mediaRoot}/sonarr-api-key)
     jellyfin_key=$(cat /var/lib/jellarr/api-key)
     seerr_password=$(cat ${mediaRoot}/seerr-admin-password)
+    # Jellyfin 12 requires the Authorization header; X-Emby-Token
+    # returns 401 (same break as upstream jellarr, fixed there by
+    # PR #79).
+    jellyfin_auth="MediaBrowser Token=\"$jellyfin_key\", Client=\"fortress-media-apply\", Device=\"fortress-media-apply\", DeviceId=\"fortress-media-apply\", Version=\"0.1.0\""
     cookie_jar=$(mktemp)
     trap '${pkgs.coreutils}/bin/rm -f "$cookie_jar"' EXIT
 
@@ -195,10 +199,10 @@ let
 
     ensure_jellyfin_bootstrap_user() {
       local list user_id
-      list=$(${pkgs.curl}/bin/curl -sf -H "X-Emby-Token: $jellyfin_key" \
+      list=$(${pkgs.curl}/bin/curl -sf -H "Authorization: $jellyfin_auth" \
         "${jellyfinBase}/Users")
       if [ "$(${pkgs.jq}/bin/jq -r 'length' <<<"''${list}")" = "0" ]; then
-        ${pkgs.curl}/bin/curl -sf -X POST -H "X-Emby-Token: $jellyfin_key" \
+        ${pkgs.curl}/bin/curl -sf -X POST -H "Authorization: $jellyfin_auth" \
           -H 'Content-Type: application/json' \
           -d "{\"Name\": \"${seerrBootstrapUser}\"}" \
           "${jellyfinBase}/Users/New" >/dev/null
@@ -206,7 +210,7 @@ let
       user_id=$(${pkgs.jq}/bin/jq -r \
         --arg n "${seerrBootstrapUser}" '.[] | select(.Name == $n) | .Id' <<<"''${list}")
       if [ -z "$user_id" ]; then
-        list=$(${pkgs.curl}/bin/curl -sf -H "X-Emby-Token: $jellyfin_key" "${jellyfinBase}/Users")
+        list=$(${pkgs.curl}/bin/curl -sf -H "Authorization: $jellyfin_auth" "${jellyfinBase}/Users")
         user_id=$(${pkgs.jq}/bin/jq -r \
           --arg n "${seerrBootstrapUser}" '.[] | select(.Name == $n) | .Id' <<<"''${list}")
       fi
@@ -214,13 +218,13 @@ let
         echo "[fortress-media-apply] could not find or create Jellyfin user ${seerrBootstrapUser}" >&2
         exit 1
       fi
-      ${pkgs.curl}/bin/curl -sf -X POST -H "X-Emby-Token: $jellyfin_key" \
+      ${pkgs.curl}/bin/curl -sf -X POST -H "Authorization: $jellyfin_auth" \
         -H 'Content-Type: application/json' \
         -d "{\"Id\": \"''${user_id}\", \"NewPw\": \"$seerr_password\"}" \
         "${jellyfinBase}/Users/''${user_id}/Password" >/dev/null
-      policy=$(${pkgs.curl}/bin/curl -sf -H "X-Emby-Token: $jellyfin_key" \
+      policy=$(${pkgs.curl}/bin/curl -sf -H "Authorization: $jellyfin_auth" \
         "${jellyfinBase}/Users/''${user_id}" | ${pkgs.jq}/bin/jq '.Policy | .IsAdministrator = true')
-      ${pkgs.curl}/bin/curl -sf -X POST -H "X-Emby-Token: $jellyfin_key" \
+      ${pkgs.curl}/bin/curl -sf -X POST -H "Authorization: $jellyfin_auth" \
         -H 'Content-Type: application/json' -d "''${policy}" \
         "${jellyfinBase}/Users/''${user_id}/Policy" >/dev/null
     }
@@ -249,7 +253,7 @@ let
     ${lib.optionalString config.services.seerr.enable ''
     wait_ready seerr ${seerrBase} "" /api/v1/status X-Api-Key
     wait_jellarr_done
-    wait_ready jellyfin ${jellyfinBase} "$jellyfin_key" /System/Info X-Emby-Token
+    wait_ready jellyfin ${jellyfinBase} "$jellyfin_auth" /System/Info Authorization
     ensure_jellyfin_bootstrap_user
     # Seerr's Jellyfin login accepts hostname only on a fresh DB (it
     # 500s with "already configured" once settings.jellyfin.ip is set).

@@ -55,11 +55,15 @@
         exec ${pkgs.cargo}/bin/cargo run --quiet --bin fortress-edge -- --dummy --subnet fd00::/64 --wg-subnet 10.10.0.0/24 --redis-url redis://127.0.0.1:6379 --api-addr 0.0.0.0:8081
       '';
     };
-    # The site crate (landing, /docs wiki, /install.sh) on 8082.
-    # Plain axum + dioxus SSR; independent of the edge's Redis.
+    # The site crate (landing, /docs wiki, /install.sh) on 8082. Runs
+    # `--dummy` like the edge: the site embeds the control plane, and
+    # without --dummy it reads boot secrets (secretspec CWD-walk from the
+    # repo root hits the merged manifest — which is fine — but demands
+    # /etc/fortress/edge.env, which a dev box doesn't have). Dummy =
+    # DUMMY_ROOT_DOMAIN + console mailer + no secret resolution.
     site = {
       command = ''
-        exec ${pkgs.cargo}/bin/cargo run --quiet --bin fortress-site
+        exec ${pkgs.cargo}/bin/cargo run --quiet --bin fortress-site -- --dummy
       '';
     };
   };

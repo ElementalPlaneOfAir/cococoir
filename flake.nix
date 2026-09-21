@@ -15,7 +15,12 @@
     # thing. Tracks main (no tag pin); the v0.1.0 tag fails
     # to evaluate on current nixpkgs.
     jellarr = {
-      url = "github:venkyr77/jellarr";
+      # Pinned to the unmerged Jellyfin-12 auth fix (upstream PR #79):
+      # Jellyfin 12 (this lock's nixpkgs) requires the
+      # `Authorization: MediaBrowser Token=...` header; main still
+      # sends X-Emby-Token and crashes jellarr at runtime. Unpin to
+      # upstream main when PR #79 merges.
+      url = "github:venkyr77/jellarr/317f7be9d4a758f25b8180feb41fae12530a53a1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # Manage the edge box on a stock Debian image: systemd services,
@@ -54,6 +59,17 @@
       config.allowUnfree = true;
     }).extend (final: prev: {
       crane = inputs.crane;
+      # The pinned jellarr flake (rev de530bc) hardwires a
+      # fetchPnpmDeps hash computed against an older nixpkgs
+      # toolchain; the 2026-09-19 lock bump changed what the fetcher
+      # produces. Substitute only when the exact stale value flows
+      # through — an upstream hash fix renders this inert.
+      fetchPnpmDeps = args:
+        prev.fetchPnpmDeps (if args ? hash && args.hash
+          == "sha256-jo1BjRAjjfNKF0xb5cLCuELSveHeJ98iLPhMDKP1QbI="
+        then args // {
+          hash = "sha256-qNVnhHjTFPhJxJ8oZPBSfJs2OjNSlbmS31okZuSGWMU=";
+        } else args);
     });
     vmtestPkgs = withCrane "x86_64-linux";
     vmtest = inputs.nixpkgs.lib.nixosSystem {

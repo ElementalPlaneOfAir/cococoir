@@ -20,7 +20,7 @@ let
   # The service enables live in nixosConfigurations/dashboard.nix
   # (the customer-edited file). A silent drop of one during a refactor
   # would disable a service with no trace — assert they all render.
-  dashboardServices = ["jellyfin" "cryptpad" "media"];
+  dashboardServices = ["jellyfin" "cryptpad" "media" "forgejo"];
   dashboardServiceEnabled = name:
     vmtestConfig.fortress.services.${name}.enable or false;
 
@@ -87,6 +87,25 @@ let
   mediaKeygenSvc = vmtestConfig.systemd.services.fortress-media-api-keys or null;
   qbittorrentCfg = vmtestConfig.services.qbittorrent;
   qbittorrentFortressCfg = vmtestConfig.fortress.services.qbittorrent;
+
+  # ── I2P rewrite seam ─────────────────────────────────────────
+  dexIssuer = vmtestConfig.services.dex.settings.issuer or null;
+  jfDomain = vmtestConfig.fortress.services.jellyfin.domain;
+  jfI2p = vmtestConfig.fortress.services.jellyfin.i2pDomain;
+  dxI2p = vmtestConfig.fortress.services.dex.i2pDomain;
+  jellyfinVhost = vmtestConfig.services.caddy.virtualHosts."${jfDomain}".extraConfig or "";
+  jellyfinI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${jfI2p}".extraConfig or null;
+  authI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${dxI2p}".extraConfig or null;
+  jellyfinDexClient = lib.findFirst (c: c.id == "jellyfin") null dexStaticClients;
+
+  # ── forgejo OIDC ─────────────────────────────────────────────
+  forgejoCfg = vmtestConfig.fortress.services.forgejo;
+  forgejoSettings = vmtestConfig.services.forgejo.settings.server;
+  forgejoDexClient = lib.findFirst (c: c.id == "forgejo") null dexStaticClients;
+  forgejoBootstrap = vmtestConfig.systemd.services.fortress-forgejo-oidc-bootstrap or null;
+  forgejoVhost = vmtestConfig.services.caddy.virtualHosts."${forgejoCfg.domain}".extraConfig or "";
+  forgejoI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${forgejoCfg.i2pDomain}".extraConfig or null;
+  forgejoDomainEscaped = lib.replaceStrings ["."] ["\\."] forgejoCfg.domain;
 in
 # ── dashboard.nix assertions ──────────────────────────────────
 # Every service declared in the customer-edited dashboard.nix must
@@ -128,6 +147,28 @@ assert lib.assertMsg (!(builtins.elem "Entertainment" folderNames))
   "vmtest-wiring: the jellyfin module's mkDefault virtualFolders leaked into vmtest (should be overridden)";
 assert lib.assertMsg (builtins.elem "multi-user.target" vmtestConfig.systemd.services.jellarr.wantedBy)
   "vmtest-wiring: jellarr.service has no boot activation — declarative config would never apply on first boot";
+
+# ── forgejo assertions ────────────────────────────────────────
+assert lib.assertMsg forgejoCfg.enable
+  "vmtest-wiring: forgejo is not enabled — the dashboard.nix extraction dropped the forgejo toggle";
+assert lib.assertMsg (forgejoSettings.ROOT_URL or "" == "https://${forgejoCfg.domain}/" && forgejoSettings.HTTP_ADDR or "" == "127.0.0.1" && forgejoSettings.DISABLE_SSH or false)
+  "vmtest-wiring: forgejo server settings diverged — ROOT_URL must be the clearnet domain (OIDC callback origin) on a loopback HTTP bind, SSH disabled";
+assert lib.assertMsg (vmtestConfig.services.forgejo.database.type == "sqlite3")
+  "vmtest-wiring: forgejo is not on SQLite — the single-db-instance contract was dropped";
+assert lib.assertMsg (forgejoDexClient != null)
+  "vmtest-wiring: dex staticClients has no 'forgejo' entry — client registration was dropped";
+assert lib.assertMsg (forgejoDexClient != null && builtins.elem "https://${forgejoCfg.domain}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []) && builtins.elem "http://${forgejoCfg.i2pDomain}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []))
+  "vmtest-wiring: forgejo dex client redirect URIs (clearnet + i2p) mismatch — SSO callbacks would dead-end";
+assert lib.assertMsg (forgejoBootstrap != null && builtins.elem "multi-user.target" (forgejoBootstrap.wantedBy or []))
+  "vmtest-wiring: fortress-forgejo-oidc-bootstrap is missing or has no boot activation — the dex auth source would never be registered";
+assert lib.assertMsg (forgejoBootstrap != null && builtins.elem "forgejo.service" (forgejoBootstrap.after or []) && builtins.elem "dex.service" (forgejoBootstrap.after or []))
+  "vmtest-wiring: fortress-forgejo-oidc-bootstrap does not order after forgejo + dex — it could run against an un-migrated DB or a down dex";
+assert lib.assertMsg (lib.hasInfix "header >Location" forgejoVhost && lib.hasInfix "https://${vmtestConfig.fortress.services.dex.domain}" forgejoVhost)
+  "vmtest-wiring: the forgejo clearnet vhost lost the dex issuer Location rewrite — SSO login would redirect the browser to an unreachable loopback address";
+assert lib.assertMsg (forgejoI2pVhost != null && lib.hasInfix "http://${dxI2p}" forgejoI2pVhost)
+  "vmtest-wiring: the forgejo .i2p vhost is missing or lost the dex issuer rewrite to the I2P dex origin — SSO would leave the I2P path mid-flow";
+assert lib.assertMsg (authI2pVhost != null && lib.hasInfix "^https://${forgejoDomainEscaped}" authI2pVhost)
+  "vmtest-wiring: the dex .i2p vhost lost the forgejo callback rewrite — dex would redirect the browser to the clearnet callback, dead on the I2P path";
 
 # ── media library layout assertions ───────────────────────────
 # Jellyfin must scan the `library/` subdir of each media subvolume,
@@ -173,6 +214,24 @@ assert lib.assertMsg cryptpadPkgHasSSO
 assert lib.assertMsg caddyOrdersAfterClient
   "vmtest-wiring: caddy.service does not order after fortress-client.service — fresh boots race the tunnel and ACME backoff leaves customer domains certless";
 
+# ── I2P rewrite seam assertions ───────────────────────────────
+# The dex issuer is a loopback address and is never browser-
+# reachable: every redirect to it must be rewritten per-path by
+# Caddy. A silently-dropped rewrite is the seam that leaves the
+# login button pointing at an unreachable address.
+assert lib.assertMsg (dexIssuer != null && lib.hasPrefix "http://127.0.0.1:" dexIssuer)
+  "vmtest-wiring: dex issuer is not a loopback address (got: ${toString dexIssuer}) — a public issuer makes multi-origin SSO structurally impossible";
+assert lib.assertMsg (lib.hasInfix "header >Location" jellyfinVhost && lib.hasInfix "https://${vmtestConfig.fortress.services.dex.domain}" jellyfinVhost)
+  "vmtest-wiring: the jellyfin clearnet vhost lost the dex issuer Location rewrite — SSO login would redirect the browser to an unreachable loopback address";
+assert lib.assertMsg (jellyfinI2pVhost != null && lib.hasInfix "bind 127.0.0.1" jellyfinI2pVhost)
+  "vmtest-wiring: the jellyfin .i2p vhost is missing — the I2P plane has no ingress for the service";
+assert lib.assertMsg (jellyfinI2pVhost != null && lib.hasInfix "http://${dxI2p}" jellyfinI2pVhost)
+  "vmtest-wiring: the jellyfin .i2p vhost lost the dex issuer rewrite to the I2P dex origin — SSO would leave the I2P path mid-flow";
+assert lib.assertMsg (authI2pVhost != null && lib.hasInfix "^https://${lib.replaceStrings ["."] ["\\."] jfDomain}" authI2pVhost)
+  "vmtest-wiring: the dex .i2p vhost lost the callback rewrite — dex would redirect the browser to the clearnet callback, dead on the I2P path";
+assert lib.assertMsg (jellyfinDexClient != null && builtins.elem "http://${jfI2p}/sso/OIDC/Callback/dex" (jellyfinDexClient.redirectURIs or []))
+  "vmtest-wiring: the jellyfin .i2p callback is not registered in dex staticClients";
+
 # ── LAN access plane assertions (ADR-028) ─────────────────────
 assert lib.assertMsg (lanAddress == "10.0.2.15" && lanDnsEnabled)
   "vmtest-wiring: vmtest does not set fortress.network.lanAddress — the LAN DNS plane is not exercised by the suite";
@@ -189,8 +248,10 @@ assert lib.assertMsg everyVhostBindsLan
     cat > $out <<EOF
     fortress vmtest-wiring: PASS
       jellyfin: OIDC wired (plugins + branding), jellarr boot-activated
+      forgejo: OIDC wired (dex client clearnet+i2p, auth-source bootstrap boot-activated, vhost issuer rewrite)
       cryptpad: OIDC wired (SSO enabled + enforced, dex client registered, secret oneshot boot-activated, CRYPTPAD_CONFIG env set, SSO plugin bundled in package)
       ingress: caddy.service orders after fortress-client.service (ACME over the tunnel)
+      I2P seam: loopback dex issuer, per-path Location rewrites (clearnet + .i2p vhosts), .i2p callback registered
       LAN DNS: dnsmasq answers every enabled service domain with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
     EOF
   '';

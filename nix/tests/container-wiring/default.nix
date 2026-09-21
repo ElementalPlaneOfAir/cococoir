@@ -68,7 +68,8 @@ assert lib.assertMsg (!(c.boot.supportedFilesystems.btrfs or false))
 assert lib.assertMsg (hasTmpfileDir "/data/cryptpad/data"
   && hasTmpfileDir "/data/jellyfin/metadata"
   && hasTmpfileDir "/data/media/movies"
-  && hasTmpfileDir "/data/media/shows/library")
+  && hasTmpfileDir "/data/media/shows/library"
+  && hasTmpfileDir "/data/forgejo")
   "container-wiring: the auto-declared subvolume tree did not render as /data tmpfiles rules — the plain-dirs backend lost the declarations";
 assert lib.assertMsg (lib.all (r: !lib.hasInfix "btrfs" r) tmpfiles)
   "container-wiring: a btrfs reference leaked into the container tmpfiles rules";

@@ -39,7 +39,8 @@
       mkdir -p $out
       openssl rand -hex -out $out/jellyfin-client-secret 32
       openssl rand -hex -out $out/cryptpad-client-secret 32
-      chmod 0440 $out/jellyfin-client-secret $out/cryptpad-client-secret
+      openssl rand -hex -out $out/forgejo-client-secret 32
+      chmod 0440 $out/jellyfin-client-secret $out/cryptpad-client-secret $out/forgejo-client-secret
       htpasswd -bnBC 10 "" password | cut -d: -f2 | tr -d '\n' > $out/admin-password-hash
     '';
 
@@ -72,7 +73,7 @@ in {
 
   networking.hosts = {
     "127.0.0.1" = ["auth.vmtest.local" "jellyfin.vmtest.local" "cryptpad.vmtest.local"
-                      "radarr.vmtest.local" "sonarr.vmtest.local"];
+                      "radarr.vmtest.local" "sonarr.vmtest.local" "git.vmtest.local"];
   };
 
   security.pki.certificates = [
@@ -167,6 +168,9 @@ in {
 
   environment.etc."dex/clients/cryptpad-secret".source =
     "${testDexSecrets}/cryptpad-client-secret";
+
+  environment.etc."dex/clients/forgejo-secret".source =
+    "${testDexSecrets}/forgejo-client-secret";
 
   # Jellarr library config comes from the jellyfin service module's
   # defaults (libraries at <subvol>/library, downloads staging invisible

@@ -74,6 +74,13 @@ let
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
     ];
+    forgejo = [
+      "mkFortressService {"
+      "name = \"forgejo\";"
+      "defaultPort = 3001;"
+      "defaultHealthPath = "
+      "storageNeeded = true;"
+    ];
   };
 
   readService = name: builtins.readFile (../../nixos-modules/services + "/${name}.nix");

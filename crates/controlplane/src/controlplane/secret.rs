@@ -21,14 +21,25 @@
 //! the honest tool. Consumers read it through the typed accessors below;
 //! the DNS/auth modules derive their own `LazyLock`s from it.
 
-secretspec_derive::declare_secrets!("secretspec.toml");
+// The ONE monorepo manifest (merged 2026-09-21): `../..` because this
+// crate sits at crates/controlplane/ and the toml lives at the repo root.
+// Runtime re-reads it via the SDK's CWD-walk (prod WorkingDirectory=
+// /etc/fortress, dev repo root), so compile-time type and runtime values
+// always come from the same single file — the old two-file split is gone.
+secretspec_derive::declare_secrets!("../../secretspec.toml");
 
 use std::sync::LazyLock;
 
 /// The resolved edge secrets. Initialized once on first access (forced
 /// early by `init_globals` so a missing secret fails boot, not the first
 /// signup). Panics on failure — the box is unusable without these.
-pub(crate) static SECRETS: LazyLock<secretspec::Resolved<SecretSpec>> = LazyLock::new(|| {
+///
+/// Loads the `default` profile specifically, NOT the union struct: the
+/// manifest now has a second (operator) `provisioning` profile, and the
+/// derive's union would type any secret absent from one profile as
+/// `Option` — losing the "required = String" guarantee this module
+/// documents. Profile loading keeps the edge's required secrets typed.
+pub(crate) static SECRETS: LazyLock<secretspec::Resolved<SecretSpecProfile>> = LazyLock::new(|| {
     SecretSpec::builder()
         .with_provider("dotenv:/etc/fortress/edge.env")
         // An explicit reason satisfies the default `require_reason =
@@ -36,22 +47,40 @@ pub(crate) static SECRETS: LazyLock<secretspec::Resolved<SecretSpec>> = LazyLock
         // reason gives the audit log a human-readable provenance and
         // stays correct if the policy ever becomes "always").
         .with_reason("fortress-edge boot")
-        .with_profile("provisioning")
-        .load()
+        .with_profile("default")
+        .load_profile()
         .expect("edge secrets must resolve at boot")
 });
 
+/// Destructure the resolved default profile. The match is exhaustive
+/// over the manifest's two profiles; the provisioning variant is
+/// unreachable here because the loader above pins `default`.
+fn default_profile() -> &'static SecretSpecProfile {
+    match &SECRETS.secrets {
+        SecretSpecProfile::Default { .. } => &SECRETS.secrets,
+        SecretSpecProfile::Provisioning { .. } => {
+            unreachable!("edge secrets always load the default profile")
+        }
+    }
+}
+
 /// The root domain customer hostnames live under, e.g. `proletariat.tech`.
 pub fn root_domain() -> &'static str {
-    &SECRETS.secrets.root_domain
+    match default_profile() {
+        SecretSpecProfile::Default { root_domain, .. } => root_domain,
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The SHA-256 of the admin API key, decoded to raw bytes for the
 /// constant-time check. Decoded once, cached for the process lifetime.
 pub fn admin_key_hash() -> &'static [u8; 32] {
     static HASH: LazyLock<[u8; 32]> = LazyLock::new(|| {
-        decode_hash_hex(&SECRETS.secrets.admin_key_hash)
-            .expect("ADMIN_KEY_HASH is valid hex for a 32-byte hash")
+        decode_hash_hex(&match default_profile() {
+            SecretSpecProfile::Default { admin_key_hash, .. } => admin_key_hash,
+            SecretSpecProfile::Provisioning { .. } => unreachable!(),
+        })
+        .expect("ADMIN_KEY_HASH is valid hex for a 32-byte hash")
     });
     &HASH
 }
@@ -61,47 +90,66 @@ pub fn admin_key_hash() -> &'static [u8; 32] {
 /// presents the same peer identity across rebuilds and a re-dial after a
 /// rebuild just works. `&'static` because `SECRETS` is process-lifetime.
 pub fn wg_private_key() -> &'static str {
-    &SECRETS.secrets.wg_private_key
+    match default_profile() {
+        SecretSpecProfile::Default { wg_private_key, .. } => wg_private_key,
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The external managed store URL (ADR-029 / edge-ha T4, retained): the
 /// control plane's durable Redis, reached over TLS (`rediss://`).
 pub fn redis_url() -> &'static str {
-    &SECRETS.secrets.redis_url
+    match default_profile() {
+        SecretSpecProfile::Default { redis_url, .. } => redis_url,
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The SMTP submission relay host, when configured. Absent → the
 /// console mailer is used (dev/test); present → the SmtpMailer is used
 /// and a broken config is a boot error, never a silent fallback.
 pub fn smtp_host() -> Option<&'static str> {
-    SECRETS.secrets.smtp_host.as_deref()
+    match default_profile() {
+        SecretSpecProfile::Default { smtp_host, .. } => smtp_host.as_deref(),
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The SMTP submission port (STARTTLS). Defaults to 587 in the mailer.
 pub fn smtp_port() -> Option<&'static str> {
-    SECRETS.secrets.smtp_port.as_deref()
+    match default_profile() {
+        SecretSpecProfile::Default { smtp_port, .. } => smtp_port.as_deref(),
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The SMTP submission auth user (may be absent for relays that need
 /// no auth).
 pub fn smtp_user() -> Option<&'static str> {
-    SECRETS.secrets.smtp_user.as_deref()
+    match default_profile() {
+        SecretSpecProfile::Default { smtp_user, .. } => smtp_user.as_deref(),
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The SMTP submission auth password.
 pub fn smtp_pass() -> Option<&'static str> {
-    SECRETS.secrets.smtp_pass.as_deref()
+    match default_profile() {
+        SecretSpecProfile::Default { smtp_pass, .. } => smtp_pass.as_deref(),
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// The envelope From for outbound mail. Defaults to
 /// `accounts@{root_domain}` when MAIL_FROM is absent, so a domain
 /// migration is a `ROOT_DOMAIN` change, not a code change.
 pub fn mail_from() -> String {
-    SECRETS
-        .secrets
-        .mail_from
-        .clone()
-        .unwrap_or_else(|| format!("accounts@{}", root_domain()))
+    match default_profile() {
+        SecretSpecProfile::Default { mail_from, .. } => mail_from
+            .clone()
+            .unwrap_or_else(|| format!("accounts@{}", root_domain())),
+        SecretSpecProfile::Provisioning { .. } => unreachable!(),
+    }
 }
 
 /// Decode a lowercase hex SHA-256 into a `[u8; 32]`. `None` on malformed

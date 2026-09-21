@@ -26,7 +26,7 @@ mkIf oidcEnabled {
       {
         name = "dex";
         type = "oidc";
-        url = "https://${dx.domain}/dex";
+        url = "http://127.0.0.1:${toString dx.port}/dex";
         client_id = "cryptpad";
         client_secret = "@CRYPTPAD_SSO_SECRET@";
       }

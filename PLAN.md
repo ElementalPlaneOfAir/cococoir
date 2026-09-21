@@ -154,12 +154,13 @@ The contract adapts per service class:
 - **Infra services** (dex): 3 options — no storage, no health path
   (dex exposes its own /.well-known/openid-configuration).
 
-##### Existing services (7, all built on the factory)
+##### Existing services (8, all built on the factory)
 
 | Service | Port | Health | Subvolume | OIDC-integrated |
 |---------|------|--------|-----------|-----------------|
 | jellyfin | 8096 | /health | media (movies/shows/music) + metadata | Yes (via jellarr + jellyfin-oidc) |
 | cryptpad | 3000 | /checkup/ | cryptpad-data | Yes (via cryptpad-oidc) |
+| forgejo | 3001 | /api/healthz | forgejo-data | Yes (via forgejo-oidc) |
 | radarr | 7878 | /ping | — | — |
 | sonarr | 8989 | /ping | — | — |
 | lidarr | 8686 | /ping | — | — |
@@ -184,11 +185,15 @@ Services are wired to Dex declaratively:
   the Jellyfin client to Dex's staticClients, configures
   jellarr with Dex as the OIDC provider.
 - `cryptpad-oidc.nix`: similarly for CryptPad SSO.
-- The `vmtest-wiring` L1 check asserts both integrations
+- `forgejo-oidc.nix`: adds the Forgejo client to Dex's staticClients
+  (clearnet + i2p callback) and registers Dex as a Forgejo OIDC
+  authentication source via `forgejo admin auth add-oauth` (sources
+  live in Forgejo's DB, so a boot oneshot does the registration).
+- The `vmtest-wiring` L1 check asserts all three integrations
   survive module composition (no mkForce/optionalAttrs dropping
   them from the rendered config).
 
-Both integrations auto-activate when their parent service and Dex
+All three integrations auto-activate when their parent service and Dex
 are both enabled — the customer sees one toggle ("enable jellyfin")
 and gets OIDC for free. No `fortress.integrations.X.enable` option
 exists.

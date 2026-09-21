@@ -42,12 +42,12 @@ mkFortressService {
   defaultPort = 5556;
   defaultHealthPath = "/dex/.well-known/openid-configuration";
   conventionalSubdomain = "auth";
-  extraConfig = {cfg, ...}: {
+  extraConfig = {cfg, lib, config, ...}: {
     services.dex = {
       enable = true;
       settings = lib.mkMerge [
         {
-          issuer = "https://${config.fortress.services.dex.domain}/dex";
+          issuer = "http://127.0.0.1:${toString cfg.port}/dex";
           web.http = "127.0.0.1:${toString cfg.port}";
           storage.type = "sqlite3";
           storage.config.file = "/var/lib/dex/dex.db";
@@ -60,5 +60,18 @@ mkFortressService {
     systemd.services.dex.serviceConfig = {
       StateDirectory = "dex";
     };
+
+    services.caddy.virtualHosts."http://${config.fortress.services.dex.i2pDomain}".extraConfig =
+      let
+        appServices = lib.filterAttrs (_: s:
+          (s.enable or false)
+          && (s.public or false)
+          && (s ? i2pDomain)
+          && s.i2pDomain != config.fortress.services.dex.i2pDomain)
+          config.fortress.services;
+      in
+        lib.mkDefault (lib.concatMapStringsSep "\n" (s:
+          "header >Location \"^https://${lib.replaceStrings ["."] ["\\."] s.domain}\" \"http://${s.i2pDomain}\"")
+        (lib.attrValues appServices));
   };
 }

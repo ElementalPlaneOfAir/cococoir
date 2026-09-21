@@ -59,6 +59,33 @@ let
   # box's dnsmasq (ADR-028) terminate TLS on the box directly. Never
   # 0.0.0.0: the forwarder owns the tunnel IP.
   bindAddrs = lib.concatStringsSep " " config.fortress.network.caddyBindAddresses;
+  # I2P plane naming: every public vhost gets a plain-HTTP twin at
+  # `<domain first label>.<baseDomain first label>.i2p`, derived —
+  # never a customer-facing option. Fail loud when baseDomain is
+  # unset: there is no name to derive, and silent absence would be
+  # a silent-failure seam.
+  i2pLabel =
+    if baseDomain == null
+    then throw ''
+      fortress.services.${args.name}: the I2P plane derives its
+      hostname label from the first DNS label of
+      `fortress.baseDomain`; set `fortress.baseDomain` or override
+      `fortress.services.${args.name}.i2pDomain` explicitly.
+    ''
+    else builtins.head (lib.splitString "." baseDomain);
+  escapeDots = s: lib.replaceStrings ["."] ["\\."] s;
+  dexOn = (options.fortress.services ? dex) && config.fortress.services.dex.enable;
+  dexPort = toString config.fortress.services.dex.port;
+  dexClearnetUrl = "https://${config.fortress.services.dex.domain}";
+  dexI2pUrl = "http://${config.fortress.services.dex.i2pDomain}";
+  # The dex issuer is a loopback address — never browser-reachable.
+  # Every vhost rewrites any redirect to it onto the dex surface of
+  # its own path: clearnet vhosts → the clearnet dex origin, I2P
+  # vhosts → the I2P dex origin. The `>` prefix defers the replace
+  # until the response header is written; `$`-free find/replace keeps
+  # the untouched remainder of the Location value.
+  issuerLocationRewrite = target:
+    "header >Location \"^http://127\\.0\\.0\\.1:${dexPort}\" \"${target}\"\n";
 in
 {
   options.fortress.services.${args.name} =
@@ -123,6 +150,18 @@ in
           Local TCP port ${args.name} binds to. The Caddy vhost
           reverse-proxies to `127.0.0.1:<this>`. Override only
           to avoid a port conflict.
+        '';
+        internal = true;
+      };
+
+      i2pDomain = mkOption {
+        type = types.str;
+        default = "${builtins.head (lib.splitString "." cfg.domain)}.${i2pLabel}.i2p";
+        description = ''
+          Plain-HTTP hostname for this service on the I2P plane,
+          derived from the service's clearnet subdomain and the
+          first DNS label of `fortress.baseDomain`. Never
+          customer-facing; served by Caddy over the I2P tunnel.
         '';
         internal = true;
       };
@@ -218,9 +257,22 @@ in
             # tunnel IP (10.10.0.<n>:80/443) as the external ingress and
             # forwards to Caddy on 127.0.0.1; a wildcard Caddy bind would
             # collide with it (EADDRINUSE) and silently kill remote access.
-            tlsLine + "bind ${bindAddrs}\n" + (if cfg.public
+            tlsLine + "bind ${bindAddrs}\n"
+            + (if dexOn then issuerLocationRewrite dexClearnetUrl else "")
+            + (if cfg.public
               then "reverse_proxy 127.0.0.1:${toString cfg.port}"
               else ''respond "Forbidden" 403''));
+
+        # Plain-HTTP twin for the I2P plane: loopback-only bind (the
+        # I2P tunnel is the local ingress), no TLS, no ACME, no
+        # HTTP→HTTPS redirect. The issuer rewrite points at the I2P
+        # dex origin so the SSO redirect chain stays on the path the
+        # browser is already on.
+        services.caddy.virtualHosts."http://${cfg.i2pDomain}".extraConfig =
+          lib.mkIf cfg.public (lib.mkDefault
+            ("bind 127.0.0.1\n"
+            + (if dexOn then issuerLocationRewrite dexI2pUrl else "")
+            + "reverse_proxy 127.0.0.1:${toString cfg.port}"));
       }
       ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; options = options; })
     ]

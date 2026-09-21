@@ -128,11 +128,21 @@ impl HetznerDns {
     /// come from `SECRETS` (see `secret.rs`); missing config panics in
     /// that `LazyLock` (fail-fast at boot), never on a first DNS call.
     fn from_secrets() -> Self {
-        let s = &SECRETS.secrets;
+        let (zone_id, zone_name, token) = match &SECRETS.secrets {
+            super::secret::SecretSpecProfile::Default {
+                dns_zone_id,
+                dns_zone_name,
+                dns_token,
+                ..
+            } => (dns_zone_id, dns_zone_name, dns_token),
+            super::secret::SecretSpecProfile::Provisioning { .. } => {
+                unreachable!("edge secrets always load the default profile")
+            }
+        };
         Self::new(
-            s.dns_zone_id.clone(),
-            s.dns_zone_name.clone(),
-            s.dns_token.clone(),
+            zone_id.clone(),
+            zone_name.clone(),
+            token.clone(),
         )
     }
 

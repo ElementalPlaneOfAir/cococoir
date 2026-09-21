@@ -161,7 +161,7 @@ EOF
 fi
 
 # ---- Hosts entries (container tier uses *.vmtest.local) -------------
-HOSTS_ENTRIES="127.0.0.1 jellyfin.vmtest.local auth.vmtest.local cryptpad.vmtest.local"
+HOSTS_ENTRIES="127.0.0.1 jellyfin.vmtest.local auth.vmtest.local cryptpad.vmtest.local git.vmtest.local"
 if ! grep -qs 'jellyfin.vmtest.local' /etc/hosts; then
   warn "Hosts entries needed so your browser finds the local services."
   $SUDO sh -c "printf '\n$HOSTS_ENTRIES\n' >> /etc/hosts" 2>/dev/null &&
@@ -219,6 +219,7 @@ msg "Login (Dex): admin@example.com / password   (self-signed cert — accept th
 msg "  https://jellyfin.vmtest.local:${PORT}/   (media)"
 msg "  https://auth.vmtest.local:${PORT}/        (SSO)"
 msg "  https://cryptpad.vmtest.local:${PORT}/    (docs)"
+msg "  https://git.vmtest.local:${PORT}/         (git forge — SSO via Dex)"
 msg "Manage: docker stop|start|rm $CONTAINER ; data persists in the fortress-data volume."
 [ "$OS" = macos ] && warn "macOS support for this tier is untested (see nixosConfigurations/fortress-container.nix) — if anything above failed, that's the likely culprit."
 [ "$OS" != nixos ] && msg "Deployment flake: $CONFIG_DIR/flake.nix — edit + re-run 'nix build && docker import' to update."

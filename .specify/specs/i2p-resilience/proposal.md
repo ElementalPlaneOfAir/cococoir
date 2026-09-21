@@ -169,14 +169,20 @@ slices (10), ADR + strongest objection recorded (12, 15).
 
 ## Tasks
 
-### T1: dex issuer → loopback
+### T1: dex issuer → loopback ✅ (done 2026-09-21)
 **Depends on:** none
 **Verification:** rendered dex config shows the loopback issuer; dex
 unit binds `127.0.0.1:<port>` (already does); L0/L1 green
 **Files:** `nix/nixos-modules/services/dex.nix`,
-`nix/nixos-modules/integrations/jellyfin-oidc.nix`
+`nix/nixos-modules/integrations/jellyfin-oidc.nix`,
+`nix/nixos-modules/integrations/cryptpad-oidc.nix`
+*(Amended 2026-09-21 during implementation: cryptpad-oidc also
+consumes the dex issuer server-side; the loopback refactor must
+update it or clearnet CryptPad SSO — asserted green by A4 — breaks.
+CryptPad remains out of scope for the I2P path itself; this is only
+its clearnet provider URL.)*
 
-### T2: factory emits `.i2p` vhosts + Location rewrite
+### T2: factory emits `.i2p` vhosts + Location rewrite ✅ (done 2026-09-21)
 **Depends on:** T1 (flow only completes with both)
 **Verification:** `contract-conformance` L1 still passes;
 `vmtest-wiring` asserts the rewrite renders on every service vhost
@@ -221,6 +227,24 @@ cryptpad marker)
 **Verification:** named manual test on the deployed box, recorded in
 STATUS.md with proof
 **Files:** `docs/STATUS.md`
+
+### T9 (blocker, discovered during T3): unblock the L2 gate —
+### jellarr pnpm-deps hash mismatch ✅ (done 2026-09-21)
+**Depends on:** none
+**Verification:** `nix build` of the jellarr closure succeeds
+**Files:** TBD by operator decision
+
+*Added 2026-09-21.* The first T3 e2e run failed before reaching the
+VM: `jellarr-pnpm-deps` (upstream `venkyr77/jellarr` at the locked
+rev `de530bc`) gets a hash mismatch under the nixpkgs the 2026-09-19
+flake.lock update pinned (`ec2d622` → `e554fab`, ~3.5 weeks of
+nixpkgs): the new toolchain fetches different pnpm content than the
+hash upstream hardwires. **Proven pre-existing**: reproduces on clean
+HEAD with the i2p-resilience changes stashed. Upstream has no fix
+(PR #75 "pin pnpm to 10" was closed unmerged; PR #73 "allow
+overriding the jellarr package" is open and would give
+`services.jellarr.package`). T3's L2 run is blocked until T9 lands.
+Fix options recorded in STATUS.md; operator decides.
 
 ## Strongest objection
 

@@ -77,7 +77,10 @@ mkIf oidcEnabled (lib.mkMerge [
       {
         id = "jellyfin";
         name = "Jellyfin";
-        redirectURIs = ["https://${jf.domain}/sso/OIDC/Callback/dex"];
+        redirectURIs = [
+          "https://${jf.domain}/sso/OIDC/Callback/dex"
+          "http://${jf.i2pDomain}/sso/OIDC/Callback/dex"
+        ];
         secretFile = secretFile;
       }
     ];
@@ -101,7 +104,7 @@ mkIf oidcEnabled (lib.mkMerge [
           Providers = [{
             ProviderId = "dex";
             DisplayName = "Dex";
-            Authority = "https://${dx.domain}/dex";
+            Authority = "http://127.0.0.1:${toString dx.port}/dex";
             ClientId = "jellyfin";
             ClientSecret = "@OIDC_SECRET@";
             Scopes = "openid profile email groups";

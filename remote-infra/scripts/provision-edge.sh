@@ -106,6 +106,9 @@ ADMIN_KEY_HASH=$(printf '%s' "$ADMIN_KEY" | sha256sum | cut -d' ' -f1)
 # Deploy the committed contract + the values file. The plaintext admin
 # key and WG private key never reach the box as files the operator
 # juggles — they resolve through the secretspec SDK from edge.env.
+# The ONE merged manifest (default profile = this runtime contract) is
+# deployed as-is; the provisioning profile + sops provider are inert on
+# the box (never selected by the binary).
 # edge.env is built locally (0600 umask) and piped over ssh: no secret
 # ever sits on a remote shell command line. SMTP_* are appended only
 # when the relay is configured — absent means the box keeps the console
@@ -130,7 +133,7 @@ ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "mkdir -p /etc/fortress && \
    cat > /etc/fortress/secretspec.toml && \
    chmod 0644 /etc/fortress/secretspec.toml" \
-  < "$REPO_ROOT/crates/controlplane/secretspec.toml"
+  < "$REPO_ROOT/secretspec.toml"
 ssh -o StrictHostKeyChecking=accept-new "root@${EDGE_IPV4}" \
   "cat > /etc/fortress/edge.env && chmod 0600 /etc/fortress/edge.env" \
   < "$EDGE_ENV"

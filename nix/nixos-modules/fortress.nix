@@ -35,7 +35,9 @@
     ./services/qbittorrent.nix
     ./services/seerr.nix
     ./services/media.nix
+    ./services/forgejo.nix
     ./integrations/jellyfin-oidc.nix
     ./integrations/cryptpad-oidc.nix
+    ./integrations/forgejo-oidc.nix
   ];
 }

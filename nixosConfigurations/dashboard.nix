@@ -22,6 +22,7 @@
   # Service toggles. Each maps to one switch in the dashboard.
   fortress.services.jellyfin.enable = true;
   fortress.services.cryptpad.enable = true;
+  fortress.services.forgejo.enable = true;
 
   # One switch for the whole media automation stack: radarr,
   # sonarr, qbittorrent and seerr, wired together (requests,
