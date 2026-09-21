@@ -36,6 +36,7 @@ pub(crate) static SECRETS: LazyLock<secretspec::Resolved<SecretSpec>> = LazyLock
         // reason gives the audit log a human-readable provenance and
         // stays correct if the policy ever becomes "always").
         .with_reason("fortress-edge boot")
+        .with_profile("provisioning")
         .load()
         .expect("edge secrets must resolve at boot")
 });
