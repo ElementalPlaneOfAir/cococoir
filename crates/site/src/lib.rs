@@ -440,7 +440,32 @@ pub mod server {
     /// account server functions (`#[server]`) and the SSR components
     /// both read it from `FullstackContext`. `None` (SSR-only tests)
     /// renders the landing + docs but the account routes 500.
+    /// dioxus's `ServeConfig` wraps SSR output in `exe_dir/public/index.html`
+    /// (the committed zine shell: vendored Tailwind runtime + tokens).
+    /// `ServeConfig::new()` silently falls back to a bare `<head>` when that
+    /// file is missing — the whole stylesheet vanishes with no error. The
+    /// nix bundle ships the shell via a `bin/public` symlink; a `cargo run`
+    /// dev binary has no `target/debug/public`, so it rendered unstyled.
+    /// Bridge the gap: materialize the committed shell next to the exe when
+    /// absent, so every launch mode serves the styled page.
+    fn ensure_public_shell() {
+        let exe_dir = std::env::current_exe()
+            .expect("fortress-site: current exe path")
+            .parent()
+            .expect("fortress-site: exe has a parent dir")
+            .to_path_buf();
+        let index = exe_dir.join("public").join("index.html");
+        if index.exists() {
+            return;
+        }
+        std::fs::create_dir_all(index.parent().expect("public dir has a parent"))
+            .expect("fortress-site: create exe-relative public dir");
+        std::fs::write(&index, include_str!("../public/index.html"))
+            .expect("fortress-site: write the zine shell next to the exe");
+    }
+
     pub fn fullstack_router(backend: Option<&'static SiteBackend>) -> Router {
+        ensure_public_shell();
         let inject_backend = middleware::from_fn(move |mut request: Request, next: Next| {
             if let Some(backend) = backend {
                 request.extensions_mut().insert(backend);
@@ -505,6 +530,10 @@ pub mod server {
             assert!(
                 body.contains("curl https://proletariat.tech/install.sh | bash"),
                 "the landing renders the curl card: {body}"
+            );
+            assert!(
+                body.contains("tailwindcss"),
+                "the landing serves the zine shell head — if this fails, the CSS vanished (ServeConfig fell back to ssr_only without exe-relative public/index.html): {body}"
             );
         }
 
