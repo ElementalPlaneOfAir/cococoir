@@ -116,15 +116,27 @@ Regenerated: 2026-09-21T20:21:17Z — git a6ae428
   against the debug binary with a wasm client built into
   `target/debug/public/wasm` (`/wasm/fortress-site.js` =
   text/javascript, `/wasm/fortress-site_bg.wasm` = application/wasm).
-  Dev-loop caveat: `cargo run` does NOT build the wasm client — the
-  dev `site` process needs a wasm build step (bundle builds it via the
-  crane wasm leg + wasm-bindgen; a local `dx build --platform web` or a
-  mirrored `cargo build --target wasm32-unknown-unknown` + wasm-bindgen
-  into `target/debug/public/wasm` does the same). The nix-side bundle
-  `.#siteBundle` is live: server leg = plain crane (deps cache shared
-  with the fortress package), client leg = crane with the
-  wasm-capable toolchain (`--no-default-features --features web
-  --target wasm32-unknown-unknown`), glue = explicit `wasm-bindgen
+  The dev loop now builds it: **`site-wasm`** (a process-compose
+  process, added 2026-09-21) runs the same cargo build + wasm-bindgen
+  into `target/debug/public/wasm`, and `site` waits on it. Two more
+  bugs fixed 2026-09-21 (found via `nix run .#dashboard-dev`):
+  **Quirks Mode** — the shell opened `<html>` without a doctype
+  (dioxus-ssr emits none); `index_shell_html` now prepends
+  `<!DOCTYPE html>` (regenerated `public/index.html`), with the
+  doctype asserted in the tripwire; and **stale shell** —
+  `ensure_public_shell()` only wrote `exe_dir/public/index.html` when
+  absent, so a pre-fix copy persisted; it now writes the committed
+  shell every boot. The first `site-wasm` wiring had an `exec` bug
+  (`mkdir … && exec cargo build … && wasm-bindgen` — `exec` replaced
+  the shell, so wasm-bindgen never ran and the dir stayed empty
+  despite "completed successfully"); `exec` removed. Verified:
+  `cargo test -p fortress-site` 10/10, `nix build .#siteBundle` PASS
+  (bundle carries doctype + wasm), served `/register` opens
+  `<!DOCTYPE html>`, `/wasm/fortress-site.js` = text/javascript.
+  The nix-side bundle `.#siteBundle` is live: server leg = plain crane
+  (deps cache shared with the fortress package), client leg = crane
+  with the wasm-capable toolchain (`--no-default-features --features
+  web --target wasm32-unknown-unknown`), glue = explicit `wasm-bindgen
   --target web` (0.2.127 — nixpkgs maxes at 0.2.105 and the lock
   can't downgrade below it: js-sys 0.3.104 via chrono needs newer;
   built via `buildWasmBindgenCli`) + the authored index.html.

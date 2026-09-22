@@ -97,7 +97,7 @@
   } // (if siteWasmToolchain == null then {} else {
     site-wasm = {
       command = ''
-        mkdir -p target/debug/public/wasm && exec ${siteWasmToolchain}/bin/cargo build --quiet --target wasm32-unknown-unknown -p fortress-site --no-default-features --features web && ${siteWasmBindgenCli}/bin/wasm-bindgen --target web --out-dir target/debug/public/wasm target/wasm32-unknown-unknown/debug/fortress-site.wasm
+        mkdir -p target/debug/public/wasm && ${siteWasmToolchain}/bin/cargo build --quiet --target wasm32-unknown-unknown -p fortress-site --no-default-features --features web && ${siteWasmBindgenCli}/bin/wasm-bindgen --target web --out-dir target/debug/public/wasm target/wasm32-unknown-unknown/debug/fortress-site.wasm
       '';
     };
   });

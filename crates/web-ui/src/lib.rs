@@ -641,7 +641,15 @@ pub fn landing_html(props: &LandingProps) -> String {
 /// `cargo run -p fortress-web-ui --example write_index`; the site's
 /// `public_index_carries_the_zine_shell` tripwire asserts they match.
 pub fn index_shell_html(title: &str) -> String {
-    shell(title, ShellVariant::Loud, rsx!(<div id="main"></div>)).to_html()
+    // Prepend the doctype: momenta/dioxus SSR never emits one, and a
+    // document without it renders in Quirks Mode (the browser reported
+    // "This page is in Quirks Mode" against the served site). The
+    // committed public/index.html is generated from this function, so
+    // the doctype lives here in exactly one place.
+    format!(
+        "<!DOCTYPE html>{}",
+        shell(title, ShellVariant::Loud, rsx!(<div id="main"></div>)).to_html()
+    )
 }
 
 /// A red agitprop marquee strip. `phrase` is repeated to fill both
