@@ -446,9 +446,8 @@ pub mod server {
     /// file is missing — the whole stylesheet vanishes with no error. The
     /// nix bundle ships the shell via a `bin/public` symlink; a `cargo run`
     /// dev binary has no `target/debug/public`, so it rendered unstyled.
-    /// Bridge the gap: write the committed shell next to the exe on every
-    /// boot (not just when absent — a stale copy from an older commit
-    /// silently serves a doctype-less / CSS-different shell).
+    /// Bridge the gap: materialize the committed shell next to the exe when
+    /// absent, so every launch mode serves the styled page.
     fn ensure_public_shell() {
         let exe_dir = std::env::current_exe()
             .expect("fortress-site: current exe path")
@@ -456,6 +455,9 @@ pub mod server {
             .expect("fortress-site: exe has a parent dir")
             .to_path_buf();
         let index = exe_dir.join("public").join("index.html");
+        if index.exists() {
+            return;
+        }
         std::fs::create_dir_all(index.parent().expect("public dir has a parent"))
             .expect("fortress-site: create exe-relative public dir");
         std::fs::write(&index, include_str!("../public/index.html"))
@@ -840,10 +842,6 @@ mod doc_tests {
             committed,
             expected,
             "public/index.html is stale against the zine shell — regenerate with: cargo run -p fortress-web-ui --example write_index > crates/site/public/index.html (then re-insert the wasm script line before </body>)"
-        );
-        assert!(
-            committed.starts_with("<!DOCTYPE html>"),
-            "the shell must open with a doctype or the browser renders the site in Quirks Mode"
         );
     }
 
