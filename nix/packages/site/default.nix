@@ -107,7 +107,7 @@ let
 
   siteBundle = pkgs.runCommand "fortress-site-bundle-0.1.0" {
     passthru = {
-      inherit server wasmClient wasmBindgenCli;
+      inherit server wasmClient wasmBindgenCli wasmToolchain;
     };
     meta = with lib; {
       description = "Fortress site — dioxus fullstack bundle (SSR server + wasm client)";

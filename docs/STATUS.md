@@ -103,16 +103,28 @@ Regenerated: 2026-09-21T20:21:17Z — git a6ae428
   (embedded repo script) and the pulldown-cmark markdown wiki
   `/docs{,/{slug}}`; the dioxus SSR application is the router
   fallback (currently the `/` landing with the curl card; app pages
-  move here next). **Hydration proven + nix bundle landed**: the
-  server picks the bundle up via dioxus's own resolution —
-  DIOXUS_PUBLIC_PATH if set, else `public/` beside the exe (the
-  nix bundle symlinks `$out/bin/public → $out/public`; the router
-  gates `serve_static_assets()` on the dir existing so cargo tests
-  stay SSR-only). The **nix-side bundle `.#siteBundle` is live**:
-  server leg = plain crane (deps cache shared with the fortress
-  package), client leg = crane with the wasm-capable toolchain
-  (`--no-default-features --features web --target
-  wasm32-unknown-unknown`), glue = explicit `wasm-bindgen
+  move here next). **Site SSR landed; hydration WAS NOT proven**:
+  the router was claimed to "gate `serve_static_assets()` on the dir
+  existing" and `/wasm/fortress-site_bg.wasm = 200` was claimed in a
+  smoke — but `serve_static_assets()` was never wired into the
+  router, so the bundle shipped `/wasm/*` and 404'd it (silent-failure
+  seam, real browser showed `Loading module … blocked because of a
+  disallowed MIME type ("")` on the login screen). **Fixed 2026-09-21**:
+  the router now calls `serve_static_assets()` (safe — `ensure_public_shell()`
+  guarantees `exe_dir/public` exists, so cargo tests stay SSR-only) and
+  `static_assets_are_served_not_ssr_fallback` is a tripwire; verified
+  against the debug binary with a wasm client built into
+  `target/debug/public/wasm` (`/wasm/fortress-site.js` =
+  text/javascript, `/wasm/fortress-site_bg.wasm` = application/wasm).
+  Dev-loop caveat: `cargo run` does NOT build the wasm client — the
+  dev `site` process needs a wasm build step (bundle builds it via the
+  crane wasm leg + wasm-bindgen; a local `dx build --platform web` or a
+  mirrored `cargo build --target wasm32-unknown-unknown` + wasm-bindgen
+  into `target/debug/public/wasm` does the same). The nix-side bundle
+  `.#siteBundle` is live: server leg = plain crane (deps cache shared
+  with the fortress package), client leg = crane with the
+  wasm-capable toolchain (`--no-default-features --features web
+  --target wasm32-unknown-unknown`), glue = explicit `wasm-bindgen
   --target web` (0.2.127 — nixpkgs maxes at 0.2.105 and the lock
   can't downgrade below it: js-sys 0.3.104 via chrono needs newer;
   built via `buildWasmBindgenCli`) + the authored index.html.

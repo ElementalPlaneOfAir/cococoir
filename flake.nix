@@ -278,10 +278,21 @@
         # The pc spec lives in nix/dev/process-compose.nix — dev
         # tooling, deliberately outside the nixos modules.
         apps.dashboard-dev = let
+          siteBundle = if system == "x86_64-linux" then
+            realPkgs.callPackage ./nix/packages/site {
+              crane = inputs.crane;
+              rustOverlay = inputs.rust-overlay;
+            }
+          else
+            null;
           devPcConfig = (realPkgs.formats.yaml {}).generate "dashboard-dev.yaml"
             (import ./nix/dev/process-compose.nix {
               pkgs = realPkgs;
               adminPasswordHash = devAdminHash;
+              # The site-wasm dev build step only exists where the site
+              # bundle does (x86_64-linux); macOS stays SSR-only.
+              siteWasmToolchain = if siteBundle == null then null else siteBundle.passthru.wasmToolchain;
+              siteWasmBindgenCli = if siteBundle == null then null else siteBundle.passthru.wasmBindgenCli;
             });
         in {
           type = "app";

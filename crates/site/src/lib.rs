@@ -478,6 +478,12 @@ pub mod server {
             .route("/docs/{page}", get(docs_page_route))
             .with_state(FullstackState::headless())
             .register_server_functions()
+            // Serve the wasm client + any other public/ asset (index.html
+            // excluded — the SSR handler generates it). Safe now that
+            // ensure_public_shell() guarantees the dir exists; without
+            // this the bundle ships /wasm/* but 404s it, and hydration
+            // silently never happens.
+            .serve_static_assets()
             .fallback(get(FullstackState::render_handler))
             .with_state(FullstackState::new(ServeConfig::new(), App))
             .layer(inject_backend)
@@ -507,6 +513,50 @@ pub mod server {
             assert_eq!(
                 response.headers().get(header::CONTENT_TYPE).unwrap(),
                 "text/x-shellscript; charset=utf-8"
+            );
+        }
+
+        #[tokio::test]
+        async fn static_assets_are_served_not_ssr_fallback() {
+            // Tripwire: the wasm client 404'd with no MIME type ("") because
+            // serve_static_assets() was never wired into the router — the
+            // bundle shipped /wasm/* but the server never served it, so
+            // hydration silently never happened. Write a probe asset next
+            // to the exe and assert the router serves it (200 + MIME) rather
+            // than falling through to the SSR render handler.
+            let exe_dir = std::env::current_exe()
+                .expect("current exe path")
+                .parent()
+                .expect("exe parent dir")
+                .to_path_buf();
+            let probe = exe_dir.join("public").join("probe.js");
+            std::fs::create_dir_all(probe.parent().expect("probe parent"))
+                .expect("create probe public dir");
+            std::fs::write(&probe, "export const probe = 1;")
+                .expect("write probe asset");
+            let response = ssr_router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/probe.js")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            std::fs::remove_file(&probe).expect("remove probe asset");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "static asset must be served, not SSR-fall through"
+            );
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            assert!(
+                content_type.contains("javascript") || content_type.contains("text/javascript"),
+                "the served asset must carry a JS MIME type (the wasm 404'd with an empty MIME): got '{content_type}'"
             );
         }
 
