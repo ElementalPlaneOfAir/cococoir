@@ -9,12 +9,24 @@
   env.GREET = "devenv";
   dotenv.enable = true;
 
+  # rust-overlay so `rust-bin` exists in the shell's pkgs. Same rev the
+  # flake pins (see devenv.yaml), so the shell and the nix build can
+  # never drift apart.
+  overlays = [(import inputs.rust-overlay)];
+
   # https://devenv.sh/packages/
   packages = with pkgs; [
     opentofu
     nixos-anywhere
     wireguard-tools
     valkey
+    # The site crate is edition 2024 and topcoat requires rustc >= 1.98;
+    # the flake's old 1.97.1 pin cannot build it. `cargo build -p
+    # fortress-site` now works from a cold devenv shell.
+    (rust-bin.stable."1.98.1".default.override {
+      targets = ["wasm32-unknown-unknown"];
+      extensions = ["rust-src" "rust-analyzer" "clippy" "rustfmt"];
+    })
   ];
 
   # https://devenv.sh/processes/

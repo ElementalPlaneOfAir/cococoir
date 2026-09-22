@@ -1485,7 +1485,7 @@ pub fn app_with(
 /// way — tests that exercise the process-global seam assert `set()`
 /// succeeded (loud tripwire against sharing that singleton).
 #[allow(dead_code)]
-pub(crate) fn set_forwarder_for_tests() {
+pub fn set_forwarder_for_tests() {
     let _ = FORWARDER.set(Forwarder::new_live(Config::default()).unwrap());
 }
 

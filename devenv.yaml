@@ -2,6 +2,11 @@
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
+  # Same rust-overlay rev the cococoir flake pins, so the dev shell's
+  # toolchain and the nix build's toolchain can never diverge.
+  rust-overlay:
+    url: github:oxalica/rust-overlay/26a71e661c47bd21a05d06fec749f3f7c75e9d12
+    flake: false
 
 # If you're using non-OSS software, you can set allow_unfree to true.
 # allow_unfree: true

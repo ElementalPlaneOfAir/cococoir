@@ -1,139 +1,205 @@
-//! The account lifecycle server functions — the dioxus fullstack
-//! bridge between the auth pages and the embedded ControlPlane.
+//! The account lifecycle bridge between the auth pages and the
+//! embedded [`SiteBackend`].
 //!
-//! These are the replacement for the controlplane's poem `/auth/*`
-//! form handlers. Unlike the poem surface (form POST → server
-//! re-renders HTML), the fullstack ergonomics are: the dioxus
-//! components hold form state, call these typed server functions, and
-//! re-render from the typed outcome — no form round-trip, no partial
-//! page. The session cookie is set on the response by
-//! [`login`] via `FullstackContext::add_response_header`.
+//! Plain async functions over the controlplane's domain methods — no
+//! request-layer coupling. The topcoat pages call these and turn the
+//! typed outcomes into Post/Redirect/Get responses.
 //!
-//! The server-fn bodies are `#[cfg(feature = "server")]`-gated by the
-//! `#[server]` macro, so the wasm client tier never compiles the
-//! embedded controlplane. The DTOs below are the serializable contract
-//! both tiers share.
+//! The session cookie is the controlplane's (`fortress_account_session`,
+//! HttpOnly) — set on the redirect response on login, cleared on logout.
+//! This crate deliberately does NOT adopt `topcoat-session`: the session
+//! store (`fortress:session:*`) and cookie name are load-bearing for the
+//! existing controlplane and `pairing.rs` tests.
 
-use dioxus::prelude::*;
-#[cfg(feature = "server")]
-use dioxus::prelude::dioxus_fullstack::http::HeaderMap;
-use serde::{Deserialize, Serialize};
+use fortress_controlplane::controlplane::account::AccountError;
+use fortress_controlplane::controlplane::web::{
+    clear_session_cookie_header, read_cookie_from_headers, session_cookie_header,
+};
+use topcoat::router::{HeaderMap, HeaderValue};
+
+pub use fortress_controlplane::controlplane::web::SESSION_COOKIE;
+
+use crate::SiteBackend;
 
 /// Outcome of a signup attempt. The account is `pending` until the
 /// emailed link is used.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SignupOutcome {
-    /// Account created; a verification link was emailed. The UI shows
-    /// "check your email".
+    /// Account created; a verification link was emailed.
     Created,
-    /// Signup failed; `message` is customer-facing.
-    Error { message: String },
+    /// Signup failed; `code` is a short PRG query token, never a secret.
+    Error { code: &'static str },
 }
 
 /// Outcome of a login attempt.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LoginOutcome {
-    /// Session established; the `fortress_account_session` cookie was
-    /// set on the response.
-    Ok,
+    /// Session established; the caller sets this Set-Cookie header on
+    /// its redirect response.
+    Ok { cookie: HeaderValue },
     /// The account is real but not yet verified.
-    NeedsVerification { email: String },
-    /// Login failed; `message` is customer-facing.
-    Error { message: String },
+    NeedsVerification,
+    /// Login failed.
+    Error { code: &'static str },
 }
 
 /// Whether the current request carries a live account session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SessionState {
     Anonymous,
     LoggedIn { email: String },
 }
 
-/// Outcome of a verification-link click. The verify *page* is T2b;
-/// the server function exists now because the account lifecycle
-/// round-trip (signup → verify → login) needs it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Outcome of consuming a verification link.
+#[derive(Debug, Clone, PartialEq)]
 pub enum VerifyOutcome {
-    /// The token was single-use consumed; the account is now active.
     Activated,
-    /// The link is invalid or already used.
     Invalid,
 }
 
-/// Resolve the current session from the request cookie. A missing
-/// backend (SSR-only tests) or absent cookie resolves to `Anonymous` —
-/// this is the read-only surface the landing renders through, so it
-/// must never fail the page.
-#[server(endpoint = "auth/session", headers: HeaderMap)]
-pub async fn current_session() -> Result<SessionState, ServerFnError> {
-    let Some(token) = crate::server::read_session_cookie(&headers) else {
-        return Ok(SessionState::Anonymous);
-    };
-    let Ok(backend) = crate::server::backend() else {
-        return Ok(SessionState::Anonymous);
+/// Outcome of a password-reset request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForgotOutcome {
+    Sent,
+    UnknownEmail,
+    Error { code: &'static str },
+}
+
+/// Outcome of consuming a reset link.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResetOutcome {
+    Done,
+    Invalid,
+}
+
+/// Outcome of resending a verification link.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResendOutcome {
+    Sent,
+    AlreadyActive,
+    UnknownEmail,
+}
+
+/// Map an [`AccountError`] onto a short PRG token. Signup already leaks
+/// registration status by design (the duplicate-email error is
+/// user-visible), so hiding the same fact on the reset path bought
+/// nothing — see the controlplane's `ResetOutcome`.
+pub fn error_code(err: &AccountError) -> &'static str {
+    match err {
+        AccountError::NotVerified(_) => "needs_verify",
+        AccountError::DuplicateEmail(_) => "exists",
+        AccountError::NotFound => "unknown",
+        AccountError::InvalidCredentials => "bad_credentials",
+        AccountError::InvalidToken => "invalid_token",
+        AccountError::Mail(_) => "mail_failed",
+        AccountError::InvalidEmail(_)
+        | AccountError::InvalidPassword(_)
+        | AccountError::Corrupt(_)
+        | AccountError::Redis(_) => "failed",
+    }
+}
+
+/// Resolve the current session from the request cookie. A missing or
+/// stale cookie resolves to `Anonymous` — this is the read-only surface
+/// the landing renders through, so it must never fail the page.
+pub async fn current_session(backend: &SiteBackend, headers: &HeaderMap) -> SessionState {
+    let Some(token) = read_cookie_from_headers(headers, SESSION_COOKIE) else {
+        return SessionState::Anonymous;
     };
     match backend.cp.session_account(&token).await {
-        Ok(Some(email)) => Ok(SessionState::LoggedIn { email }),
-        _ => Ok(SessionState::Anonymous),
+        Ok(Some(email)) => SessionState::LoggedIn { email },
+        _ => SessionState::Anonymous,
     }
 }
 
-/// Create a pending account. The ControlPlane emails a single-use
-/// verification link; the UI then shows "check your email".
-#[server(endpoint = "auth/signup")]
-pub async fn signup(email: String, password: String) -> Result<SignupOutcome, ServerFnError> {
-    let backend = crate::server::backend()?;
+/// Create a pending account and email a single-use verification link.
+pub async fn signup(backend: &SiteBackend, email: &str, password: &str) -> SignupOutcome {
     match backend
         .cp
-        .account_signup(&email, &password, backend.mailer)
+        .account_signup(email, password, backend.mailer.as_ref())
         .await
     {
-        Ok(()) => Ok(SignupOutcome::Created),
-        Err(err) => Ok(SignupOutcome::Error {
-            message: fortress_controlplane::account_error_message(&err),
-        }),
+        Ok(()) => SignupOutcome::Created,
+        Err(err) => SignupOutcome::Error {
+            code: error_code(&err),
+        },
     }
 }
 
-/// Consume a verification link. Idempotent-ish: an invalid or already
-/// used token is `Invalid` (a single-use GETDEL burns it either way).
-#[server(endpoint = "auth/verify")]
-pub async fn verify(token: String) -> Result<VerifyOutcome, ServerFnError> {
-    let backend = crate::server::backend()?;
-    match backend.cp.account_verify(&token).await {
-        Ok(()) => Ok(VerifyOutcome::Activated),
-        Err(_) => Ok(VerifyOutcome::Invalid),
+/// Consume a verification link. Single-use (GETDEL) either way, so an
+/// invalid token and an already-used one are both [`VerifyOutcome::Invalid`].
+pub async fn verify(backend: &SiteBackend, token: &str) -> VerifyOutcome {
+    match backend.cp.account_verify(token).await {
+        Ok(()) => VerifyOutcome::Activated,
+        Err(_) => VerifyOutcome::Invalid,
     }
 }
 
-/// Log in: verify the credentials, open a session, and set the HttpOnly
-/// session cookie on the response. Unverified accounts are told the
-/// truth (enumeration is already possible via signup's duplicate-email
-/// error, so silence buys nothing — see `ResetOutcome` in the
-/// controlplane).
-#[server(endpoint = "auth/login")]
-pub async fn login(email: String, password: String) -> Result<LoginOutcome, ServerFnError> {
-    use fortress_controlplane::controlplane::account::AccountError;
-    let backend = crate::server::backend()?;
-    match backend.cp.account_login(&email, &password).await {
-        Ok(token) => {
-            crate::server::set_session_cookie(&token)?;
-            Ok(LoginOutcome::Ok)
-        }
-        Err(AccountError::NotVerified(email)) => Ok(LoginOutcome::NeedsVerification { email }),
-        Err(err) => Ok(LoginOutcome::Error {
-            message: fortress_controlplane::account_error_message(&err),
-        }),
+/// Log in: verify credentials, open a session, and produce the Set-Cookie
+/// header for the caller to put on its redirect response.
+pub async fn login(backend: &SiteBackend, email: &str, password: &str) -> LoginOutcome {
+    match backend.cp.account_login(email, password).await {
+        Ok(token) => LoginOutcome::Ok {
+            cookie: session_cookie_header(&token),
+        },
+        Err(AccountError::NotVerified(_)) => LoginOutcome::NeedsVerification,
+        Err(err) => LoginOutcome::Error {
+            code: error_code(&err),
+        },
     }
 }
 
-/// Invalidate the current session and clear the session cookie.
-#[server(endpoint = "auth/logout", headers: HeaderMap)]
-pub async fn logout() -> Result<(), ServerFnError> {
-    let backend = crate::server::backend()?;
-    if let Some(token) = crate::server::read_session_cookie(&headers) {
+/// Invalidate the current session server-side. Best-effort: the cookie
+/// clear is the security-relevant half, and a store failure must not
+/// leave the user stuck signed in at the browser.
+pub async fn logout(backend: &SiteBackend, headers: &HeaderMap) -> HeaderValue {
+    if let Some(token) = read_cookie_from_headers(headers, SESSION_COOKIE) {
         let _ = backend.cp.account_logout(&token).await;
     }
-    crate::server::clear_session_cookie()?;
-    Ok(())
+    clear_session_cookie_header()
+}
+
+/// Request a password-reset email.
+pub async fn forgot(backend: &SiteBackend, email: &str) -> ForgotOutcome {
+    use fortress_controlplane::controlplane::account::ResetOutcome;
+    match backend
+        .cp
+        .request_password_reset(email, backend.mailer.as_ref())
+        .await
+    {
+        Ok(ResetOutcome::Sent) => ForgotOutcome::Sent,
+        Ok(ResetOutcome::UnknownEmail) => ForgotOutcome::UnknownEmail,
+        Err(err) => ForgotOutcome::Error {
+            code: error_code(&err),
+        },
+    }
+}
+
+/// Consume a reset link and set the new password.
+pub async fn reset(backend: &SiteBackend, token: &str, password: &str) -> ResetOutcome {
+    match backend.cp.reset_password(token, password).await {
+        Ok(()) => ResetOutcome::Done,
+        Err(_) => ResetOutcome::Invalid,
+    }
+}
+
+/// Resend a verification link for a still-pending account.
+pub async fn resend(backend: &SiteBackend, email: &str) -> ResendOutcome {
+    use fortress_controlplane::controlplane::account::ResendVerifyOutcome;
+    match backend
+        .cp
+        .resend_verification(email, backend.mailer.as_ref())
+        .await
+    {
+        Ok(ResendVerifyOutcome::Sent) => ResendOutcome::Sent,
+        Ok(ResendVerifyOutcome::AlreadyActive) => ResendOutcome::AlreadyActive,
+        Ok(ResendVerifyOutcome::UnknownEmail) => ResendOutcome::UnknownEmail,
+        Err(_) => ResendOutcome::UnknownEmail,
+    }
+}
+
+/// Delete the signed-in account. Unwires machines and sessions; never
+/// wipes the customer's box.
+pub async fn delete_account(backend: &SiteBackend, email: &str) -> Result<(), AccountError> {
+    backend.cp.account_delete(email).await
 }

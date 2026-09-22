@@ -1,29 +1,36 @@
 [package]
 name = "fortress-site"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "AGPL-3.0-or-later"
 
+# topcoat's `#[page]`/`#[component]` macros need edition-2024 RPIT capture
+# semantics (`impl View` must capture the macro-injected lifetimes). On
+# edition 2021 they fail with E0700.
+#
+# topcoat >= 0.7 requires rustc 1.98 (workspace dev toolchain is 1.97.1 —
+# see the migration note in docs/STATUS.md).
+#
+# Deliberately NOT adopted from topcoat: `mail` (controlplane owns the
+# `Mailer` trait + SMTP secrets), `session` (controlplane owns
+# `fortress:session:*` + the `fortress_account_session` cookie),
+# `asset`/`font`/`icon` (web-ui's ZINE_CSS/LOUD_CSS are the zero-external-
+# origin design system), `ui` (we have the zine aesthetic, not shadcn).
+
 [dependencies]
-dioxus = { version = "0.7", features = ["fullstack", "router"] }
+topcoat = { version = "0.8", default-features = false, features = ["router", "view", "serve", "tower"] }
+axum = "0.8"
+utoipa = "5"
+utoipa-axum = "0.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 fortress-web-ui = { path = "../web-ui" }
+fortress-controlplane = { path = "../controlplane" }
 serde.workspace = true
-
-dioxus-cli-config = { version = "0.7", optional = true }
-axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] , optional = true }
-tower = { version = "0.5", features = ["util"], optional = true }
-# The account + session domain logic, embedded in-process on the server
-# tier only. The dioxus `#[server]` fn bodies that touch it are
-# `#[cfg(feature = "server")]`-gated, so the wasm client tier never
-# compiles this dependency.
-fortress-controlplane = { path = "../controlplane", optional = true }
-
-[features]
-default = ["server"]
-server = ["dioxus/server", "dep:axum", "dep:tokio", "dep:tower", "dioxus-cli-config", "dep:fortress-controlplane"]
-web = ["dioxus/web"]
+serde_json.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+http-body-util = "0.1"
