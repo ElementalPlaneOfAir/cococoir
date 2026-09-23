@@ -119,6 +119,16 @@
 
       flake.nixosModules.default = nixosModulesWithJellarr;
 
+      # The pkgs factory every consumer of `nixosModules.default`
+      # must pass as `nixpkgs.pkgs`. The modules callPackage the
+      # Rust client (which needs `crane`) and build jellarr's pnpm
+      # deps (which need the hash substitution above) against the
+      # system's pkgs — so a consumer using its own nixpkgs would
+      # fail to build both. Exposing the factory keeps a customer
+      # flake's pkgs wiring to one line instead of a copy of this
+      # flake's internals.
+      flake.lib.mkPkgs = withCrane;
+
       # The edge box is managed by system-manager on a stock Debian
       # image (not NixOS). systemConfigs.edge is the system-manager
       # config; the merged fortress-edge binary is injected via
