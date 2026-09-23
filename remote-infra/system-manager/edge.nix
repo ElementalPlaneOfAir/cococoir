@@ -28,6 +28,11 @@
     wireguard-tools
     caddy
     jq
+    # comma (`,` = nix-community/comma) — run any package by name
+    # without installing it;
+    # the operator's quick-debug tool. Needs flakes (see provision
+    # script's nix.conf).
+    comma
   ];
 
   # ── Files in /etc ───────────────────────────────────────────────

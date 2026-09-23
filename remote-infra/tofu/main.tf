@@ -11,33 +11,30 @@
 #
 # Addressing has exactly one source of truth: this tofu. The rendered
 # edge config and every DNS record derive from the server here, so they
-# cannot drift. The customer's /128 is <server /64>::2, the apex AAAA is
-# <server /64>::1.
+# cannot drift. The apex AAAA is <server /64>::1; customer /128s are
+# carved from the /64 at signup by the control plane (ADR-025), not
+# rendered here.
 #
 # The control-plane store is an EXTERNAL managed Redis (secret REDIS_URL,
 # TLS rediss://), never a local redis on the box — that stays from the
 # ADR-029 design because it is the control plane's persistence, not HA.
 #
 # The box runs a stock Debian image managed by system-manager (see
-# remote-infra/system-manager/edge.nix); the customer box (example123)
-# is still NixOS, rendered from templates below. IPs and the WG subnet
+# remote-infra/system-manager/edge.nix). IPs and the WG subnet
 # flow from tofu so there is exactly one source of truth for the
 # deployed addressing. WG identities are owned at runtime by the
 # fortress-edge binary (self-generates + serves its public key at
 # GET /pubkey) — no key material is provisioned or stored here.
 
 locals {
-  # Customer addresses carve from the box's own routed /64 (ADR-025).
+  # The edge's own addresses carve from the box's own routed /64 (ADR-025).
   # `var.edge_ipv6_subnet` still overrides for an operator who slices one
   # /64 across several boxes. Defaulting straight to the server's /64
-  # means a dropped or renamed server fails loudly at plan time; there is
-  # no silent fallback for customers to get carved from.
+  # means a dropped or renamed server fails loudly at plan time.
   edge_ipv6_subnet = var.edge_ipv6_subnet != "" ? var.edge_ipv6_subnet : hcloud_server.edge.ipv6_network
 
-  customer_ipv6   = cidrhost(local.edge_ipv6_subnet, 2) # <subnet>::2
   edge_primary_v6 = cidrhost(local.edge_ipv6_subnet, 1) # <subnet>::1
   edge_wg_ip      = cidrhost(var.wg_subnet, 1)          # 10.10.0.1
-  customer_wg_ip  = cidrhost(var.wg_subnet, 2)          # 10.10.0.2
 }
 
 resource "hcloud_ssh_key" "operator" {

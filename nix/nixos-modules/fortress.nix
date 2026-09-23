@@ -18,7 +18,7 @@
 #     infra) contract; built via services/_contract.nix
 #   - services.fortress-client — v0 L4 tunnel client systemd
 #     unit (no-op on a v2 single-machine with no WireGuard peer)
-{
+{lib, pkgs, ...}: {
   imports = [
     ./tls.nix
     ./base-domain.nix
@@ -40,4 +40,12 @@
     ./integrations/cryptpad-oidc.nix
     ./integrations/forgejo-oidc.nix
   ];
+
+  # Every fortress box gets comma (nix-community, `,`): "run any
+  # package by name without installing it" — the operator's quick-debug
+  # tool on a customer's box. It needs nix-command + flakes, which a
+  # flake-built box wants anyway; mkDefault so a machine config can
+  # override. ~3 MB unpacked — not worth an option.
+  environment.systemPackages = [pkgs.comma];
+  nix.settings.experimental-features = lib.mkDefault ["nix-command" "flakes"];
 }

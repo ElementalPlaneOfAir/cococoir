@@ -16,11 +16,9 @@ remote-infra/
 ├── tofu/                    # OpenTofu: the source of truth
 │   ├── main.tf              # server, firewall, ssh key, address derivation
 │   ├── dns.tf               # proletariat.tech zone + records
-│   ├── render.tf            # renders the customer (NixOS) config from template
-│   ├── templates/           # example123.nix template
+│   ├── render.tf            # renders the edge (system-manager) config
+│   ├── templates/           # edge.nix template
 │   └── versions.tf          # hcloud + local providers
-├── nix/                     # RENDERED NixOS configs (checked in, public values)
-│   └── example123.nix       #   overwritten by tofu apply (customer box only)
 ├── system-manager/          # edge box config (stock Debian, no NixOS)
 │   └── edge.nix             #   applied via system-manager switch
 └── scripts/
@@ -34,12 +32,15 @@ remote-infra/
   **system-manager** applies the fortress config on top (systemd
   services, packages, `/etc` files) without taking over the OS. This
   sidesteps the disko/fstab/NIC boot failures that plagued the old
-  NixOS edge. Customer boxes stay full NixOS — that's the product.
-- **One source of truth for addressing.** The edge IPv4, the routed
-  `/64`, and the customer `/128` are derived once in `tofu/main.tf`
-  (`cidrhost`) and flow into the DNS records, the customer NixOS
-  config, and the provision script's WireGuard config. Change a
-  variable → re-apply → everything stays consistent.
+  NixOS edge. Customer boxes are the operator's own NixOS machines —
+  this repo is the library/template they import (`nixosModules.default`
+  + `flake.lib.mkPkgs`), not a rendered config.
+- **One source of truth for addressing.** The edge IPv4 and the routed
+  `/64` are derived once in `tofu/main.tf` (`cidrhost`) and flow into
+  the DNS records and the provision script's WireGuard config. Change a
+  variable → re-apply → everything stays consistent. Customer `/128`s
+  are carved from the box's `/64` at signup by the control plane
+  (ADR-025) — never rendered here.
 - **Secrets: one folder, `secrets/`.** `facts.json` holds every
   public value plaintext (committed — diffable in review). The Hetzner
   token + generated admin key live in the sops store
@@ -53,12 +54,12 @@ remote-infra/
 ## The IPv6 model being provisioned
 
 ```
-cellular (IPv6) ──*.example123.proletariat.tech AAAA──▶ edge /128 :80/:443
-                                                      │  fortress-edge
-                                                      │  (blind L4 forward)
-                                                      ▼
-                                     WireGuard (10.10.0.1/24, dial-out)
-                                                      │
+cellular (IPv6) ──<customer>.proletariat.tech AAAA──▶ edge /128 :80/:443
+                                                  │  fortress-edge
+                                                  │  (blind L4 forward)
+                                                  ▼
+                                 WireGuard (10.10.0.1/24, dial-out)
+                                                  │
 home box ──fortress-client──▶ 127.0.0.1:80/443 ──▶ Caddy (ACME via tunnel)
 ```
 
@@ -78,8 +79,8 @@ nix run .#secretspec -- set HETZNER_TOKEN '<your-token>' \
 # 2. Tooling.
 nix develop  # or: nix shell nixpkgs#opentofu nixpkgs#jq
 
-# 3. Values. Edit secrets/facts.json — domain, customer,
-#    ssh_public_key, server type/location, WG subnet/port, all of it.
+# 3. Values. Edit secrets/facts.json — domain, ssh_public_key,
+#    server type/location, WG subnet/port, all of it.
 
 # 4. Provision everything.
 bash scripts/provision-edge.sh
@@ -88,7 +89,7 @@ bash scripts/provision-edge.sh
 `provision-edge.sh` resolves the token + admin key through the
 secretspec CLI (profiles.provisioning, scopes `token`/`provision`),
 runs `tofu apply` (server + firewall + ssh key + DNS zone + records +
-renders the customer NixOS config), installs Nix on the stock Debian
+renders the edge config), installs Nix on the stock Debian
 image, applies the edge config with `system-manager switch`, and wires
 the edge WG tunnel (throwaway key — the binary owns the real identity
 at runtime).
@@ -98,13 +99,14 @@ at runtime).
 1. **Point proletariat.tech's NS records at Hetzner's nameservers**
    (`tofu output nameservers`) at your registrar. Until then the zone
    exists but is not authoritative.
-2. **Customer box** (home machine, NixOS): apply
-   `remote-infra/nix/example123.nix` on it (it is the full v2 product
-   + the tunnel client), fill in its real btrfs disks. Its WG tunnel
-   peer is wired from the edge's `/pubkey` at signup (deferred); today
-   the render brings the interface up with no peers.
-3. **Verify**: `bash remote-infra/scripts/demo-verify.sh` from an
-   IPv6-native client and an IPv4 client.
+2. **Customer box** (home machine, NixOS): this repo is the
+   library/template — import `fortress.nixosModules.default` +
+   `fortress.lib.mkPkgs` into the box's flake (the full v2 product +
+   the tunnel client), fill in its real btrfs disks. No rendered
+   customer config ships here; each customer is provisioned at runtime
+   by the control plane (invite → approve → `/128`).
+3. **Verify**: `bash remote-infra/scripts/demo-verify.sh <baseDomain>`
+   from an IPv6-native client and an IPv4 client.
 
 ## Modifying later
 
@@ -112,13 +114,12 @@ Everything is declarative. To change something:
 
 - **Server/location/image**: `secrets/facts.json`, then re-run
   `scripts/provision-edge.sh`.
-- **Another customer**: add a `/128` derivation in `main.tf`, a record
-  in `dns.tf`; the WG peer is registered via the control plane's
-  `/signup` at runtime (deferred); re-apply + rebuild.
+- **Another customer**: the `/128` + DNS are provisioned by the control
+  plane at signup (`POST /signup` → WG peer + AAAA record) — no tofu
+  edit, no re-apply.
 - **The edge box**: edit `system-manager/edge.nix`, then
   `nix run .#system-manager -- --target-host root@<edge> switch --flake .#edge --sudo`.
-- **The customer NixOS config**: edit `tofu/templates/*.tftpl`,
-  re-apply, then `nixos-rebuild` on the box. The rendered file is a
-  derived artifact.
+- **The edge config template**: edit `tofu/templates/edge.nix.tftpl`,
+  re-apply to re-render `system-manager/edge.nix`.
 
 See `.specify/specs/ipv6-edge-demo/proposal.md` for the full arc.

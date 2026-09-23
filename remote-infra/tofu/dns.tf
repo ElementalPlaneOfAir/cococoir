@@ -7,13 +7,13 @@
 #   proletariat.tech              A    -> edge box's own IPv4 (WG dial-out
 #                                     endpoint + control-plane website)
 #   proletariat.tech              AAAA -> <server /64>::1
-#   *.example123.proletariat.tech AAAA -> customer /128 carved from the box /64
 #   resend._domainkey             TXT  -> Resend DKIM key
 #   rsend / send                  CNAME-> Resend envelope-from subdomains
 #   _dmarc                        TXT  -> DMARC (p=none, monitor mode)
 #
-# Single instance: no floats, no failover, DNS points at the one box.
-# A CNAME at the old domain bridges until a formal migration.
+# No static customer records: the runtime DNS client provisions
+# per-customer AAAA records at signup (dns-on-signup). Single instance:
+# no floats, no failover, DNS points at the one box.
 
 resource "hcloud_zone" "proletariat" {
   name = var.domain
@@ -39,18 +39,6 @@ resource "hcloud_zone_rrset" "apex_aaaa" {
   type = "AAAA"
   records = [
     { value = local.edge_primary_v6 },
-  ]
-}
-
-# The customer's wildcard: every service subdomain resolves to the
-# customer's /128 carved from the box /64. Caddy SNI-routes per service
-# on the customer box, so one address serves the whole jar.
-resource "hcloud_zone_rrset" "customer_aaaa" {
-  zone = hcloud_zone.proletariat.name
-  name = "*.${var.customer}"
-  type = "AAAA"
-  records = [
-    { value = local.customer_ipv6 },
   ]
 }
 

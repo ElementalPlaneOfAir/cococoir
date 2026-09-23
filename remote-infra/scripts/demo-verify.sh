@@ -9,13 +9,15 @@
 #   IPv4 LAN client          -> A (or local DNS) -> edge -> WG -> same cert
 #
 # Usage (from the edge box or any host with DNS + network):
-#   bash scripts/demo-verify.sh [baseDomain]
+#   bash scripts/demo-verify.sh <baseDomain>
 #
-# Defaults to example123.proletariat.tech; pass a different base to
-# re-run for another customer. Requires curl + jq + openssl.
+# Pass the customer's base domain (e.g. example.proletariat.tech) — the
+# static example123 demo customer is gone; customers are provisioned at
+# runtime by the control plane (dns-on-signup). Requires curl + jq +
+# openssl.
 set -euo pipefail
 
-base="${1:-example123.proletariat.tech}"
+base="${1:?usage: demo-verify.sh <baseDomain>}"
 edge_v4=""
 edge_v6=""
 

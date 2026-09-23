@@ -3,7 +3,7 @@
 #
 # provision-edge.sh — bring up the edge box end to end:
 #   1. resolve secrets (secretspec, provisioning profile)
-#   2. tofu init + apply (server + firewall + DNS + renders customer config)
+#   2. tofu init + apply (server + firewall + DNS + renders edge config)
 #   3. install Nix on the stock Debian image
 #   4. system-manager switch (applies remote-infra/system-manager/edge.nix)
 #   5. write edge secrets (edge.env + secretspec.toml)
@@ -70,7 +70,9 @@ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "root@${EDGE_IPV4}"
    else
      sh <(curl -L --proto '=https' --tlsv1.2 https://nixos.org/nix/install) --daemon
    fi && \
-   printf 'trusted-users = root\n' >> /etc/nix/nix.conf && systemctl restart nix-daemon"
+   printf 'trusted-users = root\n' >> /etc/nix/nix.conf && \
+   printf 'experimental-features = nix-command flakes\n' >> /etc/nix/nix.conf && \
+   systemctl restart nix-daemon"
 
 echo "==> [4/6] system-manager switch (applies the edge config)"
 # system-manager's own flake (pinned via our flake.lock) is the CLI;

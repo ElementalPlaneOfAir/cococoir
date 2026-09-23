@@ -98,12 +98,10 @@
       ];
     };
 
-    # Customer box (home machine, full v2 stack) is rendered by
-    # remote-infra/tofu from templates/example123.nix.tftpl — do not
-    # hand-edit, and it is NOT exposed as a flake nixosConfiguration:
-    # its storage/bootloader are placeholder values until a real box
-    # is provisioned, so including it would keep `nix flake check`
-    # permanently red.
+    # The customer box is the flake consumer's own NixOS machine — they
+    # import `nixosModules.default` + `flake.lib.mkPkgs` into their home
+    # server config (see remote-infra/README.md). No demo customer box is
+    # rendered or exposed here.
     nixosModulesWithJellarr = {
       imports = [
         inputs.jellarr.nixosModules.default

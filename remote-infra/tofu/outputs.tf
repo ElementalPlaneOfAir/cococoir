@@ -14,11 +14,6 @@ output "edge_ipv6_network" {
   value       = local.edge_ipv6_subnet
 }
 
-output "customer_ipv6" {
-  description = "The customer's /128 on the edge box (AAAA target)."
-  value       = local.customer_ipv6
-}
-
 output "nameservers" {
   description = "Hetzner nameservers for the zone — point proletariat.tech's NS records here at your registrar for the zone to go live."
   value       = hcloud_zone.proletariat.authoritative_nameservers.assigned

@@ -37,13 +37,8 @@ variable "domain" {
   type        = string
 }
 
-variable "customer" {
-  description = "Customer username. *.&lt;customer&gt;.&lt;domain&gt; AAAA records point at their /128 on the edge box."
-  type        = string
-}
-
 variable "ssh_public_key" {
-  description = "Operator SSH public key injected into the edge box and the customer box."
+  description = "Operator SSH public key injected into the edge box."
   type        = string
 }
 
