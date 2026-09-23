@@ -41,11 +41,15 @@
     ./integrations/forgejo-oidc.nix
   ];
 
-  # Every fortress box gets comma (nix-community, `,`): "run any
-  # package by name without installing it" — the operator's quick-debug
-  # tool on a customer's box. It needs nix-command + flakes, which a
-  # flake-built box wants anyway; mkDefault so a machine config can
-  # override. ~3 MB unpacked — not worth an option.
-  environment.systemPackages = [pkgs.comma];
+  # Every fortress box gets comma (`pkgs.comma-with-db`, nix-community):
+  # "run any package by name without installing it" — the operator's
+  # quick-debug tool on a customer's box. The -with-db variant bundles
+  # the SMALL nix-index database (~1.7 MB, /bin-only) and sets
+  # NIX_INDEX_DATABASE, so `, foo` resolves out of the box; the raw
+  # `comma` binary has no index and cannot resolve names. Needs
+  # nix-command + flakes, which a flake-built box wants anyway;
+  # mkDefault so a machine config can override. ~5 MB total — not
+  # worth an option.
+  environment.systemPackages = [pkgs.comma-with-db];
   nix.settings.experimental-features = lib.mkDefault ["nix-command" "flakes"];
 }

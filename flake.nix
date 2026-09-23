@@ -46,6 +46,17 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Weekly-built nix-index database (command name -> nixpkgs attrpath).
+    # comma (nix-community) is a wrapper around `nix shell -c` + nix-index
+    # and CANNOT resolve `, foo` without this index. We use its
+    # `comma-with-db` package (the SMALL /bin-only database, ~1.7 MB, not
+    # the 92 MB full one — headers/libs are nix-locate's domain, comma
+    # only ever matches command names) via the overlay below, so every
+    # fortress box gets a comma that actually works with zero setup.
+    nix-index-database = {
+      url = "github:nix-community/nix-index-database";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs: let
@@ -54,23 +65,33 @@
     # modules, the tests, the edge systemConfig) resolves the `crane`
     # arg it now needs, without threading the flake input through every
     # call site.
-    withCrane = system: (import inputs.nixpkgs {
-      inherit system;
-      config.allowUnfree = true;
-    }).extend (final: prev: {
-      crane = inputs.crane;
-      # The pinned jellarr flake (rev de530bc) hardwires a
-      # fetchPnpmDeps hash computed against an older nixpkgs
-      # toolchain; the 2026-09-19 lock bump changed what the fetcher
-      # produces. Substitute only when the exact stale value flows
-      # through — an upstream hash fix renders this inert.
-      fetchPnpmDeps = args:
-        prev.fetchPnpmDeps (if args ? hash && args.hash
-          == "sha256-jo1BjRAjjfNKF0xb5cLCuELSveHeJ98iLPhMDKP1QbI="
-        then args // {
-          hash = "sha256-qNVnhHjTFPhJxJ8oZPBSfJs2OjNSlbmS31okZuSGWMU=";
-        } else args);
-    });
+    withCrane = system: let
+      base = import inputs.nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+      withCraneAttrs = base.extend (final: prev: {
+        crane = inputs.crane;
+        # The pinned jellarr flake (rev de530bc) hardwires a
+        # fetchPnpmDeps hash computed against an older nixpkgs
+        # toolchain; the 2026-09-19 lock bump changed what the fetcher
+        # produces. Substitute only when the exact stale value flows
+        # through — an upstream hash fix renders this inert.
+        fetchPnpmDeps = args:
+          prev.fetchPnpmDeps (if args ? hash && args.hash
+            == "sha256-jo1BjRAjjfNKF0xb5cLCuELSveHeJ98iLPhMDKP1QbI="
+          then args // {
+            hash = "sha256-qNVnhHjTFPhJxJ8oZPBSfJs2OjNSlbmS31okZuSGWMU=";
+          } else args);
+      });
+      # nix-index-database overlay: adds `comma-with-db` (comma + the
+      # small nix-index database wired via NIX_INDEX_DATABASE) to pkgs,
+      # so every machine built with these pkgs gets a comma that can
+      # actually resolve `, foo` -> attrpath. Without this, the raw
+      # `comma` binary is a dead end (it has no database to look names
+      # up in).
+    in
+      withCraneAttrs.extend inputs.nix-index-database.overlays.nix-index;
     vmtestPkgs = withCrane "x86_64-linux";
     vmtest = inputs.nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
@@ -138,6 +159,9 @@
           fortressEdgePkg = inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nix/packages/fortress {
             crane = inputs.crane;
           };
+          # comma + its small nix-index database (NIX_INDEX_DATABASE wired),
+          # so the operator's `, foo` debug tool resolves names on the box.
+          commaWithDbPkg = inputs.nix-index-database.packages.x86_64-linux.comma-with-db;
         };
       };
 

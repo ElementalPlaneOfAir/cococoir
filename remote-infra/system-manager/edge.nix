@@ -19,6 +19,7 @@
   lib,
   pkgs,
   fortressEdgePkg,
+  commaWithDbPkg,
   ...
 }: {
   nixpkgs.hostPlatform = "x86_64-linux";
@@ -28,12 +29,7 @@
     wireguard-tools
     caddy
     jq
-    # comma (`,` = nix-community/comma) — run any package by name
-    # without installing it;
-    # the operator's quick-debug tool. Needs flakes (see provision
-    # script's nix.conf).
-    comma
-  ];
+  ] ++ [commaWithDbPkg];
 
   # ── Files in /etc ───────────────────────────────────────────────
   environment.etc = {
