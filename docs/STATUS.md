@@ -474,6 +474,12 @@ Regenerated: 2026-09-23T20:16:05Z — git 3909211
   foundation (T10: `vmtest.nix` enables the real client module + an
   in-VM edge) then the onboarding e2e (T11: invite → approve → tunnel
   → curl through the /128) — the arc's gate.
+- **Upstream CryptPad subfolder issue** (`.specify/specs/cryptpad-subpath-issue/`
+  — research complete 2026-09-25, issue not drafted): appeal upstream
+  for an opt-in documented path-prefix mode (3-claim structure +
+  drafting rules in the proposal); interim plan is the factory
+  `routeStyle` origin-bound exception for cryptpad in the path-routing
+  refactor.
 - Config editor hardening: binding insertion for missing fields,
   `public` toggle.
 - Dashboard as a real NixOS module (`fortress.dashboard.enable`).
