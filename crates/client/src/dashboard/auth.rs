@@ -1,6 +1,6 @@
 use poem::http::{header, HeaderValue, StatusCode};
 use poem::{web::Redirect, Endpoint, IntoResponse, Request, Response};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use crate::dashboard::db::Db;
 
@@ -9,56 +9,35 @@ use crate::dashboard::db::Db;
 /// same-origin request, so htmx never handles auth itself.
 pub const SESSION_COOKIE: &str = "fortress_session";
 
-/// Admin login configuration. The only credential is a bcrypt hash of
-/// the admin password (set by `FORTRESS_ADMIN_PASSWORD_HASH`; production
-/// sources it from the box's secret store). The dashboard is the control
-/// plane of the box, so it must NOT be reachable through the user-facing
-/// OIDC provider — a compromise of Dex (or another provider) must never
+/// The dashboard's only credential: a bcrypt hash of the admin
+/// password (`FORTRESS_ADMIN_PASSWORD_HASH`; production sources it from
+/// the box's secret store). The dashboard is the control plane of the
+/// box, so it must NOT be reachable through the user-facing OIDC
+/// provider — a compromise of Dex (or another provider) must never
 /// grant full control of the system.
+///
+/// There is deliberately no unauthenticated mode. An earlier `Dev`
+/// variant returned `None` from the env lookup and let every request
+/// through, so a box that never had the env var shipped an open admin
+/// UI that edits its own NixOS config. A missing hash is now a
+/// misconfiguration that stops the process (see `app.rs`); tests inject
+/// a real hash rather than opting out of the gate.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
     pub password_hash: String,
 }
 
 impl AdminConfig {
-    fn from_env() -> Option<Self> {
+    /// The admin credential as configured in the environment.
+    ///
+    /// `None` means "the operator never configured one" — the only
+    /// caller allowed to observe that is the production entry point,
+    /// which must refuse to start. Tests construct `AdminConfig`
+    /// directly so they stay hermetic and parallel-safe.
+    pub fn from_env() -> Option<Self> {
         Some(Self {
             password_hash: std::env::var("FORTRESS_ADMIN_PASSWORD_HASH").ok()?,
         })
-    }
-}
-
-/// Auth posture. `Dev` = no login (local iteration); `Password` requires
-/// a valid session cookie established by `POST /auth/login`.
-#[derive(Debug, Clone)]
-pub enum AuthMode {
-    Dev,
-    Password(AdminConfig),
-}
-
-impl AuthMode {
-    fn from_env() -> Self {
-        match AdminConfig::from_env() {
-            Some(config) => Self::Password(config),
-            None => Self::Dev,
-        }
-    }
-
-    /// Admin config, or `None` in dev mode.
-    pub fn config(&self) -> Option<&AdminConfig> {
-        match self {
-            Self::Dev => None,
-            Self::Password(config) => Some(config),
-        }
-    }
-
-    /// The process-wide auth mode, read from the environment once on
-    /// first access and frozen. Production consumes this at the entry
-    /// point; tests bypass it entirely by injecting an `AuthMode` into
-    /// `app` (see mod.rs), so they stay hermetic and parallel-safe.
-    pub fn current() -> &'static AuthMode {
-        static AUTH_MODE: LazyLock<AuthMode> = LazyLock::new(AuthMode::from_env);
-        &AUTH_MODE
     }
 }
 
@@ -99,18 +78,19 @@ pub fn clear_session_cookie_header() -> HeaderValue {
     .expect("cleared session cookie header is valid")
 }
 
-/// Login gate body. [`AuthMode::Dev`] passes every request through;
-/// otherwise the session cookie must name a valid, unexpired session
-/// row — else the request is bounced to the login page. The `Arc<E>`
-/// param is poem's own `around` API, not our Arc usage.
+/// Login gate body. Every request passes through here and the session
+/// cookie must name a valid, unexpired session row — else the request
+/// is bounced to the login page. `AuthMode`'s old bypass is gone; there
+/// is no caller that can skip this gate.
 pub async fn gate_request<E: Endpoint<Output = Response>>(
-    auth: &AuthMode,
+    auth: &AdminConfig,
     endpoint: Arc<E>,
     req: Request,
 ) -> poem::Result<Response> {
-    let AuthMode::Password(_config) = auth else {
-        return endpoint.call(req).await;
-    };
+    assert!(
+        !auth.password_hash.is_empty(),
+        "gate_request requires a non-empty password hash"
+    );
     let authenticated = match (req.data::<Db>(), read_cookie(&req, SESSION_COOKIE)) {
         (Some(db), Some(token)) => matches!(db.get_session(&token).await, Ok(_)),
         _ => false,
@@ -154,5 +134,15 @@ mod tests {
     fn verify_password_fails_closed_on_garbage_hash() {
         assert!(!verify_password("password", "not-a-bcrypt-hash"));
         assert!(!verify_password("password", ""));
+    }
+
+    /// The unauthenticated mode is gone at the type level: `AdminConfig`
+    /// is the only auth value and it always carries a hash.
+    #[test]
+    fn admin_config_always_carries_a_hash() {
+        let config = AdminConfig {
+            password_hash: DEV_HASH.to_string(),
+        };
+        assert!(!config.password_hash.is_empty());
     }
 }

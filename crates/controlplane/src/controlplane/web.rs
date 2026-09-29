@@ -18,7 +18,7 @@ use crate::controlplane::mail::Mailer;
 use crate::controlplane::{AppState, ControlPlane};
 use momenta::prelude::*;
 use fortress_web_ui::{
-    card, field, shell, stamp_small, zine_button, zine_submit, FieldKind, ShellVariant,
+    card, field, shell, zine_button, zine_submit, FieldKind, MachinesPage, ShellVariant,
 };
 pub use fortress_web_ui::{Landing, LandingProps};
 use poem::{
@@ -368,142 +368,48 @@ pub fn ResetPage(props: &ResetProps) -> Node {
     )
 }
 
-// ── machines dashboard (the account's machines + invites) ──────────
+// ── machines dashboard (markup lives in fortress-web-ui) ────────────
 
-pub struct MachinesProps {
-    pub email: String,
-    pub machines: Vec<crate::controlplane::Machine>,
-    pub invites: Vec<(String, crate::controlplane::InviteRecord)>,
-    pub invited_code: Option<String>,
-    pub error: Option<String>,
-    /// The edge's public domain — invite share URLs derive from it,
-    /// never a hardcoded zone.
-    pub root_domain: String,
-}
-
-#[component]
-pub fn MachinesPage(props: &MachinesProps) -> Node {
-    let banner = match &props.error {
-        Some(message) => error_banner(message),
-        None => Node::Empty,
-    };
-    let machines_list: Vec<Node> = if props.machines.is_empty() {
-        vec![
-            rsx!(<p class="text-sm dim">"No machines yet — invite one below."</p>),
-        ]
-    } else {
-        props
-            .machines
-            .iter()
-            .map(|m| {
-                rsx!(<li class="border-b border-ink py-1 list-none">
-                    <div class="flex items-baseline gap-3">
-                        <span class="font-black">{m.name.clone()}</span>
-                        <span class="text-xs faint">{m.hostname.clone()}</span>
-                    </div>
-                </li>)
+/// Map the domain types into the shared component's primitive rows. The
+/// dashboard markup lives in `fortress-web-ui` so the poem and topcoat
+/// surfaces render one dashboard; only this mapping is surface-local.
+/// The domain-to-view-model mapper for the shared account dashboard.
+/// Public because the topcoat site renders the SAME
+/// [`fortress_web_ui::MachinesPage`] markup and must not grow a second
+/// copy of this row mapping.
+pub fn machines_props(
+    account_machines: Vec<crate::controlplane::Machine>,
+    account_invites: Vec<(String, crate::controlplane::InviteRecord)>,
+    invited_code: Option<String>,
+    root_domain: String,
+    error: Option<String>,
+) -> fortress_web_ui::MachinesProps {
+    use fortress_web_ui::{InviteRow, InviteStatus, MachineRow, MachinesProps};
+    MachinesProps {
+        machines: account_machines
+            .into_iter()
+            .map(|machine| MachineRow {
+                name: machine.name,
+                hostname: machine.hostname,
             })
-            .collect()
-    };
-    let invites_list: Vec<Node> = if props.invites.is_empty() {
-        vec![rsx!(<p class="text-sm dim">"No invites yet."</p>)]
-    } else {
-        props
-            .invites
-            .iter()
-            .map(|(code, record)| {
-                let waiting = record.status == crate::controlplane::InviteStatus::Waiting;
-                let fresh = Some(code.clone()) == props.invited_code;
-                let url = format!("https://{}/a/{code}", props.root_domain);
-                let status_label = match record.status {
-                    crate::controlplane::InviteStatus::Waiting => "waiting",
-                    crate::controlplane::InviteStatus::Approved => "approved",
-                    crate::controlplane::InviteStatus::Denied => "denied",
-                };
-                let candidate = match &record.device_pubkey {
-                    Some(pk) => rsx!(<p class="text-xs faint break-all">"Candidate: "{pk.clone()}</p>),
-                    None => Node::Empty,
-                };
-            let approve_form = if waiting {
-                rsx!(
-                    <form method="post" action={format!("/auth/invite/{code}/approve")} class="flex items-end gap-2">
-                        <label class="block w-full">
-                            <div class="tag dim mb-1">"Name this machine"</div>
-                            <input type="text" name="name" required pattern="[a-z0-9][a-z0-9-]*" class="zine-input"/>
-                        </label>
-                        {zine_submit("Approve", "")}
-                    </form>
-                )
-            } else {
-                Node::Empty
-            };
-            let actions = if waiting {
-                rsx!(
-                    <div class="flex gap-2">
-                        <form method="post" action={format!("/auth/invite/{code}/deny")}>
-                            <button type="submit" class="btn-zine btn-zine-sm">"Deny"</button>
-                        </form>
-                        <form method="post" action={format!("/auth/invite/{code}/revoke")}>
-                            <button type="submit" class="btn-zine btn-zine-sm">"Revoke"</button>
-                        </form>
-                    </div>
-                )
-            } else {
-                Node::Empty
-            };
-            let share = if fresh {
-                rsx!(
-                    <div class="text-xs dim">
-                        "Share this link with the machine: "<code class="break-all">{url}</code>
-                    </div>
-                )
-            } else {
-                Node::Empty
-            };
-                rsx!(
-                    <li>
-                        {card("", rsx!(
-                            <>
-                                <div class="flex items-center gap-2 flex-wrap">
-                                    <code class="font-black">{code.clone()}</code>
-                                    {stamp_small(status_label)}
-                                </div>
-                                {candidate}
-                                {approve_form}
-                                {actions}
-                                {share}
-                            </>
-                        ))}
-                    </li>
-                )
+            .collect(),
+        invites: account_invites
+            .into_iter()
+            .map(|(code, record)| InviteRow {
+                code,
+                status: match record.status {
+                    crate::controlplane::InviteStatus::Dormant => InviteStatus::Dormant,
+                    crate::controlplane::InviteStatus::Waiting => InviteStatus::Waiting,
+                    crate::controlplane::InviteStatus::Approved => InviteStatus::Approved,
+                    crate::controlplane::InviteStatus::Denied => InviteStatus::Denied,
+                },
+                device_pubkey: record.device_pubkey,
             })
-            .collect()
-    };
-    page_shell(
-        "Your machines",
-        rsx!(
-            <div class="flex flex-col gap-6">
-                <h1 class="text-2xl font-black uppercase">"Your machines"</h1>
-                {banner}
-                <section class="flex flex-col gap-2">
-                    <h2 class="text-lg font-black uppercase">"Machines"</h2>
-                    <ul class="flex flex-col gap-1 list-none p-0 m-0">
-                        {machines_list}
-                    </ul>
-                </section>
-                <section class="flex flex-col gap-3">
-                    <h2 class="text-lg font-black uppercase">"Invite a machine"</h2>
-                    <form method="post" action="/auth/invite">
-                        {zine_submit("Generate invite link", "")}
-                    </form>
-                    <ul class="flex flex-col gap-4 list-none p-0 m-0">
-                        {invites_list}
-                    </ul>
-                </section>
-                <p class="text-sm"><a href="/auth/logout" class="link-zine">"Sign out"</a></p>
-            </div>
-        ),
-    )
+            .collect(),
+        invited_code,
+        root_domain,
+        error,
+    }
 }
 
 /// The public page a machine's invite URL resolves to. The machine
@@ -1018,14 +924,13 @@ async fn machines(
     let machines = cp.machines_of(&email).await.unwrap_or_default();
     let invites = cp.invites_of(&email).await.unwrap_or_default();
     Html(
-        component::<MachinesPage>(MachinesProps {
-            email,
+        component::<MachinesPage>(machines_props(
             machines,
             invites,
-            invited_code: query.invited,
-            error: None,
-            root_domain: cp.root_domain.to_string(),
-        })
+            query.invited,
+            cp.root_domain().to_string(),
+            None,
+        ))
         .to_html(),
     )
     .into_response()
@@ -1224,7 +1129,7 @@ pub fn web_routes() -> Route {
         .at("/a/:code", get(join_page))
         .at("/auth/signup", post(signup))
         .at("/auth/login", post(login))
-        .at("/auth/logout", get(logout))
+        .at("/auth/logout", post(logout))
         .at("/auth/forgot", post(forgot))
         .at("/auth/resend-verify", get(resend_verify_page).post(resend_verify))
         .at("/auth/reset", post(reset))
@@ -1457,9 +1362,10 @@ mod tests {
         assert!(body.contains("Sign out"), "landing shows the signed-in nav");
         assert!(body.contains(&email));
 
-        // Logout clears the session.
+        // Logout clears the session. POST, not GET — the shared markup
+        // submits a form (`sign_out_form`) and a mutating GET is a CSRF hole.
         let resp = client
-            .get("/auth/logout")
+            .post("/auth/logout")
             .header(header::COOKIE, format!("fortress_account_session={token}"))
             .send()
             .await;
@@ -1708,6 +1614,49 @@ mod tests {
         );
     }
 
+    /// The domain-to-row status mapping is a silent-failure seam: fold
+    /// `Dormant` into `Waiting` and the dashboard offers to name a
+    /// machine that does not exist — the exact bug the `Dormant` state
+    /// was added to kill. Each domain state maps to its own row state.
+    #[test]
+    fn machines_props_maps_every_invite_status_one_to_one() {
+        use crate::controlplane::InviteStatus as Domain;
+        use fortress_web_ui::InviteStatus as Row;
+
+        let cases: [(Domain, &str); 4] = [
+            (Domain::Dormant, "dormant"),
+            (Domain::Waiting, "waiting"),
+            (Domain::Approved, "approved"),
+            (Domain::Denied, "denied"),
+        ];
+        for (domain, expected) in cases {
+            let props = machines_props(
+                Vec::new(),
+                vec![(
+                    "C0DE000001".to_string(),
+                    crate::controlplane::InviteRecord {
+                        owner_email: "x@y".into(),
+                        status: domain,
+                        device_pubkey: None,
+                    },
+                )],
+                None,
+                "example.net".to_string(),
+                None,
+            );
+            let mapped = match props.invites[0].status {
+                Row::Dormant => "dormant",
+                Row::Waiting => "waiting",
+                Row::Approved => "approved",
+                Row::Denied => "denied",
+            };
+            assert_eq!(
+                mapped, expected,
+                "domain state {domain:?} must not be folded into another row state"
+            );
+        }
+    }
+
     /// Tripwire: every rendered page must inline its assets, never
     /// reference a third-party origin at runtime. The CDN creeping back
     /// into one page is exactly the failure this catches.
@@ -1793,9 +1742,8 @@ mod tests {
             ),
             (
                 "machines",
-                component::<MachinesPage>(MachinesProps {
-                    email: "x@y".into(),
-                    machines: vec![crate::controlplane::Machine {
+                component::<MachinesPage>(machines_props(
+                    vec![crate::controlplane::Machine {
                         name: "living-room".into(),
                         owner: None,
                         hostname: "living-room".into(),
@@ -1804,7 +1752,7 @@ mod tests {
                         wg_public_key: String::new(),
                         device_token_hash: None,
                     }],
-                    invites: vec![(
+                    vec![(
                         "CODE".into(),
                         crate::controlplane::InviteRecord {
                             owner_email: "x@y".into(),
@@ -1812,10 +1760,10 @@ mod tests {
                             device_pubkey: None,
                         },
                     )],
-                    invited_code: Some("CODE".into()),
-                    error: None,
-                    root_domain: "fortress.example".into(),
-                })
+                    Some("CODE".into()),
+                    "fortress.example".into(),
+                    None,
+                ))
                 .to_html(),
             ),
         ];

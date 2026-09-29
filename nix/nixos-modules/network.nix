@@ -147,5 +147,20 @@ in
         after = ["network-online.target"];
       };
     })
+
+    # The box's LAN IP is a DNS-free entry point: Caddy serves the
+    # embedded config dashboard there, so a customer reaches the
+    # homepage by typing the box's IP without remembering any service
+    # domain. HTTP-only, and keyed to the concrete LAN address — never a
+    # hostless `:80` catch-all, which would shadow ACME HTTP-01 challenge
+    # responses for the service domains and silently break cert issuance.
+    # The tunnel is untouched: the forwarder owns the tunnel IP; Caddy
+    # binds caddyBindAddresses.
+    (lib.mkIf (cfg.lanAddress != null) {
+      services.caddy.virtualHosts."http://${cfg.lanAddress}" = {
+        listenAddresses = cfg.caddyBindAddresses;
+        extraConfig = "reverse_proxy ${config.services.fortress-client.dashboardAddr}";
+      };
+    })
   ];
 }

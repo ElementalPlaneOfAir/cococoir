@@ -3,7 +3,7 @@ pub mod components;
 mod db;
 pub mod nix_config_parser;
 
-pub use auth::AuthMode;
+pub use auth::AdminConfig;
 pub use db::Db;
 
 use crate::dashboard::auth::{
@@ -11,10 +11,8 @@ use crate::dashboard::auth::{
     SESSION_COOKIE,
 };
 use crate::dashboard::components::{
-    EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, HtmxTest, HtmxTestProps,
-    IndexPage, IndexProps, LoginPage, LoginPageProps,
+    EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, LoginPage, LoginPageProps,
 };
-use crate::dashboard::db::DbError;
 use crate::dashboard::nix_config_parser::{
     ConfigSchema, FortressConfig, NixConfigFile, NixParseError, NixValue, SetError,
 };
@@ -23,16 +21,11 @@ use poem::{
     get, handler,
     http::{header, StatusCode},
     listener::TcpListener,
-    post,
-    web::{Data, Form, Html, Path, Redirect},
+    web::{Data, Form, Html},
     Endpoint, EndpointExt, IntoResponse, Request, Response, Route, Server,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::time::Duration;
-use tokio::time::sleep;
-
-const PAGE_LOAD_KEY: &str = "page_loads";
 
 /// The dashboard-edited Nix config file. Resolved once from the
 /// `FORTRESS_CONFIG_PATH` env var; falls back to the repo-relative
@@ -130,21 +123,6 @@ pub enum SaveError {
     Io(#[source] std::io::Error),
 }
 
-async fn next_page_load(db: &Db) -> usize {
-    let current = db
-        .kv_get(PAGE_LOAD_KEY)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .unwrap_or(1);
-    let next = current + 1;
-    if let Err(error) = db.kv_set(PAGE_LOAD_KEY, &next.to_string()).await {
-        tracing::warn!(error = %error, "failed to persist page load counter; page still renders");
-    }
-    current
-}
-
 /// Build the editor page from the extracted config. `config_error`
 /// surfaces a read failure; otherwise the page shows the current values.
 fn editor_page(
@@ -164,7 +142,6 @@ fn editor_page(
                 .get(service.nixname)
                 .copied()
                 .unwrap_or(false),
-            declared: config.services_enabled.contains_key(service.nixname),
         })
         .collect();
 
@@ -176,7 +153,6 @@ fn editor_page(
             is_admin: user.is_admin(),
             groups: user.groups.iter().cloned().collect(),
             has_password: user.hashed_password.is_some(),
-            groups_declared: user.groups_declared,
         })
         .collect();
 
@@ -232,9 +208,14 @@ impl EditorForm {
     }
 }
 
-/// Build the edits for a save from the submitted form, skipping fields
-/// the parser cannot edit (undeclared service enables, undeclared user
-/// groups) — those stay manual edits, matching the read-only UI.
+/// Build the edits for a save from the submitted form.
+///
+/// A declared binding is always rewritten (the form submits the full
+/// state of what it shows). An *undeclared* one is only created when the
+/// customer checked it: ticking a box is an explicit act, leaving one
+/// unticked is not, and inserting `enable = false` for every service the
+/// customer never mentioned would litter their config with bindings that
+/// just restate a module default.
 fn build_edits(config: &FortressConfig, form: &EditorForm) -> Vec<ConfigEdit> {
     let mut edits = Vec::new();
 
@@ -256,38 +237,43 @@ fn build_edits(config: &FortressConfig, form: &EditorForm) -> Vec<ConfigEdit> {
     }
 
     for service in crate::dashboard::nix_config_parser::SERVICE_LIST {
-        if config.services_enabled.contains_key(service.nixname) {
-            let enabled = form.service_checked(service.nixname);
-            edits.push(ConfigEdit {
-                path: vec![
-                    "fortress".into(),
-                    "services".into(),
-                    service.nixname.into(),
-                    "enable".into(),
-                ],
-                source: NixValue::Bool(enabled).to_source(),
-            });
+        let declared = config.services_enabled.contains_key(service.nixname);
+        let enabled = form.service_checked(service.nixname);
+        if !declared && !enabled {
+            continue;
         }
+        edits.push(ConfigEdit {
+            path: vec![
+                "fortress".into(),
+                "services".into(),
+                service.nixname.into(),
+                "enable".into(),
+            ],
+            source: NixValue::Bool(enabled).to_source(),
+        });
     }
 
     for (username, user) in &config.users {
         if let Some(groups_text) = form.user_groups(username) {
-            if user.groups_declared {
-                let groups: Vec<String> = groups_text
-                    .split(|c: char| c.is_whitespace() || c == ',')
-                    .filter(|g| !g.is_empty())
-                    .map(str::to_string)
-                    .collect();
-                edits.push(ConfigEdit {
-                    path: vec![
-                        "users".into(),
-                        "users".into(),
-                        username.clone(),
-                        "groups".into(),
-                    ],
-                    source: NixValue::StrList(groups).to_source(),
-                });
+            let groups: Vec<String> = groups_text
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|g| !g.is_empty())
+                .map(str::to_string)
+                .collect();
+            // Same rule as the service toggles: never create a binding
+            // that only restates an empty default.
+            if !user.groups_declared && groups.is_empty() {
+                continue;
             }
+            edits.push(ConfigEdit {
+                path: vec![
+                    "users".into(),
+                    "users".into(),
+                    username.clone(),
+                    "groups".into(),
+                ],
+                source: NixValue::StrList(groups).to_source(),
+            });
         }
     }
 
@@ -316,75 +302,6 @@ async fn index_save(
     }
 }
 
-#[handler]
-async fn hello(Data(db): Data<&Db>, Path(name): Path<String>) -> impl IntoResponse {
-    let times_loaded = next_page_load(db).await;
-    let props = IndexProps {
-        name,
-        count: times_loaded,
-    };
-    Html(component::<IndexPage>(props).to_html()).with_status(StatusCode::OK)
-}
-
-#[handler]
-async fn update_count(Data(db): Data<&Db>) -> Response {
-    let times_loaded = next_page_load(db).await;
-    sleep(Duration::from_millis(500)).await;
-    let props = HtmxTestProps {
-        count: times_loaded,
-    };
-    Html(component::<HtmxTest>(props).to_html())
-        .with_status(StatusCode::OK)
-        .into_response()
-}
-
-#[handler]
-async fn create_session(Data(db): Data<&Db>) -> Response {
-    match db.create_session("demo-user").await {
-        Ok(token) => Html(format!("<p>session created: {token}</p>"))
-            .with_header("X-Session-Token", token)
-            .with_status(StatusCode::CREATED)
-            .into_response(),
-        Err(error) => {
-            tracing::error!(error = %error, "create session failed");
-            Html("<p>session creation failed</p>".to_string())
-                .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-                .into_response()
-        }
-    }
-}
-
-#[handler]
-async fn show_session(Data(db): Data<&Db>, Path(token): Path<String>) -> Response {
-    match db.get_session(&token).await {
-        Ok(session) => Html(format!(
-            "<p>session for {user} created {created} valid until {expires}</p>",
-            user = session.user_id,
-            created = session.created_at.to_rfc3339(),
-            expires = session.expires_at.to_rfc3339(),
-        ))
-        .into_response(),
-        Err(DbError::SessionNotFound(_)) => StatusCode::NOT_FOUND.into(),
-        Err(DbError::SessionExpired(_)) => StatusCode::GONE.into(),
-        Err(error) => {
-            tracing::error!(error = %error, token = %token, "get session failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
-#[handler]
-async fn end_session(Data(db): Data<&Db>, Path(token): Path<String>) -> Response {
-    match db.delete_session(&token).await {
-        Ok(true) => StatusCode::NO_CONTENT.into(),
-        Ok(false) => StatusCode::NOT_FOUND.into(),
-        Err(error) => {
-            tracing::error!(error = %error, token = %token, "delete session failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct LoginForm {
     password: Option<String>,
@@ -400,27 +317,21 @@ fn login_page(error: bool) -> Response {
 }
 
 #[handler]
-async fn login_page_get(Data(auth): Data<&AuthMode>) -> Response {
-    if auth.config().is_none() {
-        return Redirect::see_other("/").into_response();
-    }
+async fn login_page_get() -> Response {
     login_page(false)
 }
 
 #[handler]
 async fn login_page_post(
     Data(db): Data<&Db>,
-    Data(auth): Data<&AuthMode>,
+    Data(auth): Data<&AdminConfig>,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let Some(config) = auth.config() else {
-        return Redirect::see_other("/").into_response();
-    };
     // A missing password field fails the same way as a wrong one.
     let Some(password) = form.password.as_deref() else {
         return login_page(true);
     };
-    if !verify_password(password, &config.password_hash) {
+    if !verify_password(password, &auth.password_hash) {
         return login_page(true);
     }
     match db.create_session("admin").await {
@@ -448,14 +359,14 @@ async fn logout(Data(db): Data<&Db>, req: &Request) -> Response {
         .finish()
 }
 
-fn app(db: Db, auth: AuthMode, config_path: ConfigPath) -> impl Endpoint {
+fn app(db: Db, auth: AdminConfig, config_path: ConfigPath) -> impl Endpoint {
     let gate_auth = auth.clone();
+    // Everything except the login form sits behind the session gate —
+    // including logout, so the "exactly one public page" property stays
+    // true and a stray route can't slip outside it unnoticed.
     let protected = Route::new()
         .at("/", get(index).post(index_save))
-        .at("/hello/:name", get(hello))
-        .at("/update", post(update_count))
-        .at("/session", post(create_session))
-        .at("/session/:token", get(show_session).delete(end_session))
+        .at("/auth/logout", get(logout))
         .around(move |ep, req| {
             let auth = gate_auth.clone();
             async move { gate_request(&auth, ep, req).await }
@@ -463,7 +374,6 @@ fn app(db: Db, auth: AuthMode, config_path: ConfigPath) -> impl Endpoint {
 
     Route::new()
         .at("/auth/login", get(login_page_get).post(login_page_post))
-        .at("/auth/logout", get(logout))
         .nest("/", protected)
         .data(db)
         .data(auth)
@@ -472,11 +382,12 @@ fn app(db: Db, auth: AuthMode, config_path: ConfigPath) -> impl Endpoint {
 
 pub async fn serve(
     db: Db,
-    auth: AuthMode,
+    auth: AdminConfig,
     config_path: ConfigPath,
+    addr: &str,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), std::io::Error> {
-    Server::new(TcpListener::bind("0.0.0.0:3000"))
+    Server::new(TcpListener::bind(addr))
         .run_with_graceful_shutdown(
             app(db, auth, config_path),
             async move {
@@ -491,76 +402,28 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dashboard::db::DbError;
     use poem::test::TestClient;
 
     fn test_config_path() -> ConfigPath {
         ConfigPath(PathBuf::from("/nonexistent/dashboard.nix"))
     }
 
-    fn test_auth() -> AuthMode {
-        AuthMode::Password(auth::AdminConfig {
+    fn test_auth() -> AdminConfig {
+        AdminConfig {
             password_hash: "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W"
                 .to_string(),
-        })
+        }
     }
 
-    #[tokio::test]
-    async fn hello_renders_and_counter_persists() {
-        let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
-        let first = client.get("/hello/alice").send().await;
-        first.assert_status(StatusCode::OK);
-        let first_body = first.0.into_body().into_string().await.expect("utf8 body");
-        assert!(first_body.contains("alice"));
-        assert!(first_body.contains(" 1 times."));
-        assert!(first_body.contains(r#"class="zine app""#), "app-mode shell");
-        assert!(first_body.contains("4.3.3"), "vendored tailwind runtime");
-        let second = client.get("/hello/alice").send().await;
-        let second_body = second.0.into_body().into_string().await.expect("utf8 body");
-        assert!(second_body.contains(" 2 times."));
-    }
-
-    #[tokio::test]
-    async fn session_endpoints_round_trip() {
-        let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
-        let created = client.post("/session").send().await;
-        created.assert_status(StatusCode::CREATED);
-        let token = created
-            .0
-            .headers()
-            .get("X-Session-Token")
-            .expect("token header present")
-            .to_str()
-            .expect("token header is utf8")
-            .to_owned();
-        let shown = client.get(format!("/session/{token}")).send().await;
-        shown.assert_status(StatusCode::OK);
-        let shown_body = shown.0.into_body().into_string().await.expect("utf8 body");
-        assert!(shown_body.contains("demo-user"));
-        let ended = client.delete(format!("/session/{token}")).send().await;
-        ended.assert_status(StatusCode::NO_CONTENT);
-        let gone = client.get(format!("/session/{token}")).send().await;
-        gone.assert_status(StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn dev_mode_index_and_session_work_without_login() {
-        let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
-        let home = client.get("/").send().await;
-        home.assert_status(StatusCode::OK);
-        let login_redirect = client.get("/auth/login").send().await;
-        login_redirect.assert_status(StatusCode::SEE_OTHER);
-        let location = login_redirect
-            .0
-            .headers()
-            .get(header::LOCATION)
-            .expect("redirect location")
-            .to_str()
-            .unwrap()
-            .to_owned();
-        assert_eq!(location, "/");
+    /// A client whose requests carry a valid admin session, so the
+    /// tests exercise the editor rather than the login gate. There is no
+    /// way to skip the gate — so every
+    /// page test logs in first.
+    async fn authed_client(db: Db, config_path: ConfigPath) -> TestClient<impl Endpoint> {
+        let token = db.create_session("admin").await.expect("create session");
+        TestClient::new(app(db, test_auth(), config_path))
+            .default_header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
     }
 
     #[tokio::test]
@@ -579,12 +442,43 @@ mod tests {
         assert_eq!(location, "/auth/login");
     }
 
+    /// Tripwire: there is no unauthenticated surface. Exactly one page
+    /// is public — the login form — and everything else bounces a
+    /// request with no session cookie, so a future route added outside
+    /// the gated `Route` cannot silently ship an open admin UI. This is
+    /// the regression guard for the `AuthMode::Dev` hole.
+    #[tokio::test]
+    async fn every_page_route_requires_a_session() {
+        let db = Db::open_in_memory().await.expect("in-memory db opens");
+        let client = TestClient::new(app(db, test_auth(), test_config_path()));
+
+        let public = client.get("/auth/login").send().await;
+        public.assert_status(StatusCode::OK);
+
+        for path in ["/", "/auth/logout"] {
+            let bounced = client.get(path).send().await;
+            assert_eq!(
+                bounced.0.status(),
+                StatusCode::SEE_OTHER,
+                "{path} must require a session"
+            );
+            let location = bounced
+                .0
+                .headers()
+                .get(header::LOCATION)
+                .expect("redirect location")
+                .to_str()
+                .unwrap();
+            assert_eq!(location, "/auth/login", "{path} must bounce to login");
+        }
+    }
+
     #[tokio::test]
     async fn gate_redirects_htmx_with_hx_header() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let client = TestClient::new(app(db, test_auth(), test_config_path()));
         let bounced = client
-            .get("/hello/test")
+            .get("/")
             .header("HX-Request", "true")
             .send()
             .await;
@@ -605,7 +499,7 @@ mod tests {
         let token = db.create_session("alice").await.expect("create session");
         let client = TestClient::new(app(db, test_auth(), test_config_path()));
         let response = client
-            .get("/hello/alice")
+            .get("/")
             .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
@@ -634,11 +528,6 @@ mod tests {
     #[test]
     fn dashboard_pages_have_no_external_asset_origins() {
         let login_html = component::<LoginPage>(LoginPageProps { error: false }).to_html();
-        let index_html = component::<IndexPage>(IndexProps {
-            name: "alice".into(),
-            count: 0,
-        })
-        .to_html();
         let editor_html = component::<EditorPage>(EditorPageProps {
             hostname: "living-room".into(),
             base_domain: "x.example.com".into(),
@@ -649,11 +538,7 @@ mod tests {
             save_error: None,
         })
         .to_html();
-        for (name, html) in [
-            ("login", login_html),
-            ("index", index_html),
-            ("editor", editor_html),
-        ] {
+        for (name, html) in [("login", login_html), ("editor", editor_html)] {
             for banned in [
                 "<script src=\"http",
                 "<link rel=\"stylesheet\" href=\"http",
@@ -710,7 +595,7 @@ mod tests {
             .and_then(|rest| rest.split(';').next())
             .expect("cookie token");
         let gate = client
-            .get("/hello/alice")
+            .get("/")
             .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
@@ -737,22 +622,6 @@ mod tests {
         assert!(body.contains("Incorrect password."));
         let bounced = client.get("/").send().await;
         bounced.assert_status(StatusCode::SEE_OTHER);
-    }
-
-    #[tokio::test]
-    async fn login_redirects_in_dev_mode() {
-        let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
-        let response = client.get("/auth/login").send().await;
-        response.assert_status(StatusCode::SEE_OTHER);
-        let location = response
-            .0
-            .headers()
-            .get(header::LOCATION)
-            .expect("redirect location")
-            .to_str()
-            .unwrap();
-        assert_eq!(location, "/");
     }
 
     #[tokio::test]
@@ -868,13 +737,16 @@ mod tests {
                 path: vec!["networking".into(), "hostName".into()],
                 source: "\"changed\"".to_string(),
             },
+            // Blocked, not merely missing: `networking` is a namespace
+            // here (the file binds `networking.hostName`), so assigning
+            // to it would collide. One bad edit must sink the whole save.
             ConfigEdit {
-                path: vec!["fortress".into(), "nonexistent".into()],
-                source: "true".to_string(),
+                path: vec!["networking".into()],
+                source: "5".to_string(),
             },
         ];
         let result = save_config(&path, &edits);
-        assert!(result.is_err(), "missing path must fail the whole save");
+        assert!(result.is_err(), "blocked path must fail the whole save");
         assert_eq!(
             std::fs::read_to_string(path.as_path()).expect("read back"),
             original,
@@ -924,7 +796,7 @@ mod tests {
     #[tokio::test]
     async fn editor_renders_known_fields() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, temp_config(EDITOR_FIXTURE)));
+        let client = authed_client(db, temp_config(EDITOR_FIXTURE)).await;
         let response = client.get("/").send().await;
         response.assert_status(StatusCode::OK);
         let body = response
@@ -951,7 +823,7 @@ mod tests {
     #[tokio::test]
     async fn editor_shows_read_error_banner_on_missing_file() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
+        let client = authed_client(db, test_config_path()).await;
         let response = client.get("/").send().await;
         response.assert_status(StatusCode::OK);
         let body = response
@@ -967,7 +839,7 @@ mod tests {
     async fn editor_save_writes_file_and_flashes_saved() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let path = temp_config(EDITOR_FIXTURE);
-        let client = TestClient::new(app(db, AuthMode::Dev, path.clone()));
+        let client = authed_client(db, path.clone()).await;
         let response = client
             .post("/")
             .content_type("application/x-www-form-urlencoded")
@@ -998,7 +870,7 @@ mod tests {
     async fn editor_save_unchecks_a_service() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let path = temp_config(EDITOR_FIXTURE);
-        let client = TestClient::new(app(db, AuthMode::Dev, path.clone()));
+        let client = authed_client(db, path.clone()).await;
         let response = client
             .post("/")
             .content_type("application/x-www-form-urlencoded")
@@ -1014,16 +886,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn editor_save_ignores_undeclared_fields() {
+    async fn editor_save_inserts_a_checked_undeclared_service() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let path = temp_config(EDITOR_FIXTURE);
-        let client = TestClient::new(app(db, AuthMode::Dev, path.clone()));
+        let client = authed_client(db, path.clone()).await;
         let response = client
             .post("/")
             .content_type("application/x-www-form-urlencoded")
-            // sonarr has no enable binding in the fixture; submitting it must not
-            // fail the save (the parser cannot insert bindings).
-            .body("hostname=vmtest&base_domain=vmtest.local&svc_jellyfin=true&svc_sonarr=true&groups_nicole=wheel")
+            // forgejo has no `enable` binding in the fixture; checking it
+            // must CREATE one rather than silently dropping the edit.
+            .body("hostname=vmtest&base_domain=vmtest.local&svc_jellyfin=true&svc_forgejo=true&groups_nicole=wheel")
             .send()
             .await;
         response.assert_status(StatusCode::OK);
@@ -1034,12 +906,41 @@ mod tests {
             .await
             .expect("utf8 body");
         assert!(body.contains("Saved."));
+
+        let written = std::fs::read_to_string(path.as_path()).expect("read back");
+        assert!(
+            written.contains("fortress.services.forgejo.enable = true;")
+                || written.contains("services.forgejo.enable = true;"),
+            "checked service must gain a binding: {written}"
+        );
+    }
+
+    /// The other half of the insert policy: an untouched, undeclared
+    /// service must NOT grow a binding that restates a module default.
+    #[tokio::test]
+    async fn editor_save_skips_unchecked_undeclared_services() {
+        let db = Db::open_in_memory().await.expect("in-memory db opens");
+        let path = temp_config(EDITOR_FIXTURE);
+        let client = authed_client(db, path.clone()).await;
+        let response = client
+            .post("/")
+            .content_type("application/x-www-form-urlencoded")
+            .body("hostname=vmtest&base_domain=vmtest.local&svc_jellyfin=true&groups_nicole=wheel")
+            .send()
+            .await;
+        response.assert_status(StatusCode::OK);
+
+        let written = std::fs::read_to_string(path.as_path()).expect("read back");
+        assert!(
+            !written.contains("forgejo") && !written.contains("media"),
+            "unchecked service must not be written: {written}"
+        );
     }
 
     #[tokio::test]
     async fn editor_save_missing_file_shows_error_not_panic() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, AuthMode::Dev, test_config_path()));
+        let client = authed_client(db, test_config_path()).await;
         let response = client
             .post("/")
             .content_type("application/x-www-form-urlencoded")

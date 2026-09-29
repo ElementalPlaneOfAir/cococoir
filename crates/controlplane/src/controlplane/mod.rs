@@ -418,6 +418,19 @@ impl ControlPlane {
         Ok(B64.encode(PublicKey::from(&secret).as_bytes()))
     }
 
+    /// The root domain a customer's machines are named under. `'static`
+    /// because it lives in the process-lifetime `SECRETS` (or the dummy
+    /// constant). Surfaces that render a machine's share URL read it
+    /// here rather than via `secret::root_domain()`, which would panic
+    /// on a dummy boot where the struct field is the only source.
+    pub fn root_domain(&self) -> &'static str {
+        assert!(
+            !self.root_domain.is_empty(),
+            "root domain must be non-empty"
+        );
+        self.root_domain
+    }
+
     /// Boot-time: install the shared edge identity's private key into
     /// the running `wg0` interface, so the edge answers customer
     /// handshakes and any throwaway key `wg-quick up` left there is
@@ -825,6 +838,29 @@ pub fn forwarder() -> &'static Forwarder {
 /// The process's control plane. Panics if not initialized.
 pub fn control_plane() -> &'static ControlPlane {
     CONTROL_PLANE.get().expect("control plane not initialized")
+}
+
+/// Install the process-wide rustls crypto provider. Must run before
+/// anything builds a rustls client — the Redis `rediss://` connection,
+/// the Hetzner DNS client, the SMTP relay. With more than one provider
+/// feature compiled into the dependency tree, rustls refuses to pick one
+/// itself and aborts; that crash-loop was the edge exiting 101 on boot.
+pub fn install_crypto_provider() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("rustls crypto provider must install exactly once");
+}
+
+/// Resolve on SIGINT or SIGTERM. Shared by both binary entry points so
+/// their shutdown shape is identical (systemd sends SIGTERM).
+pub async fn wait_for_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = sigint.recv() => {}
+        _ = sigterm.recv() => {}
+    }
 }
 
 /// The dummy/dev boot domain and edge WG key, injected instead of the
@@ -1505,18 +1541,34 @@ impl ControlPlane {
 mod tests {
     use super::*;
 
-    /// Test-only fixture for the shared `wg0` identity (ADR-029). A real
-    /// WireGuard private key (base64, 32 bytes); the store holds the
-    /// production one, tests inject this literal so they never force the
-    /// boot-only `SECRETS` LazyLock.
-    const TEST_EDGE_WG_PRIV: &str = "KKwuhbBylIlBdWtTEa0Krl5NoYGTUrKTkZf7VEsXXGA=";
-
     #[test]
     fn subnet64_parses_and_hosts() {
         let subnet = Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap();
         assert_eq!(subnet.host_string(1), "2a01:4f8:c17:1::1");
         assert_eq!(subnet.host_string(2), "2a01:4f8:c17:1::2");
         assert_eq!(subnet.host_string(65536), "2a01:4f8:c17:1::1:0");
+    }
+
+    /// The share-URL domain must come from the constructed plan, not a
+    /// `secret::root_domain()` read: on a dummy boot the secrets are
+    /// never resolved, so only the struct field is a valid source.
+    #[test]
+    fn root_domain_is_readable_without_touching_secrets() {
+        let wg: &'static crate::controlplane::wg::MockWgClient =
+            Box::leak(Box::new(crate::controlplane::wg::MockWgClient::new()));
+        let dns: &'static crate::controlplane::dns::MockDnsApiClient =
+            Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
+        let cp = ControlPlane::with_deps(
+            "redis://127.0.0.1:6399",
+            Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap(),
+            WgSubnet::from_str("10.10.0.0/24").unwrap(),
+            "example.net",
+            DUMMY_EDGE_WG_PRIV,
+            wg,
+            dns,
+        )
+        .expect("a control plane constructs against an unreachable store without connecting");
+        assert_eq!(cp.root_domain(), "example.net");
     }
 
     #[test]
@@ -1609,7 +1661,7 @@ mod tests {
             subnet,
             wg_subnet,
             "proletariat.tech",
-            TEST_EDGE_WG_PRIV,
+            DUMMY_EDGE_WG_PRIV,
             wg,
             dns,
         )
@@ -1703,7 +1755,7 @@ mod tests {
         // The shared-identity property (ADR-029): the installed private
         // key IS the store-held one, so both nodes answer as the same
         // peer.
-        assert_eq!(wg.private_keys.lock().unwrap()[0], TEST_EDGE_WG_PRIV);
+        assert_eq!(wg.private_keys.lock().unwrap()[0], DUMMY_EDGE_WG_PRIV);
 
         // The forwarder bound 4 live listeners (2 machines × 2 ports); the
         // WG client added both peers to the kernel interface.
@@ -2058,7 +2110,7 @@ mod tests {
                 subnet,
                 wg_subnet,
                 "example.net",
-                TEST_EDGE_WG_PRIV,
+                DUMMY_EDGE_WG_PRIV,
                 wg,
                 dns,
             )
@@ -2231,7 +2283,7 @@ mod tests {
                 subnet,
                 wg_subnet,
                 "example.net",
-                TEST_EDGE_WG_PRIV,
+                DUMMY_EDGE_WG_PRIV,
                 wg,
                 dns,
             )
@@ -2337,6 +2389,8 @@ mod tests {
     }
 
     /// The magic-link bodies are `…token=<hex>…`; pull the token out.
+    /// Only the store-backed (`redis-tests`) flows assert on them.
+    #[cfg(feature = "redis-tests")]
     fn extract_api_token(body: &str) -> String {
         let start = body.find("token=").expect("link present") + "token=".len();
         body[start..].lines().next().unwrap().trim().to_string()

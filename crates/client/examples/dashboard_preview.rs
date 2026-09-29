@@ -6,8 +6,7 @@
 //!
 //!     cargo run -p fortress-client --example dashboard_preview -- /tmp/dash
 use fortress_client::dashboard::components::{
-    EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, IndexPage, IndexProps,
-    LoginPage, LoginPageProps,
+    EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, LoginPage, LoginPageProps,
 };
 use momenta::prelude::*;
 
@@ -24,14 +23,6 @@ fn main() {
             component::<LoginPage>(LoginPageProps { error: false }).to_html(),
         ),
         (
-            "index.html",
-            component::<IndexPage>(IndexProps {
-                name: "nicole".into(),
-                count: 3,
-            })
-            .to_html(),
-        ),
-        (
             "editor.html",
             component::<EditorPage>(EditorPageProps {
                 hostname: "living-room".into(),
@@ -42,14 +33,12 @@ fn main() {
                         display_name: "Jellyfin",
                         description: "Media server",
                         enabled: true,
-                        declared: true,
                     },
                     EditorServiceProps {
                         nixname: "cryptpad".into(),
                         display_name: "CryptPad",
                         description: "Collaborative docs",
                         enabled: false,
-                        declared: false,
                     },
                 ],
                 users: vec![EditorUserProps {
@@ -57,7 +46,6 @@ fn main() {
                     is_admin: true,
                     groups: vec!["media".into()],
                     has_password: true,
-                    groups_declared: true,
                 }],
                 config_error: None,
                 saved: false,

@@ -8,8 +8,8 @@ license = "AGPL-3.0-or-later"
 # semantics (`impl View` must capture the macro-injected lifetimes). On
 # edition 2021 they fail with E0700.
 #
-# topcoat >= 0.7 requires rustc 1.98 (workspace dev toolchain is 1.97.1 —
-# see the migration note in docs/STATUS.md).
+# topcoat >= 0.7 requires rustc 1.98. Both the devenv toolchain and
+# nixpkgs' default rustc are 1.98.1, so the shell and the nix build agree.
 #
 # Deliberately NOT adopted from topcoat: `mail` (controlplane owns the
 # `Mailer` trait + SMTP secrets), `session` (controlplane owns
@@ -22,7 +22,7 @@ topcoat = { version = "0.8", default-features = false, features = ["router", "vi
 axum = "0.8"
 utoipa = "5"
 utoipa-axum = "0.2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 fortress-web-ui = { path = "../web-ui" }

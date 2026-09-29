@@ -7,11 +7,12 @@
 //!     cargo run -p fortress-controlplane --example auth_preview -- /tmp/auth
 use fortress_controlplane::controlplane::web::{
     ForgotOutcome, ForgotPage, ForgotProps, JoinPage, JoinProps, LoginPage, LoginProps,
-    MachinesPage, MachinesProps, MessagePage, MessageProps, MsgKind, ResetPage, ResetProps,
-    ResendPage, ResendPageProps, SignupPage, SignupProps, VerifyNoticePage, VerifyNoticeProps,
-    VerifyPage, VerifyProps,
+    MessagePage, MessageProps, MsgKind, ResetPage, ResetProps, SignupPage, SignupProps, VerifyPage,
+    VerifyProps,
 };
-use fortress_controlplane::controlplane::{InviteRecord, InviteStatus, Machine};
+use fortress_web_ui::{
+    machines_html, InviteRow, InviteStatus, MachineRow, MachinesProps,
+};
 use momenta::prelude::*;
 
 fn write(dir: &std::path::Path, name: &str, html: String) {
@@ -46,30 +47,20 @@ fn main() {
         ),
         (
             "machines.html",
-            component::<MachinesPage>(MachinesProps {
-                email: "nicole@example.com".into(),
-                machines: vec![Machine {
+            machines_html(&MachinesProps {
+                machines: vec![MachineRow {
                     name: "living-room".into(),
-                    owner: None,
                     hostname: "living-room".into(),
-                    ipv6: String::new(),
-                    wg_ip: String::new(),
-                    wg_public_key: "base64key=".into(),
-                    device_token_hash: Some(String::new()),
                 }],
-                invites: vec![(
-                    "CODE-1234".into(),
-                    InviteRecord {
-                        owner_email: "nicole@example.com".into(),
-                        status: InviteStatus::Waiting,
-                        device_pubkey: Some("candidatebase64key=".into()),
-                    },
-                )],
+                invites: vec![InviteRow {
+                    code: "CODE-1234".into(),
+                    status: InviteStatus::Waiting,
+                    device_pubkey: Some("candidatebase64key=".into()),
+                }],
                 invited_code: Some("CODE-1234".into()),
                 error: None,
                 root_domain: "fortress.example".into(),
-            })
-            .to_html(),
+            }),
         ),
         (
             "forgot-prompt.html",

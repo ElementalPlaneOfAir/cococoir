@@ -65,9 +65,9 @@
         password — the control plane that edits global settings
         and users. The client service loads it via
         `services.fortress-client.adminPasswordEnvFile` as
-        `FORTRESS_ADMIN_PASSWORD_HASH`; without it the dashboard
-        runs in Dev mode (no auth), which must never be the case
-        on a reachable box. Wire a sops template rendering
+        `FORTRESS_ADMIN_PASSWORD_HASH`. Required: the dashboard
+        has no unauthenticated mode, so fortress-client refuses
+        to start without it. Wire a sops template rendering
         `FORTRESS_ADMIN_PASSWORD_HASH=''${fortress-admin-password-hash}`
         to this secret for T7.
       '';

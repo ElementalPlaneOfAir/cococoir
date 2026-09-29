@@ -5,28 +5,6 @@ use fortress_web_ui::{
     card, htmx_script, shell, shell_with_head, zine_button, zine_submit, ShellVariant,
 };
 
-pub struct HtmxTestProps {
-    pub count: usize,
-}
-
-#[component]
-pub fn HtmxTest(props: &HtmxTestProps) -> Node {
-    let countstr = format!("{}", props.count);
-    rsx!(
-        {card("", rsx!(
-            <>
-                <h2 class="font-black uppercase">"Page loads"</h2>
-                <p class="text-sm dim">"This page has been loaded " {countstr} " times."</p>
-                <div>
-                    <button class="btn-zine btn-zine-red btn-zine-sm" data_hx_target="closest .zine-card" data_hx_post="/update">
-                        "Increment"
-                    </button>
-                </div>
-            </>
-        ))}
-    )
-}
-
 pub struct LoginPageProps {
     pub error: bool,
 }
@@ -59,20 +37,12 @@ pub fn LoginPage(props: &LoginPageProps) -> Node {
     )
 }
 
-pub struct IndexProps {
-    pub name: String,
-    pub count: usize,
-}
-
 /// One service row in the config editor.
 pub struct EditorServiceProps {
     pub nixname: String,
     pub display_name: &'static str,
     pub description: &'static str,
     pub enabled: bool,
-    /// Whether the `enable` binding exists in the file. Undeclared
-    /// services are read-only (the parser cannot insert bindings yet).
-    pub declared: bool,
 }
 
 /// One user row in the config editor.
@@ -81,9 +51,6 @@ pub struct EditorUserProps {
     pub is_admin: bool,
     pub groups: Vec<String>,
     pub has_password: bool,
-    /// Whether a `groups` binding exists in the file; when false the
-    /// groups input renders read-only.
-    pub groups_declared: bool,
 }
 
 pub struct EditorPageProps {
@@ -124,19 +91,13 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
         .iter()
         .map(|service| {
             let checked = checked_attr(service.enabled);
-            let disabled = checked_attr(!service.declared);
-            let hint = if service.declared {
-                String::new()
-            } else {
-                " not declared in file — add manually".to_string()
-            };
             rsx!(
                 <label class="flex items-center justify-between gap-4 border-2 border-ink px-4 py-3">
                     <span class="flex flex-col">
                         <span class="font-black">{service.display_name}</span>
-                        <span class="text-sm dim">{service.description}{hint}</span>
+                        <span class="text-sm dim">{service.description}</span>
                     </span>
-                    <input type="checkbox" name={"svc_".to_string() + &service.nixname} value="true" checked={checked} disabled={disabled} class="zine-toggle"/>
+                    <input type="checkbox" name={"svc_".to_string() + &service.nixname} value="true" checked={checked} class="zine-toggle"/>
                 </label>
             )
         })
@@ -157,12 +118,6 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
                 Node::Empty
             };
             let groups = user.groups.join(", ");
-            let disabled = checked_attr(!user.groups_declared);
-            let hint = if user.groups_declared {
-                String::new()
-            } else {
-                " groups not declared in file — add manually".to_string()
-            };
             rsx!(
                 <div class="flex items-center justify-between gap-4 border-2 border-ink px-4 py-3">
                     <span class="flex items-center gap-2">
@@ -171,8 +126,7 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
                         {password_badge}
                     </span>
                     <span class="flex flex-col items-end gap-1">
-                        <input type="text" name={"groups_".to_string() + &user.username} value={groups} disabled={disabled} class="zine-input w-64"/>
-                        <span class="text-xs faint">{hint}</span>
+                        <input type="text" name={"groups_".to_string() + &user.username} value={groups} class="zine-input w-64"/>
                     </span>
                 </div>
             )
@@ -250,25 +204,3 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
     )
 }
 
-#[component]
-pub fn IndexPage(props: &IndexProps) -> Node {
-    shell_with_head(
-        "Fortress",
-        ShellVariant::App,
-        htmx_script(),
-        rsx!(
-            <>
-                {app_nav()}
-                <main class="mx-auto flex max-w-5xl flex-col gap-6 p-6">
-                    {card("text-center", rsx!(
-                        <>
-                            <h1 class="text-4xl font-black uppercase">"Hello " {&props.name}</h1>
-                            <p class="dim">"Fortress admin dashboard"</p>
-                        </>
-                    ))}
-                    <HtmxTest count={props.count}/>
-                </main>
-            </>
-        ),
-    )
-}

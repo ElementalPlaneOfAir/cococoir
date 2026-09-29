@@ -47,27 +47,38 @@ let
     '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
+  # crane's `cargoArtifacts` from the package build are shared by every
+  # Rust check, so deps compile once across `nix build`, `nix flake
+  # check`, and the edge systemConfig.
+  craneLib = pkgs.crane.mkLib pkgs;
+  rustTestArgs = {
+    src = fortressPkg.src;
+    pname = "fortress";
+    version = "0.1.0";
+    cargoLock = fortressPkg.cargoLock;
+    cargoArtifacts = fortressPkg.cargoArtifacts;
+  };
 in {
   # ── L0: forwarder Rust unit tests ────────────────────────────────
   # `cargo test` on the fortress crate. No /dev/kvm, no QEMU.
   # Catches regressions in the forwarder (TCP/UDP forwarding,
   # retry-with-backoff, graceful shutdown, proto validation) plus the
   # control-plane (signup/DNS/auth) and dashboard suites.
-  #
-  # Uses crane's `cargoTest` reusing the same `cargoArtifacts` as the
-  # package build, so the deps are compiled once and shared across
-  # `nix build`, `nix flake check`, and the edge systemConfig.
-  forwarder-unit-tests = let
-    craneLib = pkgs.crane.mkLib pkgs;
-    commonArgs = {
-      src = fortressPkg.src;
-      pname = "fortress";
-      version = "0.1.0";
-      cargoLock = fortressPkg.cargoLock;
-      cargoArtifacts = fortressPkg.cargoArtifacts;
-    };
-  in
-    craneLib.cargoTest commonArgs;
+  forwarder-unit-tests = craneLib.cargoTest rustTestArgs;
+
+  # ── L0b: the `redis-tests` tier must COMPILE ─────────────────────
+  # The store-backed tier sits behind `redis-tests` (default off), so
+  # `forwarder-unit-tests` never sees it. That is a silent-rot seam: a
+  # helper used only inside `#[cfg(feature = "redis-tests")]` looks
+  # dead to the default build and can be deleted with every check
+  # still green — which is exactly how `TEST_EDGE_WG_PRIV` (used by
+  # four gated tests, seen as "never used" by the default lint) was
+  # dropped on 2026-09-25. This compiles the tier. It deliberately
+  # does NOT run it: the tests need a live Redis, which the L2
+  # `edge-forward` nixosTest provides.
+  redis-tier-compiles = craneLib.cargoBuild (rustTestArgs // {
+    cargoExtraArgs = "--locked -p fortress-controlplane --all-targets --features redis-tests";
+  });
 
 # ── L2: edge <-> client over WireGuard ───────────────────────────
   # 2-VM nixosTest. Exercises the control-plane edge's full

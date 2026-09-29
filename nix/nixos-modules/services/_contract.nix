@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # fortress/services/_contract — the 4-option service contract
-# factory. Per PLAN.md "Services" and ADR-004.
+# factory. Per PLAN.md "Services", ADR-004, and ADR-034 (routing:
+# one origin per plane, services at paths, failover redirect matrix).
 #
 # Every fortress service module (jellyfin.nix, dex.nix, ...)
 # imports this factory and only adds its own specifics — system

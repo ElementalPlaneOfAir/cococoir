@@ -4,7 +4,7 @@
 use topcoat::router::{Router, tower::TowerService};
 
 use crate::SiteBackend;
-use crate::pages::{auth, docs, home, install, shell};
+use crate::pages::{auth, docs, home, install, machines, shell};
 
 /// The pages router. `backend` is registered as topcoat app context so
 /// every handler can reach the account plane with `app_context(cx)`.
@@ -31,6 +31,11 @@ pub fn pages_router(backend: &'static SiteBackend) -> Router {
         .page(auth::join)
         .page(auth::account_delete_get)
         .page(auth::account_delete_post)
+        .page(machines::machines)
+        .page(machines::invite_create)
+        .page(machines::invite_approve)
+        .page(machines::invite_deny)
+        .page(machines::invite_revoke)
         // `#[route]`, not `#[page]`: /install.sh is a shell script.
         .route(install::install_sh)
         .build()

@@ -39,13 +39,6 @@
       url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Wasm toolchains (rust-bin with a wasm32-unknown-unknown target) —
-    # the documented path for cross-target Rust builds with crane
-    # (crane.dev custom-toolchain + trunk examples).
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     # Weekly-built nix-index database (command name -> nixpkgs attrpath).
     # comma (nix-community) is a wrapper around `nix shell -c` + nix-index
     # and CANNOT resolve `, foo` without this index. We use its
@@ -72,11 +65,13 @@
       };
       withCraneAttrs = base.extend (final: prev: {
         crane = inputs.crane;
-        # The pinned jellarr flake (rev de530bc) hardwires a
-        # fetchPnpmDeps hash computed against an older nixpkgs
-        # toolchain; the 2026-09-19 lock bump changed what the fetcher
-        # produces. Substitute only when the exact stale value flows
-        # through — an upstream hash fix renders this inert.
+        # jellarr (rev 317f7be, PR #79's Jellyfin-12 auth fix) hardwires
+        # a fetchPnpmDeps hash computed against an older nixpkgs
+        # toolchain; the 2026-09-19 lock bump (ec2d622 -> e554fab)
+        # changed what the fetcher produces. Substitute only when the
+        # exact stale value flows through — upstream's own hash fix
+        # (or a lock rollback) renders this inert. Load-bearing today:
+        # 317f7be's nix/package.nix still carries the stale hash.
         fetchPnpmDeps = args:
           prev.fetchPnpmDeps (if args ? hash && args.hash
             == "sha256-jo1BjRAjjfNKF0xb5cLCuELSveHeJ98iLPhMDKP1QbI="
@@ -191,14 +186,6 @@
         devAdminHash =
           "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
       in {
-        packages = pkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # The fortress-site wasm bundle: dx 0.7.10 client build +
-          # the SSR server binary. ADR-033's deployable site artifact.
-          siteBundle = realPkgs.callPackage ./nix/packages/site {
-            crane = inputs.crane;
-            rustOverlay = inputs.rust-overlay;
-          };
-        };
         checks = import ./nix/tests {
           inherit (withCrane system) pkgs;
           sopsModule = inputs.sops-nix.nixosModules.sops;
@@ -209,6 +196,7 @@
           import ./nix/tests/vmtest-wiring {
             inherit (withCrane system) pkgs;
             vmtestConfig = vmtest.config;
+            vmtestSystem = vmtest;
           }
         )
         # fortress-container is pinned to x86_64-linux; only wire its
@@ -310,21 +298,10 @@
         # The pc spec lives in nix/dev/process-compose.nix — dev
         # tooling, deliberately outside the nixos modules.
         apps.dashboard-dev = let
-          siteBundle = if system == "x86_64-linux" then
-            realPkgs.callPackage ./nix/packages/site {
-              crane = inputs.crane;
-              rustOverlay = inputs.rust-overlay;
-            }
-          else
-            null;
           devPcConfig = (realPkgs.formats.yaml {}).generate "dashboard-dev.yaml"
             (import ./nix/dev/process-compose.nix {
               pkgs = realPkgs;
               adminPasswordHash = devAdminHash;
-              # The site-wasm dev build step only exists where the site
-              # bundle does (x86_64-linux); macOS stays SSR-only.
-              siteWasmToolchain = if siteBundle == null then null else siteBundle.passthru.wasmToolchain;
-              siteWasmBindgenCli = if siteBundle == null then null else siteBundle.passthru.wasmBindgenCli;
             });
         in {
           type = "app";

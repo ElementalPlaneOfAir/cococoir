@@ -54,6 +54,7 @@ struct Flags {
     config_path: String,
     log_format: logger::Format,
     health_addr: String,
+    dashboard_addr: String,
 }
 
 /// Shared entry point. `component` and `default_config` come from the
@@ -63,7 +64,7 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
         Ok(flags) => flags,
         Err(err) => {
             eprintln!("{err}");
-            eprintln!("usage: {component} -config PATH -log-format text|json -health-addr ADDR");
+            eprintln!("usage: {component} -config PATH -log-format text|json -health-addr ADDR -dashboard-addr ADDR");
             return 1;
         }
     };
@@ -91,6 +92,23 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
         error!("config: 'tunnel' and 'invite' are mutually exclusive — a box is Nix-wired OR self-enrolled");
         return 1;
     }
+
+    // The dashboard is the control plane of the box: it edits the
+    // machine's NixOS config. There is no unauthenticated mode, so a
+    // box with no admin credential is a misconfiguration and must not
+    // limp along half-running. Refuse to start before any side effects
+    // (wg0, enrollment, forwarder binds) so the operator sees one clear
+    // failure instead of a box that silently serves an open admin UI.
+    let admin_config = match dashboard::auth::AdminConfig::from_env() {
+        Some(config) => config,
+        None => {
+            error!(
+                "FORTRESS_ADMIN_PASSWORD_HASH is not set — refusing to start; \
+                 the dashboard would have no credential to gate with"
+            );
+            return 1;
+        }
+    };
 
     // Tunnel state resolution, in priority order:
     //   1. A persisted enrollment (tunnel.json) — the box already joined;
@@ -186,26 +204,33 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
     };
 
     // Dashboard: open the sqlite db, resolve the edited config path,
-    // and freeze the auth mode before the forwarder starts blocking.
-    // A db open failure is non-fatal: the dashboard degrades off and
-    // the forwarder keeps running (a read-only home or a transient
-    // sqlite error must never take down the L4 path).
+    // and start the server. Same rule as the missing admin hash above:
+    // the dashboard runs authenticated or the process does not run. A
+    // session store that cannot open would leave a login page that can
+    // never persist a session — a box that "boots" but is unmanageable.
+    let dashboard_addr = flags.dashboard_addr.clone();
     let dashboard_task = match dashboard::Db::open().await {
         Ok(db) => {
             let config_path = dashboard::ConfigPath::resolve();
             tracing::info!(config = %config_path.as_path().display(), "dashboard config path");
-            let auth = dashboard::auth::AuthMode::current().clone();
+            let auth = admin_config.clone();
             let dashboard_shutdown = shutdown_rx.clone();
             Some(tokio::spawn(async move {
-                if let Err(err) = dashboard::serve(db, auth, config_path, dashboard_shutdown).await
+                if let Err(err) =
+                    dashboard::serve(db, auth, config_path, &dashboard_addr, dashboard_shutdown)
+                        .await
                 {
                     error!(err = %err, "dashboard server exited with error");
                 }
             }))
         }
         Err(err) => {
-            error!(err = %err, "dashboard disabled: database failed to open; running forwarder only");
-            None
+            error!(
+                err = %err,
+                "dashboard session store failed to open — refusing to start; \
+                 without it the dashboard cannot authenticate anyone"
+            );
+            return 1;
         }
     };
 
@@ -270,8 +295,9 @@ async fn wait_for_signal() {
     }
 }
 
-/// Parses `-config`, `-log-format`, and `-health-addr` from argv,
-/// applying the binary's defaults for unset flags.
+/// Parses `-config`, `-log-format`, `-health-addr`, and
+/// `-dashboard-addr` from argv, applying the binary's defaults for
+/// unset flags.
 fn parse_flags(component: &str, default_config: &str) -> Result<Flags, String> {
     parse_flag_args(
         component,
@@ -290,6 +316,7 @@ fn parse_flag_args(
     let mut config_path = default_config.to_string();
     let mut log_format = "text".to_string();
     let mut health_addr = "127.0.0.1:9090".to_string();
+    let mut dashboard_addr = "127.0.0.1:3210".to_string();
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -300,6 +327,7 @@ fn parse_flag_args(
             "-config" => config_path = value,
             "-log-format" => log_format = value,
             "-health-addr" => health_addr = value,
+            "-dashboard-addr" => dashboard_addr = value,
             other => return Err(format!("{component}: unknown flag {other}")),
         }
     }
@@ -308,6 +336,7 @@ fn parse_flag_args(
         config_path,
         log_format,
         health_addr,
+        dashboard_addr,
     })
 }
 
@@ -325,6 +354,7 @@ mod tests {
         assert_eq!(flags.config_path, "/etc/fortress-edge.json");
         assert_eq!(flags.log_format, logger::Format::Text);
         assert_eq!(flags.health_addr, "127.0.0.1:9090");
+        assert_eq!(flags.dashboard_addr, "127.0.0.1:3210");
     }
 
     #[test]
@@ -339,12 +369,15 @@ mod tests {
                 "json",
                 "-health-addr",
                 "0.0.0.0:9090",
+                "-dashboard-addr",
+                "127.0.0.1:3999",
             ]),
         )
         .unwrap();
         assert_eq!(flags.config_path, "/tmp/x.json");
         assert_eq!(flags.log_format, logger::Format::Json);
         assert_eq!(flags.health_addr, "0.0.0.0:9090");
+        assert_eq!(flags.dashboard_addr, "127.0.0.1:3999");
     }
 
     #[test]

@@ -33,14 +33,45 @@ use rand_core::{OsRng, RngCore};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use std::collections::HashSet;
+use std::sync::LazyLock;
 
 const INVITE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 const DELIVERY_TTL_SECS: u64 = 24 * 60 * 60;
-const CODE_LEN: usize = 10;
 
-/// Crockford base32: no I/L/O/U confusables. Codes are generated in
-/// lowercase so URLs read clean.
-const CROCKFORD: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+/// Invite codes are 4 hyphen-joined words from the vendored frequency
+/// list (`src/words.txt`): typed across devices as easily as a phrase,
+/// yet ~61 bits of entropy (4 x log2 of a 37k-word list). The code
+/// alone grants nothing (the approval gate is the trust anchor); the
+/// words buy human typeability, the list size buys scanner resistance.
+const CODE_WORDS: usize = 4;
+
+static WORDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let words: Vec<&'static str> = include_str!("../words.txt")
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert!(
+        words.len() >= 16_384,
+        "wordlist must hold at least 2^14 words so 4 words clear 50 bits"
+    );
+    assert!(
+        words.iter().all(|word| {
+            (4..=9).contains(&word.len())
+                && word
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() && b.is_ascii_alphabetic())
+        }),
+        "wordlist words are 4-9 lowercase ascii letters — typeable and unambiguous"
+    );
+    words
+});
+
+static WORD_SET: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    let set: HashSet<&'static str> = WORDS.iter().copied().collect();
+    assert_eq!(set.len(), WORDS.len(), "wordlist must not contain duplicates");
+    set
+});
 
 pub(crate) fn invite_key(code: &str) -> String {
     format!("fortress:invite:{code}")
@@ -54,32 +85,47 @@ pub(crate) fn token_hash(token: &str) -> String {
     hex::encode(sha2::Sha256::digest(token.as_bytes()))
 }
 
-/// A 10-char Crockford base32 invite code. 50 bits of entropy —
-/// deliberately less than the old box-shown codes, because the code
-/// alone grants nothing (the approval gate is the trust anchor).
+/// A 4-word invite code, hyphen-joined lowercase, e.g.
+/// `polluted-move-cheetah-apple`.
 pub(crate) fn random_invite_code() -> String {
-    let mut bytes = [0u8; CODE_LEN];
-    OsRng.fill_bytes(&mut bytes);
-    bytes
-        .iter()
-        .map(|b| CROCKFORD[(*b & 31) as usize] as char)
-        .collect()
+    let words = &*WORDS;
+    let mut code = String::new();
+    for index in 0..CODE_WORDS {
+        if index > 0 {
+            code.push('-');
+        }
+        let mut bytes = [0u8; 8];
+        OsRng.fill_bytes(&mut bytes);
+        code.push_str(words[(u64::from_le_bytes(bytes) % words.len() as u64) as usize]);
+    }
+    assert_eq!(code.split('-').count(), CODE_WORDS, "a code is exactly 4 words");
+    code
 }
 
-/// Structural check on a presented code: exactly 10 Crockford chars.
-/// Rejects garbage before it reaches Redis.
-pub(crate) fn is_valid_invite_code(code: &str) -> bool {
-    code.len() == CODE_LEN
-        && code
-            .bytes()
-            .all(|b| CROCKFORD.contains(&b.to_ascii_lowercase()))
+/// Canonicalize a presented code (case-insensitive typed input becomes
+/// lowercase) and check it is 4 words from the list. Rejects garbage
+/// before it reaches Redis; the returned form is the Redis key space.
+pub(crate) fn canonical_invite_code(code: &str) -> Option<String> {
+    let lowered = code.to_ascii_lowercase();
+    let words: Vec<&str> = lowered.split('-').collect();
+    if words.len() != CODE_WORDS {
+        return None;
+    }
+    if !words.iter().all(|word| WORD_SET.contains(word)) {
+        return None;
+    }
+    Some(lowered)
 }
 
-/// Lifecycle of an invite. `waiting` until approve or deny; both are
-/// terminal and burn the code.
+/// Lifecycle of an invite: `dormant` (created, no machine yet) →
+/// `waiting` (a machine dialed `begin`) → `approved`/`denied` (both
+/// terminal and burn the code). The owner surface must never show an
+/// approval prompt before a machine exists — approve on `dormant` is
+/// rejected with [`InviteError::NotBegun`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InviteStatus {
+    Dormant,
     Waiting,
     Approved,
     Denied,
@@ -116,6 +162,8 @@ pub enum InviteError {
     Forbidden(String),
     #[error("invite is not waiting: {0}")]
     NotWaiting(String),
+    #[error("no machine has claimed this invite yet: {0}")]
+    NotBegun(String),
     #[error("machine name already taken: {0}")]
     NameTaken(String),
     #[error("invalid machine name: {0}")]
@@ -177,7 +225,7 @@ impl ControlPlane {
             let code = random_invite_code();
             let record = InviteRecord {
                 owner_email: email.to_string(),
-                status: InviteStatus::Waiting,
+                status: InviteStatus::Dormant,
                 device_pubkey: None,
             };
             let json = serde_json::to_string(&record).expect("invite serializes");
@@ -248,24 +296,26 @@ impl ControlPlane {
             .collect())
     }
 
-    /// Revoke a waiting invite. Only the inviting account may; terminal
-    /// invites are already burned.
+    /// Revoke a dormant or waiting invite (it is deleted). Only the
+    /// inviting account may; terminal invites are already burned.
     pub async fn invite_revoke(&self, email: &str, code: &str) -> Result<(), InviteError> {
-        if !is_valid_invite_code(code) {
-            return Err(InviteError::InvalidCode(code.to_string()));
-        }
+        let code = canonical_invite_code(code)
+            .ok_or_else(|| InviteError::InvalidCode(code.to_string()))?;
         let mut conn = self.conn().await?;
-        let Some(json): Option<String> = conn.get(invite_key(code)).await? else {
+        let Some(json): Option<String> = conn.get(invite_key(&code)).await? else {
             return Err(InviteError::Unknown(code.to_string()));
         };
-        let record = record_from_json(json, code)?;
+        let record = record_from_json(json, &code)?;
         if record.owner_email != email {
             return Err(InviteError::Forbidden(code.to_string()));
         }
-        if record.status != InviteStatus::Waiting {
-            return Err(InviteError::NotWaiting(code.to_string()));
+        match record.status {
+            InviteStatus::Dormant | InviteStatus::Waiting => {}
+            InviteStatus::Approved | InviteStatus::Denied => {
+                return Err(InviteError::NotWaiting(code.to_string()));
+            }
         }
-        let _: () = conn.del(invite_key(code)).await?;
+        let _: () = conn.del(invite_key(&code)).await?;
         Ok(())
     }
 
@@ -278,23 +328,22 @@ impl ControlPlane {
         code: &str,
         public_key: &str,
     ) -> Result<PollOutcome, InviteError> {
-        if !is_valid_invite_code(code) {
-            return Err(InviteError::InvalidCode(code.to_string()));
-        }
+        let code = canonical_invite_code(code)
+            .ok_or_else(|| InviteError::InvalidCode(code.to_string()))?;
         validate_wg_pubkey(public_key)
             .map_err(|_| InviteError::InvalidPubkey(public_key.to_string()))?;
         let mut conn = self.conn().await?;
-        let key = invite_key(code);
+        let key = invite_key(&code);
         let Some(json): Option<String> = conn.get(&key).await? else {
             return Err(InviteError::Unknown(code.to_string()));
         };
-        let mut record = record_from_json(json, code)?;
+        let mut record = record_from_json(json, &code)?;
 
         // Already approved by a prior run: only the machine that
         // enrolled may re-arm delivery.
         if record.status == InviteStatus::Approved {
             if record.device_pubkey.as_deref() == Some(public_key) {
-                self.rearm_delivery(code, &record).await?;
+                self.rearm_delivery(&code, &record).await?;
                 return Ok(PollOutcome {
                     status: "approved".to_string(),
                     machine: None,
@@ -303,11 +352,19 @@ impl ControlPlane {
             }
             return Err(InviteError::NotWaiting(code.to_string()));
         }
-        if record.status == InviteStatus::Denied {
-            return Err(InviteError::NotWaiting(code.to_string()));
+        match record.status {
+            InviteStatus::Dormant | InviteStatus::Waiting => {}
+            InviteStatus::Denied => return Err(InviteError::NotWaiting(code.to_string())),
+            InviteStatus::Approved => unreachable!("approved handled above"),
         }
 
         record.device_pubkey = Some(public_key.to_string());
+        record.status = InviteStatus::Waiting;
+        assert_eq!(
+            record.status == InviteStatus::Waiting,
+            record.device_pubkey.is_some(),
+            "a waiting invite always carries the candidate's pubkey"
+        );
         let updated = serde_json::to_string(&record).expect("invite serializes");
         let _: () = conn.set_ex(&key, updated, INVITE_TTL_SECS).await?;
         Ok(PollOutcome {
@@ -321,15 +378,19 @@ impl ControlPlane {
     /// (GETDEL) — the payload is delivered exactly once; a missed
     /// delivery is recovered by re-begin with the same pubkey.
     pub async fn invite_poll(&self, code: &str) -> Result<PollOutcome, InviteError> {
-        if !is_valid_invite_code(code) {
-            return Err(InviteError::InvalidCode(code.to_string()));
-        }
+        let code = canonical_invite_code(code)
+            .ok_or_else(|| InviteError::InvalidCode(code.to_string()))?;
         let mut conn = self.conn().await?;
-        let Some(json): Option<String> = conn.get(invite_key(code)).await? else {
+        let Some(json): Option<String> = conn.get(invite_key(&code)).await? else {
             return Err(InviteError::Unknown(code.to_string()));
         };
-        let record = record_from_json(json, code)?;
+        let record = record_from_json(json, &code)?;
         match record.status {
+            InviteStatus::Dormant => Ok(PollOutcome {
+                status: "dormant".to_string(),
+                machine: None,
+                device_token: None,
+            }),
             InviteStatus::Waiting => Ok(PollOutcome {
                 status: "waiting".to_string(),
                 machine: None,
@@ -342,7 +403,7 @@ impl ControlPlane {
             }),
             InviteStatus::Approved => {
                 let payload: Option<String> = redis::cmd("GETDEL")
-                    .arg(delivery_key(code))
+                    .arg(delivery_key(&code))
                     .query_async(&mut conn)
                     .await?;
                 let Some(payload) = payload else {
@@ -373,23 +434,26 @@ impl ControlPlane {
         code: &str,
         name: &str,
     ) -> Result<Machine, InviteError> {
-        if !is_valid_invite_code(code) {
-            return Err(InviteError::InvalidCode(code.to_string()));
-        }
+        let code = canonical_invite_code(code)
+            .ok_or_else(|| InviteError::InvalidCode(code.to_string()))?;
         let mut conn = self.conn().await?;
-        let key = invite_key(code);
+        let key = invite_key(&code);
         let Some(json): Option<String> = conn.get(&key).await? else {
             return Err(InviteError::Unknown(code.to_string()));
         };
-        let mut record = record_from_json(json, code)?;
+        let mut record = record_from_json(json, &code)?;
         if record.owner_email != email {
             return Err(InviteError::Forbidden(code.to_string()));
         }
-        if record.status != InviteStatus::Waiting {
-            return Err(InviteError::NotWaiting(code.to_string()));
+        match record.status {
+            InviteStatus::Dormant => return Err(InviteError::NotBegun(code.to_string())),
+            InviteStatus::Waiting => {}
+            InviteStatus::Approved | InviteStatus::Denied => {
+                return Err(InviteError::NotWaiting(code.to_string()));
+            }
         }
         let Some(pubkey) = record.device_pubkey.clone() else {
-            return Err(InviteError::NotWaiting(code.to_string()));
+            return Err(InviteError::NotBegun(code.to_string()));
         };
 
         let account_uuid = self
@@ -419,7 +483,7 @@ impl ControlPlane {
         };
         let _: () = conn
             .set_ex(
-                delivery_key(code),
+                delivery_key(&code),
                 serde_json::to_string(&delivery).unwrap(),
                 DELIVERY_TTL_SECS,
             )
@@ -433,20 +497,23 @@ impl ControlPlane {
 
     /// The owner denies the pending machine. Terminal; burns the code.
     pub async fn invite_deny(&self, email: &str, code: &str) -> Result<(), InviteError> {
-        if !is_valid_invite_code(code) {
-            return Err(InviteError::InvalidCode(code.to_string()));
-        }
+        let code = canonical_invite_code(code)
+            .ok_or_else(|| InviteError::InvalidCode(code.to_string()))?;
         let mut conn = self.conn().await?;
-        let key = invite_key(code);
+        let key = invite_key(&code);
         let Some(json): Option<String> = conn.get(&key).await? else {
             return Err(InviteError::Unknown(code.to_string()));
         };
-        let mut record = record_from_json(json, code)?;
+        let mut record = record_from_json(json, &code)?;
         if record.owner_email != email {
             return Err(InviteError::Forbidden(code.to_string()));
         }
-        if record.status != InviteStatus::Waiting {
-            return Err(InviteError::NotWaiting(code.to_string()));
+        match record.status {
+            InviteStatus::Dormant => return Err(InviteError::NotBegun(code.to_string())),
+            InviteStatus::Waiting => {}
+            InviteStatus::Approved | InviteStatus::Denied => {
+                return Err(InviteError::NotWaiting(code.to_string()));
+            }
         }
         record.status = InviteStatus::Denied;
         let denied = serde_json::to_string(&record).expect("invite serializes");
@@ -479,7 +546,7 @@ impl ControlPlane {
         };
         let _: () = conn
             .set_ex(
-                delivery_key(code),
+                delivery_key(&code),
                 serde_json::to_string(&delivery).unwrap(),
                 DELIVERY_TTL_SECS,
             )
@@ -620,6 +687,10 @@ fn invite_api_error(err: InviteError) -> InviteApiResponse {
             tracing::warn!(code = %code, "invite op: terminal or no candidate");
             InviteApiResponse::Conflict(Json("invite is not in a claimable state".to_string()))
         }
+        InviteError::NotBegun(code) => {
+            tracing::warn!(code = %code, "invite op: no machine has claimed it");
+            InviteApiResponse::Conflict(Json("no machine has claimed this invite yet".to_string()))
+        }
         InviteError::NameTaken(name) => {
             InviteApiResponse::Conflict(Json(format!("machine name {name} is already taken")))
         }
@@ -703,6 +774,7 @@ impl InvitesApi {
                     .map(|(code, record)| InviteSummary {
                         code,
                         status: match record.status {
+                            InviteStatus::Dormant => "dormant".to_string(),
                             InviteStatus::Waiting => "waiting".to_string(),
                             InviteStatus::Approved => "approved".to_string(),
                             InviteStatus::Denied => "denied".to_string(),
@@ -916,7 +988,6 @@ mod tests {
         for leftover in ["nameclash", "mainbox", "rearmbox", "rotateme"] {
             let _ = cp.delete(leftover).await;
         }
-        let mut conn = cp.conn().await.unwrap();
         // No counter cleanup: each test instance owns a fresh leaked
         // alloc key (`isolated_alloc`), and a shared counter must not
         // be reset under a parallel test's feet. Stale counter keys are
@@ -961,18 +1032,38 @@ mod tests {
     }
 
     #[test]
-    fn invite_code_is_crockford_and_10_chars() {
+    fn invite_code_is_four_typeable_words_and_self_validates() {
         for _ in 0..64 {
             let code = random_invite_code();
-            assert_eq!(code.len(), CODE_LEN);
-            assert!(is_valid_invite_code(&code), "{code} must self-validate");
+            assert_eq!(code.split('-').count(), CODE_WORDS, "{code} is 4 words");
+            assert_eq!(
+                canonical_invite_code(&code).as_deref(),
+                Some(code.as_str()),
+                "{code} must self-canonicalize"
+            );
             assert!(
-                code.bytes().all(|b| CROCKFORD.contains(&b)),
-                "{code} must be lowercase Crockford"
+                code.split('-').all(|w| WORD_SET.contains(w)),
+                "{code} words must come from the vendored list"
             );
         }
-        assert!(!is_valid_invite_code("short"));
-        assert!(!is_valid_invite_code("il0uabcfgx"), "I is not Crockford");
+        assert!(WORDS.len() >= 16_384, "4 words must clear 50 bits of entropy");
+        assert_eq!(canonical_invite_code("short"), None);
+        assert_eq!(canonical_invite_code("apple-pear-plum"), None, "3 words is too few");
+        assert_eq!(
+            canonical_invite_code("apple-pear-plum-figs-extra"),
+            None,
+            "5 words is one too many"
+        );
+        assert_eq!(
+            canonical_invite_code("apple-pear-plum-zqxjv"),
+            None,
+            "off-list words never validate"
+        );
+        assert_eq!(
+            canonical_invite_code("That-What-This-Have").as_deref(),
+            canonical_invite_code("that-what-this-have").as_deref(),
+            "typed-in capitals normalize to the same code"
+        );
     }
 
     #[tokio::test]
@@ -985,12 +1076,15 @@ mod tests {
 
         // Create → the URL carries the code under the edge's domain.
         let code = cp.invite_create(&email).await.expect("create");
-        assert!(is_valid_invite_code(&code));
-        assert!(code.len() == CODE_LEN);
+        assert_eq!(
+            canonical_invite_code(&code).as_deref(),
+            Some(code.as_str()),
+            "created codes are canonical word codes"
+        );
 
-        // Poll before the machine dials: waiting.
+        // Poll before the machine dials: dormant — no machine exists.
         let poll = cp.invite_poll(&code).await.expect("poll");
-        assert_eq!(poll.status, "waiting");
+        assert_eq!(poll.status, "dormant");
 
         // Machine begins with its pubkey.
         let pk = pubkey();
@@ -999,7 +1093,7 @@ mod tests {
 
         // Unknown + malformed codes rejected.
         assert!(matches!(
-            cp.invite_begin("zzzzzzzzzz", &pk).await,
+            cp.invite_begin(&random_invite_code(), &pk).await,
             Err(InviteError::Unknown(_))
         ));
         assert!(matches!(
@@ -1091,6 +1185,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approve_or_deny_before_begin_is_rejected() {
+        let Some(cp) = skip_without_redis() else {
+            return;
+        };
+        clean_test_machines(&cp).await;
+        let email = enrolled_account(&cp, "dormant").await;
+        let code = cp.invite_create(&email).await.expect("invite");
+
+        // The reported bug: the dashboard showed "name this machine"
+        // before any machine dialed. Approve/deny on a dormant invite
+        // must be rejected, not allocate a name for a machine that
+        // does not exist.
+        assert!(
+            matches!(
+                cp.invite_approve(&email, &code, "ghost").await,
+                Err(InviteError::NotBegun(_))
+            ),
+            "approve before begin must not allocate a machine"
+        );
+        assert!(
+            matches!(
+                cp.invite_deny(&email, &code).await,
+                Err(InviteError::NotBegun(_))
+            ),
+            "deny before begin must not burn the code"
+        );
+
+        // The invite is intact: a machine can still claim it.
+        let begun = cp.invite_begin(&code, &pubkey()).await.expect("begin");
+        assert_eq!(begun.status, "waiting");
+    }
+
+    #[tokio::test]
     async fn re_begin_re_arms_delivery_for_same_machine() {
         let Some(cp) = skip_without_redis() else {
             return;
@@ -1145,13 +1272,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn revoke_drops_a_waiting_invite() {
+    async fn revoke_drops_dormant_and_waiting_invites() {
         let Some(cp) = skip_without_redis() else {
             return;
         };
         clean_test_machines(&cp).await;
         let email = enrolled_account(&cp, "revoke").await;
+
+        // Dormant: created, never claimed.
         let code = cp.invite_create(&email).await.expect("invite");
+        cp.invite_revoke(&email, &code).await.expect("revoke");
+        assert!(matches!(
+            cp.invite_poll(&code).await,
+            Err(InviteError::Unknown(_))
+        ));
+
+        // Waiting: a machine dialed, owner changed their mind.
+        let code = cp.invite_create(&email).await.expect("invite");
+        cp.invite_begin(&code, &pubkey()).await.expect("begin");
         cp.invite_revoke(&email, &code).await.expect("revoke");
         assert!(matches!(
             cp.invite_poll(&code).await,

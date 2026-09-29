@@ -170,22 +170,31 @@ impl NixConfigFile {
         }
     }
 
-    /// Replace the value at `path` with `replacement` (raw Nix text).
-    /// Only that value's byte span changes. Missing paths are an error,
-    /// not an insertion — this arc does not create bindings.
+    /// Set the value at `path` to `replacement` (raw Nix text), creating
+    /// the binding when it is absent.
+    ///
+    /// Two splice shapes, both byte-local so the lossless round-trip law
+    /// holds for every other span in the file:
+    ///   - the path already resolves to a value: only that value's span
+    ///     is replaced;
+    ///   - it does not: one new `<remaining> = <replacement>;` entry is
+    ///     spliced into the deepest existing attrset on the path.
+    ///
+    /// [`SetError::NotFound`] means the path is *blocked* — some
+    /// ancestor is a non-attrset value, or an existing entry already
+    /// owns an overlapping name — so no insertion could be valid.
     pub fn set_attrpath(&mut self, path: &[&str], replacement: &str) -> Result<(), SetError> {
+        assert!(!path.is_empty(), "set_attrpath requires a non-empty path");
         let root = parse_root(&self.source)
             .ok_or_else(|| SetError::InvalidValue("source file does not parse".to_string()))?;
-        let node =
-            find_value_node(&root, path).ok_or_else(|| SetError::NotFound(path.join(".")))?;
-        let span = node.text_range();
-        let (start, end): (usize, usize) = (span.start().into(), span.end().into());
-
-        let mut candidate = String::with_capacity(self.source.len() + replacement.len());
-        candidate.push_str(&self.source[..start]);
-        candidate.push_str(replacement);
-        candidate.push_str(&self.source[end..]);
-
+        let candidate = match find_value_node(&root, path) {
+            Some(node) => splice_span(&self.source, &node, replacement),
+            None => {
+                let point = insert_point(&root, path)
+                    .ok_or_else(|| SetError::NotFound(path.join(".")))?;
+                splice_entry(&self.source, &point, replacement)
+            }
+        };
         validate(&candidate).map_err(|_| {
             SetError::InvalidValue(format!("{} at path {}", replacement, path.join(".")))
         })?;
@@ -262,6 +271,137 @@ fn find_in_attrset(attrset: &ast::AttrSet, path: &[&str]) -> Option<SyntaxNode> 
         }
     }
     None
+}
+
+/// Replace `node`'s span in `source` with `replacement`, byte for byte.
+fn splice_span(source: &str, node: &SyntaxNode, replacement: &str) -> String {
+    let span = node.text_range();
+    let (start, end): (usize, usize) = (span.start().into(), span.end().into());
+    let mut candidate = String::with_capacity(source.len() + replacement.len());
+    candidate.push_str(&source[..start]);
+    candidate.push_str(replacement);
+    candidate.push_str(&source[end..]);
+    candidate
+}
+
+/// A missing binding's home: the deepest existing attrset on the path,
+/// plus the suffix of the path that is not yet bound underneath it.
+struct InsertPoint {
+    attrset: ast::AttrSet,
+    remaining: Vec<String>,
+}
+
+/// Walk `path` as deep as existing attrsets allow. `None` when the path
+/// is blocked: an ancestor is a non-attrset value, or an existing entry
+/// already owns an overlapping name (Nix would reject the result).
+fn insert_point(root: &rnix::Root, path: &[&str]) -> Option<InsertPoint> {
+    let attrset = root.expr().and_then(root_expr_to_attrset)?;
+    descend(attrset, path)
+}
+
+fn descend(attrset: ast::AttrSet, path: &[&str]) -> Option<InsertPoint> {
+    for entry in attrset.entries() {
+        let ast::Entry::AttrpathValue(kv) = entry else {
+            continue;
+        };
+        let Some(attrpath) = kv.attrpath() else {
+            continue;
+        };
+        let names: Vec<String> = attrpath.attrs().filter_map(|a| attr_name(&a)).collect();
+        if names.is_empty() || names.len() > path.len() {
+            // A longer name is only a conflict when the requested path is
+            // a strict prefix of it (`fortress` vs `fortress.baseDomain`).
+            if !names.is_empty() && is_strict_prefix(path, &names) {
+                return None;
+            }
+            continue;
+        }
+        if !names
+            .iter()
+            .zip(path.iter())
+            .all(|(name, segment)| name == segment)
+        {
+            continue;
+        }
+        let Some(value) = kv.value() else {
+            continue;
+        };
+        if names.len() == path.len() {
+            // `find_value_node` already handled "resolves to a value", so
+            // landing here means the entry's value is not something we
+            // can extend.
+            return None;
+        }
+        let ast::Expr::AttrSet(inner) = value else {
+            // `fortress = 5;` blocks `fortress.services.…`.
+            return None;
+        };
+        return descend(inner, &path[names.len()..]);
+    }
+    Some(InsertPoint {
+        attrset,
+        remaining: path.iter().map(|s| s.to_string()).collect(),
+    })
+}
+
+/// Is `short` a strict prefix of `long`?
+fn is_strict_prefix(short: &[&str], long: &[String]) -> bool {
+    short.len() < long.len()
+        && short
+            .iter()
+            .zip(long.iter())
+            .all(|(a, b)| a == b)
+}
+
+/// Splice a brand-new `remaining = replacement;` entry into `point`'s
+/// attrset. Everything outside that one insertion stays byte-identical.
+fn splice_entry(source: &str, point: &InsertPoint, replacement: &str) -> String {
+    assert!(
+        !point.remaining.is_empty(),
+        "insert point must carry an unbound path suffix"
+    );
+    let range = point.attrset.syntax().text_range();
+    let (open, close): (usize, usize) = (range.start().into(), range.end().into());
+    assert!(
+        source[open..close].starts_with('{') && source[open..close].ends_with('}'),
+        "insert target must be an attrset literal"
+    );
+
+    // Insert after the last entry (or just after `{` when empty), so the
+    // closing brace keeps its own line untouched.
+    let insert_at: usize = point
+        .attrset
+        .entries()
+        .map(|e| {
+            let end = e.syntax().text_range().end();
+            usize::from(end)
+        })
+        .last()
+        .unwrap_or(open + 1);
+
+    let indent = entry_indent(source, open, insert_at);
+    let dotted = point.remaining.join(".");
+    let addition = format!("\n{indent}{dotted} = {replacement};");
+
+    let mut candidate = String::with_capacity(source.len() + addition.len());
+    candidate.push_str(&source[..insert_at]);
+    candidate.push_str(&addition);
+    candidate.push_str(&source[insert_at..]);
+    candidate
+}
+
+/// Indentation for a new entry: match the first existing entry's line, or
+/// sit two spaces inside the braces when the attrset is empty.
+fn entry_indent(source: &str, open: usize, insert_at: usize) -> String {
+    let body = &source[open..insert_at];
+    if let Some(line_start) = body.rfind('\n') {
+        let line = &body[line_start + 1..];
+        let trimmed = line.trim_start();
+        if !trimmed.is_empty() {
+            return " ".repeat(line.len() - trimmed.len());
+        }
+    }
+    "  ".to_string()
 }
 
 /// Collect the names bound directly under `attrset` at `path`. Each
@@ -407,6 +547,11 @@ pub const SERVICE_LIST: &[ServiceInfo] = &[
         nixname: "cryptpad",
         display_name: "Cryptpad",
         description: "Google docs, but fully self-encrypted",
+    },
+    ServiceInfo {
+        nixname: "forgejo",
+        display_name: "Forgejo",
+        description: "Your own git forge, with single sign-on",
     },
     ServiceInfo {
         nixname: "media",
@@ -685,15 +830,103 @@ in {
     }
 
     #[test]
-    fn set_missing_path_is_not_found_error() {
+    fn set_attrpath_inserts_a_missing_binding() {
         let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
-        let result = file.set_attrpath(&["fortress", "nonexistent"], "true");
-        assert!(matches!(result, Err(SetError::NotFound(path)) if path == "fortress.nonexistent"));
-        assert_eq!(
-            file.to_source(),
-            VMTEST_STYLE,
-            "failed edit must not touch the file"
+        file.set_attrpath(&["fortress", "services", "sonarr", "enable"], "true")
+            .expect("insert succeeds");
+
+        let updated = file.to_source();
+        assert!(
+            updated.contains("services.sonarr.enable = true;"),
+            "binding must be created: {updated}"
         );
+        let reparse = NixConfigFile::parse(updated.to_string()).expect("insert stays valid nix");
+        let sonarr = reparse
+            .find_attrpath(&["fortress", "services", "sonarr", "enable"])
+            .expect("new binding is findable");
+        assert_eq!(sonarr.value, NixValue::Bool(true));
+    }
+
+    /// The new entry lands in the deepest attrset already on the path,
+    /// not at the file root — so it merges with `services.jellyfin`
+    /// instead of re-declaring `fortress`. Indentation is the proof:
+    /// root entries sit at two spaces, `fortress`'s at four.
+    #[test]
+    fn set_attrpath_inserts_into_the_deepest_existing_attrset() {
+        let mut file = NixConfigFile::parse(VMTEST_STYLE.to_string()).unwrap();
+        file.set_attrpath(&["fortress", "services", "sonarr", "enable"], "true")
+            .expect("insert succeeds");
+
+        let updated = file.to_source();
+        assert!(
+            updated.contains("\n    services.sonarr.enable = true;"),
+            "entry must sit at the fortress block's four-space indent: {updated}"
+        );
+        assert!(
+            !updated.contains("\n  services.sonarr.enable = true;"),
+            "entry must not be re-declared at the file root: {updated}"
+        );
+    }
+
+    /// Insertion is byte-local: the untouched text survives exactly.
+    #[test]
+    fn set_attrpath_insert_preserves_every_other_span() {
+        let original = VMTEST_STYLE.to_string();
+        let mut file = NixConfigFile::parse(original.clone()).unwrap();
+        file.set_attrpath(&["fortress", "services", "sonarr", "enable"], "true")
+            .expect("insert succeeds");
+
+        let updated = file.to_source();
+        assert!(
+            updated.len() > original.len(),
+            "an insertion can only grow the file"
+        );
+        for chunk in [
+            "{ config, lib, pkgs, inputs, ... }:",
+            "  domain = \"vmtest.local\";",
+            "  baseDomain = \"vmtest.local\";",
+            "  networking.hostName = \"vmtest\";",
+            "    groups = [ \"wheel\" \"storage\" ];",
+        ] {
+            assert!(updated.contains(chunk), "span must survive: {chunk}");
+        }
+    }
+
+    #[test]
+    fn set_attrpath_inserts_a_whole_branch_under_a_dotted_prefix() {
+        // `dashboard.nix` style: no `fortress = { … }` block, only dotted
+        // keys at the root. The new branch must still be valid Nix.
+        let source = "{\n  fortress.baseDomain = \"vmtest.local\";\n}\n";
+        let mut file = NixConfigFile::parse(source.to_string()).unwrap();
+        file.set_attrpath(&["fortress", "services", "sonarr", "enable"], "true")
+            .expect("insert succeeds");
+
+        let updated = file.to_source();
+        assert!(
+            updated.contains("fortress.services.sonarr.enable = true;"),
+            "root-level dotted insertion: {updated}"
+        );
+        NixConfigFile::parse(updated.to_string()).expect("stays valid nix");
+    }
+
+    #[test]
+    fn set_attrpath_fails_when_an_ancestor_is_not_an_attrset() {
+        let source = "{ fortress.baseDomain = \"vmtest.local\"; }";
+        let mut file = NixConfigFile::parse(source.to_string()).unwrap();
+        // `fortress` is a namespace here; assigning to it would collide
+        // with `fortress.baseDomain`.
+        let result = file.set_attrpath(&["fortress"], "5");
+        assert!(matches!(result, Err(SetError::NotFound(p)) if p == "fortress"));
+        assert_eq!(file.to_source(), source, "blocked edit must not touch the file");
+    }
+
+    #[test]
+    fn set_attrpath_fails_when_a_deeper_value_blocks_the_branch() {
+        let source = "{\n  fortress.services = 5;\n}\n";
+        let mut file = NixConfigFile::parse(source.to_string()).unwrap();
+        let result = file.set_attrpath(&["fortress", "services", "sonarr", "enable"], "true");
+        assert!(matches!(result, Err(SetError::NotFound(_))));
+        assert_eq!(file.to_source(), source, "blocked edit must not touch the file");
     }
 
     #[test]

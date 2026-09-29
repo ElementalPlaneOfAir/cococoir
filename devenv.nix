@@ -9,9 +9,9 @@
   env.GREET = "devenv";
   dotenv.enable = true;
 
-  # rust-overlay so `rust-bin` exists in the shell's pkgs. Same rev the
-  # flake pins (see devenv.yaml), so the shell and the nix build can
-  # never drift apart.
+  # rust-overlay so `rust-bin` exists in the shell's pkgs. Pinned in
+  # devenv.yaml (the flake itself no longer carries rust-overlay — the
+  # only consumer was the deleted dioxus/wasm site bundle).
   overlays = [(import inputs.rust-overlay)];
 
   # https://devenv.sh/packages/
@@ -21,10 +21,9 @@
     wireguard-tools
     valkey
     # The site crate is edition 2024 and topcoat requires rustc >= 1.98;
-    # the flake's old 1.97.1 pin cannot build it. `cargo build -p
-    # fortress-site` now works from a cold devenv shell.
+    # nixpkgs' default rustc is 1.98.1 too, so the shell and the nix
+    # build agree. No wasm target — nothing compiles to wasm anymore.
     (rust-bin.stable."1.98.1".default.override {
-      targets = ["wasm32-unknown-unknown"];
       extensions = ["rust-src" "rust-analyzer" "clippy" "rustfmt"];
     })
   ];

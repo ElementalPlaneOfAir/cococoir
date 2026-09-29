@@ -7,4 +7,5 @@ pub mod auth;
 pub mod docs;
 pub mod home;
 pub mod install;
+pub mod machines;
 pub mod shell;

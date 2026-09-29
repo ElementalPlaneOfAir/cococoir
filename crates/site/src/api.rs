@@ -88,7 +88,9 @@ fn invite_status(err: &InviteError) -> StatusCode {
         InviteError::InvalidCode(_) => StatusCode::BAD_REQUEST,
         InviteError::Unknown(_) => StatusCode::NOT_FOUND,
         InviteError::Forbidden(_) => StatusCode::FORBIDDEN,
-        InviteError::NotWaiting(_) | InviteError::NameTaken(_) => StatusCode::CONFLICT,
+        InviteError::NotWaiting(_) | InviteError::NotBegun(_) | InviteError::NameTaken(_) => {
+            StatusCode::CONFLICT
+        }
         InviteError::InvalidName(_) | InviteError::InvalidPubkey(_) => StatusCode::BAD_REQUEST,
         InviteError::Account(_) | InviteError::Corrupt(_) | InviteError::Redis(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
@@ -103,6 +105,7 @@ impl From<InviteError> for ApiError {
             InviteError::Unknown(_) => "invite not found",
             InviteError::Forbidden(_) => "not the inviting account",
             InviteError::NotWaiting(_) => "invite is not in a claimable state",
+            InviteError::NotBegun(_) => "no machine has claimed this invite yet",
             InviteError::NameTaken(name) => {
                 return ApiError::new(StatusCode::CONFLICT, format!("machine name {name} is already taken"));
             }
@@ -332,9 +335,12 @@ mod enrollment_e2e_tests {
         // enough. The MockMailer is captured separately for
         // `active_account`, which drives the signup/verify flow directly.
         let mailer: &'static MockMailer = Box::leak(Box::new(MockMailer::new()));
+        let cp: &'static ControlPlane = Box::leak(Box::new(cp));
         let backend = Box::leak(Box::new(SiteBackend {
             cp,
-            mailer: Box::new(fortress_controlplane::controlplane::mail::ConsoleMailer),
+            mailer: Box::leak(Box::new(
+                fortress_controlplane::controlplane::mail::ConsoleMailer,
+            )),
         }));
         Some((backend, mailer))
     }

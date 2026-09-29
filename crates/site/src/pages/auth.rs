@@ -89,13 +89,12 @@ fn alert(code: &str) -> Option<&'static str> {
     })
 }
 
-fn location_header(value: &str) -> (header::HeaderName, HeaderValue) {
+pub(crate) fn location_header(value: &str) -> (header::HeaderName, HeaderValue) {
     (
         header::LOCATION,
         HeaderValue::from_str(value).expect("redirect location is a valid header value"),
     )
 }
-
 // ── query shapes (`error = <ident>` is the parse-failure response) ───
 
 #[query_params(error = bad_request)]
@@ -266,7 +265,9 @@ pub async fn login_post(cx: &Cx, Form(creds): Form<Credentials>) -> TcResult<imp
     })
 }
 
-#[page(POST "/logout")]
+/// `POST /auth/logout` — the one contract path the shared markup's
+/// `sign_out_form` submits to (a GET link here is what silently 404'd).
+#[page(POST "/auth/logout")]
 pub async fn logout_post(cx: &Cx) -> TcResult<impl View> {
     let backend = crate::site_backend(cx);
     let request_headers: HeaderMap = topcoat::router::request::headers(cx).clone();
@@ -499,7 +500,7 @@ pub async fn account_delete_post(cx: &Cx) -> TcResult<impl View> {
     })
 }
 
-async fn signed_in_email(backend: &SiteBackend, headers: &HeaderMap) -> Option<String> {
+pub(crate) async fn signed_in_email(backend: &SiteBackend, headers: &HeaderMap) -> Option<String> {
     match account::current_session(backend, headers).await {
         SessionState::LoggedIn { email } => Some(email),
         SessionState::Anonymous => None,

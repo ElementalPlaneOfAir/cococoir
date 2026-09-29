@@ -224,6 +224,12 @@ in {
           serviceConfig = {
             Type = "simple";
             ExecStart = "${fortressPkg}/bin/fortress-client -config /etc/fortress-client.json -log-format text -health-addr 127.0.0.1:9090";
+            # The dashboard has no unauthenticated mode: without this
+            # hash fortress-client refuses to start, so the test's client
+            # must carry one (password "password").
+            Environment = [
+              "FORTRESS_ADMIN_PASSWORD_HASH=$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W"
+            ];
             Restart = "on-failure";
             RestartSec = 5;
             StateDirectory = "fortress";

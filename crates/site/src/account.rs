@@ -1,5 +1,5 @@
-//! The account lifecycle bridge between the auth pages and the
-//! embedded [`SiteBackend`].
+//! The account lifecycle and enrollment bridge between the topcoat
+//! pages and the embedded [`SiteBackend`].
 //!
 //! Plain async functions over the controlplane's domain methods — no
 //! request-layer coupling. The topcoat pages call these and turn the
@@ -12,8 +12,9 @@
 //! existing controlplane and `pairing.rs` tests.
 
 use fortress_controlplane::controlplane::account::AccountError;
+use fortress_controlplane::controlplane::pairing::InviteError;
 use fortress_controlplane::controlplane::web::{
-    clear_session_cookie_header, read_cookie_from_headers, session_cookie_header,
+    clear_session_cookie_header, machines_props, read_cookie_from_headers, session_cookie_header,
 };
 use topcoat::router::{HeaderMap, HeaderValue};
 
@@ -116,7 +117,7 @@ pub async fn current_session(backend: &SiteBackend, headers: &HeaderMap) -> Sess
 pub async fn signup(backend: &SiteBackend, email: &str, password: &str) -> SignupOutcome {
     match backend
         .cp
-        .account_signup(email, password, backend.mailer.as_ref())
+        .account_signup(email, password, backend.mailer)
         .await
     {
         Ok(()) => SignupOutcome::Created,
@@ -164,7 +165,7 @@ pub async fn forgot(backend: &SiteBackend, email: &str) -> ForgotOutcome {
     use fortress_controlplane::controlplane::account::ResetOutcome;
     match backend
         .cp
-        .request_password_reset(email, backend.mailer.as_ref())
+        .request_password_reset(email, backend.mailer)
         .await
     {
         Ok(ResetOutcome::Sent) => ForgotOutcome::Sent,
@@ -188,7 +189,7 @@ pub async fn resend(backend: &SiteBackend, email: &str) -> ResendOutcome {
     use fortress_controlplane::controlplane::account::ResendVerifyOutcome;
     match backend
         .cp
-        .resend_verification(email, backend.mailer.as_ref())
+        .resend_verification(email, backend.mailer)
         .await
     {
         Ok(ResendVerifyOutcome::Sent) => ResendOutcome::Sent,
@@ -202,4 +203,165 @@ pub async fn resend(backend: &SiteBackend, email: &str) -> ResendOutcome {
 /// wipes the customer's box.
 pub async fn delete_account(backend: &SiteBackend, email: &str) -> Result<(), AccountError> {
     backend.cp.account_delete(email).await
+}
+
+// ── the enrollment plane (invites + machines) ──────────────────────
+
+/// Outcome of generating an invite link for a machine to claim.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InviteCreateOutcome {
+    Created { code: String },
+    Error { code: &'static str },
+}
+
+/// Outcome of the owner's decision on an invite.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InviteDecisionOutcome {
+    Done,
+    Error { code: &'static str },
+}
+
+/// The owner's dashboard view-model, already mapped onto the shared
+/// component's rows by the poem surface's mapper — one mapping, both
+/// surfaces. `invited_code` and `error` are request-derived, so the
+/// page fills them in from the query.
+pub async fn dashboard(
+    backend: &SiteBackend,
+    email: &str,
+    invited_code: Option<String>,
+    error: Option<String>,
+) -> fortress_web_ui::MachinesProps {
+    assert!(!email.is_empty(), "the dashboard needs a signed-in account");
+    machines_props(
+        backend.cp.machines_of(email).await.unwrap_or_default(),
+        backend.cp.invites_of(email).await.unwrap_or_default(),
+        invited_code,
+        backend.cp.root_domain().to_string(),
+        error,
+    )
+}
+
+/// Generate a single-use invite link for a machine to claim.
+pub async fn create_invite(backend: &SiteBackend, email: &str) -> InviteCreateOutcome {
+    match backend.cp.invite_create(email).await {
+        Ok(code) => InviteCreateOutcome::Created { code },
+        Err(err) => InviteCreateOutcome::Error {
+            code: invite_error_code(&err),
+        },
+    }
+}
+
+/// Approve the machine that claimed `code` and give it a name. This is
+/// the step that allocates it a WireGuard peer and a DNS record, so it
+/// needs the process forwarder — `init_globals` installs it at boot.
+pub async fn approve_invite(
+    backend: &SiteBackend,
+    email: &str,
+    code: &str,
+    name: &str,
+) -> InviteDecisionOutcome {
+    match backend.cp.invite_approve(email, code, name).await {
+        Ok(_) => InviteDecisionOutcome::Done,
+        Err(err) => InviteDecisionOutcome::Error {
+            code: invite_error_code(&err),
+        },
+    }
+}
+
+/// Deny a machine that claimed the invite (burns the code).
+pub async fn deny_invite(
+    backend: &SiteBackend,
+    email: &str,
+    code: &str,
+) -> InviteDecisionOutcome {
+    match backend.cp.invite_deny(email, code).await {
+        Ok(()) => InviteDecisionOutcome::Done,
+        Err(err) => InviteDecisionOutcome::Error {
+            code: invite_error_code(&err),
+        },
+    }
+}
+
+/// Revoke a waiting invite before any machine has claimed it.
+pub async fn revoke_invite(
+    backend: &SiteBackend,
+    email: &str,
+    code: &str,
+) -> InviteDecisionOutcome {
+    match backend.cp.invite_revoke(email, code).await {
+        Ok(()) => InviteDecisionOutcome::Done,
+        Err(err) => InviteDecisionOutcome::Error {
+            code: invite_error_code(&err),
+        },
+    }
+}
+
+/// Map an [`InviteError`] onto a short PRG token — never a message, per
+/// the auth pages' law. The name errors stay distinct because they are
+/// the one distinction that changes what the customer does next (pick a
+/// different name, or generate a fresh invite).
+pub fn invite_error_code(err: &InviteError) -> &'static str {
+    match err {
+        InviteError::NameTaken(_) => "name_taken",
+        InviteError::InvalidName(_) => "invalid_name",
+        InviteError::NotWaiting(_) => "not_waiting",
+        InviteError::NotBegun(_) => "not_begun",
+        InviteError::InvalidCode(_) => "invalid_code",
+        InviteError::Unknown(_)
+        | InviteError::Forbidden(_)
+        | InviteError::InvalidPubkey(_)
+        | InviteError::Corrupt(_)
+        | InviteError::Account(_)
+        | InviteError::Redis(_) => "failed",
+    }
+}
+
+#[cfg(test)]
+mod enrollment_mapping_tests {
+    use super::invite_error_code;
+    use fortress_controlplane::controlplane::pairing::InviteError;
+
+    #[test]
+    fn name_errors_stay_distinct_from_the_generic_failure() {
+        assert_eq!(
+            invite_error_code(&InviteError::NameTaken("living-room".into())),
+            "name_taken"
+        );
+        assert_eq!(
+            invite_error_code(&InviteError::InvalidName("UPPER".into())),
+            "invalid_name"
+        );
+    }
+
+    #[test]
+    fn lifecycle_errors_map_to_actionable_tokens() {
+        assert_eq!(
+            invite_error_code(&InviteError::NotWaiting("C0DE000001".into())),
+            "not_waiting"
+        );
+        assert_eq!(
+            invite_error_code(&InviteError::NotBegun("C0DE000001".into())),
+            "not_begun"
+        );
+        assert_eq!(
+            invite_error_code(&InviteError::InvalidCode("bad".into())),
+            "invalid_code"
+        );
+    }
+
+    #[test]
+    fn store_and_foreign_failures_never_leak_detail() {
+        for err in [
+            InviteError::Unknown("C0DE000001".into()),
+            InviteError::Forbidden("C0DE000001".into()),
+            InviteError::InvalidPubkey("pk".into()),
+            InviteError::Corrupt("record".into()),
+        ] {
+            assert_eq!(
+                invite_error_code(&err),
+                "failed",
+                "internal detail must not reach the query string: {err}"
+            );
+        }
+    }
 }

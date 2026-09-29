@@ -32,6 +32,16 @@
 }: let
   cfg = config.services.fortress-client;
   clientPkg = pkgs.callPackage ../packages/fortress {};
+  dashboardPortMatch = builtins.match ".*:([0-9]+)" cfg.dashboardAddr;
+  dashboardPort = if dashboardPortMatch == null then null else builtins.head dashboardPortMatch;
+  catalogPorts =
+    lib.mapAttrsToList
+    (name: s: {inherit name; port = toString s.port;})
+    (lib.filterAttrs (_: s: (s.enable or false) && (s ? port)) config.fortress.services);
+  portCollisions =
+    builtins.filter
+    (e: dashboardPort != null && e.port == dashboardPort)
+    catalogPorts;
 in {
   options.services.fortress-client = {
     enable = lib.mkEnableOption "fortress v2 client service (L4 TCP/UDP forwarder + embedded dashboard on the customer box)";
@@ -84,22 +94,80 @@ in {
       '';
     };
 
+    dashboardAddr = lib.mkOption {
+      type = lib.types.str;
+      default = "127.0.0.1:3210";
+      defaultText = lib.literalExpression "127.0.0.1:3210";
+      description = ''
+        Address the embedded config dashboard binds. Loopback by
+        default: the LAN plane's Caddy (bound to
+        `fortress.network.lanAddress`) is the intended ingress, and the
+        tunnel forwarder owns the tunnel IP, so the dashboard must not
+        listen on every interface. `network.nix` reverse-proxies the
+        LAN-IP vhost here. The port is outside the service catalog's
+        range (cryptpad owns 3000, forgejo 3001, …); a collision with
+        an enabled service's port fails the assertions below at eval
+        time, not at boot.
+      '';
+    };
+
     adminPasswordEnvFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
       description = ''
         Path to a file containing `FORTRESS_ADMIN_PASSWORD_HASH=<bcrypt-hash>`
         — the embedded dashboard's admin login (the box's control plane).
-        The dashboard reads this env var; without it the dashboard runs
-        in Dev mode (no login), which must never be the case on a
-        reachable box. Keep the hash in a secret (sops template or a
-        root-owned 0600 file written at deploy) rather than in the store.
-        Convert a sops template's rendered path here for T7.
+        Required: the dashboard has no unauthenticated mode, so
+        `fortress-client` refuses to start without this. Keep the hash in
+        a secret (sops template or a root-owned 0600 file written at
+        deploy) rather than in the store.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
+    # Fail at eval, not at 3am. `fortress-client` exits 1 without a
+    # dashboard credential, so a config that ships without one would
+    # boot a box whose control plane never starts. Catch it at
+    # `nixos-rebuild` time instead.
+    assertions = [
+      {
+        assertion = cfg.adminPasswordEnvFile != null;
+        message = ''
+          services.fortress-client.adminPasswordEnvFile is not set.
+
+          The embedded dashboard is the control plane of the box and has
+          no unauthenticated mode — fortress-client refuses to start
+          without FORTRESS_ADMIN_PASSWORD_HASH. Point this at a file that
+          carries `FORTRESS_ADMIN_PASSWORD_HASH=<bcrypt-hash>` (a sops
+          template or a root-owned 0600 file), e.g.
+
+            services.fortress-client.adminPasswordEnvFile =
+              config.sops.templates."fortress-admin.env".path;
+        '';
+      }
+      {
+        assertion = dashboardPortMatch != null;
+        message = ''
+          services.fortress-client.dashboardAddr = ${cfg.dashboardAddr}
+          is not a `host:port` address — the dashboard bind address
+          must carry an explicit port.
+        '';
+      }
+      {
+        assertion = portCollisions == [];
+        message = ''
+          services.fortress-client.dashboardAddr (${cfg.dashboardAddr})
+          shares its port with an enabled fortress service:
+          ${lib.concatMapStringsSep ", " (e: "${e.name} (fortress.services.${e.name}.port = ${e.port})") portCollisions}.
+
+          The dashboard and the service both bind loopback and one of
+          them fails to start at boot. Point dashboardAddr at a free
+          port — the service catalog owns 3000–8989.
+        '';
+      }
+    ];
+
     systemd.services.fortress-client = {
       description = "Fortress v2 client service — L4 TCP/UDP forwarder + embedded dashboard (customer box)";
       # The client owns wg0 (client-side keygen): it brings the tunnel up
@@ -115,13 +183,13 @@ in {
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/fortress-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr}";
+        ExecStart = "${cfg.package}/bin/fortress-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr} -dashboard-addr ${cfg.dashboardAddr}";
         Restart = "on-failure";
         RestartSec = 5;
 
-        # The embedded dashboard's admin password, if the operator wired
-        # one. Fail-closed: a referenced-but-missing file stops the unit
-        # rather than falling back to Dev mode.
+        # The embedded dashboard's admin password. Required — see the
+        # assertion above. Fail-closed: a referenced-but-missing file
+        # stops the unit rather than serving an open admin UI.
         EnvironmentFile = lib.mkIf (cfg.adminPasswordEnvFile != null) cfg.adminPasswordEnvFile;
 
         # The embedded dashboard's sqlite DB. StateDirectory creates

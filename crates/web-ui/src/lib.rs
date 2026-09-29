@@ -293,11 +293,29 @@ pub fn zine_button(href: &str, label: &str, extra_class: &str) -> Node {
     rsx!(<a href={href} class={class}>{label}</a>)
 }
 
-/// The primary form submit button.
+/// A form submit button. The primary variant is red.
 pub fn zine_submit(label: &str, extra_class: &str) -> Node {
+    zine_form_button(label, &format!("btn-zine-red {extra_class}"))
+}
+
+/// A form submit button for secondary actions (nav sign-out, footer).
+///
+/// Always a `<button type="submit">` inside a `method="post"` form: a
+/// mutating action rendered as a GET link is a CSRF hole and breaks the
+/// no-JS floor — the landing shipped `GET /auth/logout` exactly that way
+/// and the route silently 404'd. `sign_out_is_a_post_form` pins this.
+pub fn zine_form_button(label: &str, extra_class: &str) -> Node {
     assert_non_empty("submit label", label);
-    let class = format!("btn-zine btn-zine-red {extra_class}");
+    let class = format!("btn-zine {extra_class}");
     rsx!(<button type="submit" class={class}>{label}</button>)
+}
+
+/// A sign-out control: a POST form, never a GET link. Both surfaces
+/// must serve `POST /auth/logout`.
+pub fn sign_out_form(extra_class: &str) -> Node {
+    rsx!(<form method="post" action="/auth/logout">
+        {zine_form_button("Sign out", extra_class)}
+    </form>)
 }
 
 /// A paper card with the hard offset shadow; owns the body layout
@@ -359,7 +377,7 @@ pub struct LandingProps {
 
 /// The full landing page (public marketing surface): nav, ticker,
 /// halftone hero, feature cards, install guide, footer. Rendered by
-/// BOTH the controlplane (momenta page) and the dioxus site crate
+/// BOTH the controlplane (momenta page) and the topcoat site crate
 /// (via [`landing_html`]) so the look lives in exactly one place.
 pub fn landing_body(props: &LandingProps) -> Node {
     // The navbar's account actions: signed-in shows the email + sign out,
@@ -368,7 +386,7 @@ pub fn landing_body(props: &LandingProps) -> Node {
         rsx!(
             <>
                 <span class="tag dim hidden sm:inline">{props.email.as_deref().unwrap_or("")}</span>
-                {zine_button("/auth/logout", "Sign out", "btn-zine-sm")}
+                {sign_out_form("btn-zine-sm")}
             </>
         )
     } else {
@@ -617,8 +635,8 @@ outputs = { self, nixpkgs, fortress, ... }: {
 }
 
 // The full landing document (shell + body). The controlplane's page
-// surface renders this directly; the dioxus site crate renders
-// `landing_body` inside its own document shell.
+// surface renders this directly; the topcoat site injects
+// `landing_html` raw into its own document shell.
 #[component]
 pub fn Landing(props: &LandingProps) -> Node {
     shell(
@@ -629,19 +647,9 @@ pub fn Landing(props: &LandingProps) -> Node {
 }
 
 /// The landing body as a self-contained HTML string, for SSR surfaces
-/// that inject raw markup (the dioxus site's `dangerous_inner_html`).
+/// that inject raw markup (topcoat's `Unescaped`).
 pub fn landing_html(props: &LandingProps) -> String {
     landing_body(props).to_html()
-}
-
-/// The static document shell for the dioxus site's `public/index.html`:
-/// the zine head (vendored Tailwind runtime, tokens, loud ornaments)
-/// and the `#main` hydration mount point. Regenerate the committed
-/// `crates/site/public/index.html` after changing the shell with
-/// `cargo run -p fortress-web-ui --example write_index`; the site's
-/// `public_index_carries_the_zine_shell` tripwire asserts they match.
-pub fn index_shell_html(title: &str) -> String {
-    shell(title, ShellVariant::Loud, rsx!(<div id="main"></div>)).to_html()
 }
 
 /// A red agitprop marquee strip. `phrase` is repeated to fill both
@@ -682,6 +690,219 @@ pub fn field(
             {hint_node}
         </label>
     )
+}
+
+// ── machines dashboard (one markup source for both surfaces) ────────
+
+/// One machine row: only the fields the customer sees. The controlplane's
+/// domain types stay in the controlplane; each surface maps into this, so
+/// the markup lives here and cannot drift between surfaces.
+pub struct MachineRow {
+    pub name: String,
+    pub hostname: String,
+}
+
+/// The invite's lifecycle state. Mirrors the controlplane's own enum so
+/// the markup can branch on it — web-ui must not depend on the
+/// controlplane, which depends on web-ui.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InviteStatus {
+    /// Created, but no machine has dialed `begin` yet. Not claimable:
+    /// there is nothing to name, so the owner surface must not offer an
+    /// approve form.
+    Dormant,
+    Waiting,
+    Approved,
+    Denied,
+}
+
+impl InviteStatus {
+    fn label(self) -> &'static str {
+        match self {
+            InviteStatus::Dormant => "dormant",
+            InviteStatus::Waiting => "waiting",
+            InviteStatus::Approved => "approved",
+            InviteStatus::Denied => "denied",
+        }
+    }
+}
+
+pub struct InviteRow {
+    pub code: String,
+    pub status: InviteStatus,
+    pub device_pubkey: Option<String>,
+}
+
+pub struct MachinesProps {
+    pub machines: Vec<MachineRow>,
+    pub invites: Vec<InviteRow>,
+    pub invited_code: Option<String>,
+    /// The edge's public domain — invite share URLs derive from it, never
+    /// a hardcoded zone.
+    pub root_domain: String,
+    pub error: Option<String>,
+}
+
+// The account's machines + invites dashboard body. BOTH the poem
+// controlplane and the topcoat site render this (the second via
+// `machines_html`), so the two surfaces cannot drift — the `Landing`
+// precedent. Form paths are absolute and fixed; every surface that
+// renders this must serve `/auth/invite`,
+// `/auth/invite/{code}/{approve,deny,revoke}`, and `POST /auth/logout`.
+fn machines_body(props: &MachinesProps) -> Node {
+    assert!(
+        !props.root_domain.is_empty(),
+        "invite share URLs need a root domain"
+    );
+    let banner = match &props.error {
+        Some(message) => rsx!(<div role="alert" class="alert-zine">{message.clone()}</div>),
+        None => Node::Empty,
+    };
+    let machines_list: Vec<Node> = if props.machines.is_empty() {
+        vec![rsx!(<p class="text-sm dim">"No machines yet — invite one below."</p>)]
+    } else {
+        props
+            .machines
+            .iter()
+            .map(|machine| {
+                rsx!(<li class="border-b border-ink py-1 list-none">
+                    <div class="flex items-baseline gap-3">
+                        <span class="font-black">{machine.name.clone()}</span>
+                        <span class="text-xs faint">{machine.hostname.clone()}</span>
+                    </div>
+                </li>)
+            })
+            .collect()
+    };
+    let invites_list: Vec<Node> = if props.invites.is_empty() {
+        vec![rsx!(<p class="text-sm dim">"No invites yet."</p>)]
+    } else {
+        props
+            .invites
+            .iter()
+            .map(|invite| {
+                let code = &invite.code;
+                let waiting = invite.status == InviteStatus::Waiting;
+                let dormant = invite.status == InviteStatus::Dormant;
+                let revocable = waiting || dormant;
+                let fresh = Some(code.clone()) == props.invited_code;
+                let share_url = format!("https://{}/a/{code}", props.root_domain);
+                let candidate = match &invite.device_pubkey {
+                    Some(pubkey) => {
+                        rsx!(<p class="text-xs faint break-all">"Candidate: "{pubkey.clone()}</p>)
+                    }
+                    None => Node::Empty,
+                };
+                let awaiting_machine = if dormant {
+                    rsx!(<p class="text-xs dim">"Waiting for the machine to connect — open the invite URL on the box."</p>)
+                } else {
+                    Node::Empty
+                };
+                let approve_form = if waiting {
+                    rsx!(
+                        <form method="post" action={format!("/auth/invite/{code}/approve")} class="flex items-end gap-2">
+                            <label class="block w-full">
+                                <div class="tag dim mb-1">"Name this machine"</div>
+                                <input type="text" name="name" required pattern="[a-z0-9][a-z0-9-]*" class="zine-input"/>
+                            </label>
+                            {zine_submit("Approve", "")}
+                        </form>
+                    )
+                } else {
+                    Node::Empty
+                };
+                let actions = if revocable {
+                    let deny = if waiting {
+                        rsx!(
+                            <form method="post" action={format!("/auth/invite/{code}/deny")}>
+                                <button type="submit" class="btn-zine btn-zine-sm">"Deny"</button>
+                            </form>
+                        )
+                    } else {
+                        Node::Empty
+                    };
+                    rsx!(
+                        <div class="flex gap-2">
+                            {deny}
+                            <form method="post" action={format!("/auth/invite/{code}/revoke")}>
+                                <button type="submit" class="btn-zine btn-zine-sm">"Revoke"</button>
+                            </form>
+                        </div>
+                    )
+                } else {
+                    Node::Empty
+                };
+                let share = if fresh {
+                    rsx!(
+                        <div class="text-xs dim">
+                            "Share this link with the machine: "<code class="break-all">{share_url}</code>
+                        </div>
+                    )
+                } else {
+                    Node::Empty
+                };
+                rsx!(
+                    <li>
+                        {card("", rsx!(
+                            <>
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <code class="font-black">{code.clone()}</code>
+                                    {stamp_small(invite.status.label())}
+                                </div>
+                                {candidate}
+                                {awaiting_machine}
+                                {approve_form}
+                                {actions}
+                                {share}
+                            </>
+                        ))}
+                    </li>
+                )
+            })
+            .collect()
+    };
+    shell(
+        "Your machines",
+        ShellVariant::App,
+        rsx!(
+            <main class="mx-auto flex max-w-md flex-col gap-4 p-6">
+                <div class="flex flex-col gap-6">
+                    <h1 class="text-2xl font-black uppercase">"Your machines"</h1>
+                    {banner}
+                    <section class="flex flex-col gap-2">
+                        <h2 class="text-lg font-black uppercase">"Machines"</h2>
+                        <ul class="flex flex-col gap-1 list-none p-0 m-0">
+                            {machines_list}
+                        </ul>
+                    </section>
+                    <section class="flex flex-col gap-3">
+                        <h2 class="text-lg font-black uppercase">"Invite a machine"</h2>
+                        <form method="post" action="/auth/invite">
+                            {zine_submit("Generate invite link", "")}
+                        </form>
+                        <ul class="flex flex-col gap-4 list-none p-0 m-0">
+                            {invites_list}
+                        </ul>
+                    </section>
+                    <p class="text-sm">{sign_out_form("btn-zine-sm")}</p>
+                </div>
+            </main>
+        ),
+    )
+}
+
+// The momenta component wrapper (the `Landing` shape): `machines_html`
+// renders the body directly for raw-markup SSRs; the poem surface uses
+// the component.
+#[component]
+pub fn MachinesPage(props: &MachinesProps) -> Node {
+    machines_body(props)
+}
+
+/// The dashboard as a self-contained HTML string, for SSR surfaces that
+/// inject raw markup (topcoat's `Unescaped`).
+pub fn machines_html(props: &MachinesProps) -> String {
+    machines_body(props).to_html()
 }
 
 #[cfg(test)]
@@ -761,6 +982,146 @@ mod tests {
         let password = render(field("Password", "password", FieldKind::Password, Some("x"), None));
         assert!(password.contains(r#"type="password""#));
         assert!(password.contains(r#"value="x""#));
+    }
+
+    #[test]
+    fn machines_dashboard_renders_rows_statuses_and_waiting_forms() {
+        let props = MachinesProps {
+            machines: vec![MachineRow {
+                name: "alice-box".into(),
+                hostname: "alice.example.net".into(),
+            }],
+            invites: vec![
+                InviteRow {
+                    code: "W8TNG00001".into(),
+                    status: InviteStatus::Waiting,
+                    device_pubkey: Some("candidate-pubkey".into()),
+                },
+                InviteRow {
+                    code: "APPRV00002".into(),
+                    status: InviteStatus::Approved,
+                    device_pubkey: None,
+                },
+            ],
+            invited_code: Some("W8TNG00001".into()),
+            root_domain: "example.net".into(),
+            error: None,
+        };
+        let html = machines_html(&props);
+        assert!(html.contains("alice-box"));
+        assert!(html.contains("alice.example.net"));
+        assert!(html.contains("candidate-pubkey"));
+        assert!(html.contains("/auth/invite/W8TNG00001/approve"));
+        // momenta escapes `/` as `&#x2F;` in text content; assert the
+        // rendered form so the share URL's construction is still pinned.
+        assert!(
+            html.contains("https:&#x2F;&#x2F;example.net&#x2F;a&#x2F;W8TNG00001"),
+            "the fresh invite's share URL must render"
+        );
+        for label in ["waiting", "approved"] {
+            assert!(html.contains(label), "missing status stamp {label}");
+        }
+        assert!(
+            !html.contains("/auth/invite/APPRV00002/approve"),
+            "a terminal invite must not offer an approve form"
+        );
+        assert!(!html.contains("cdn.jsdelivr"), "no third-party origins");
+    }
+
+    #[test]
+    fn machines_dashboard_handles_the_empty_account_and_the_error() {
+        let props = MachinesProps {
+            machines: vec![],
+            invites: vec![],
+            invited_code: None,
+            root_domain: "example.net".into(),
+            error: Some("store unavailable".into()),
+        };
+        let html = machines_html(&props);
+        assert!(html.contains("No machines yet"));
+        assert!(html.contains("No invites yet"));
+        assert!(html.contains("store unavailable"));
+        assert!(html.contains(r#"action="/auth/invite""#));
+    }
+
+    /// The bug this pins: the landing's "Sign out" was an `<a>` to
+    /// `GET /auth/logout`, a path no surface served (the site had only
+    /// `POST /logout`) — the link 404'd and the customer stayed signed
+    /// in. Sign-out mutates, so it must be a POST form on the one
+    /// contract path both surfaces serve.
+    #[test]
+    fn sign_out_is_a_post_form_at_the_contract_path() {
+        let surfaces: [(&str, String); 2] = [
+            (
+                "landing",
+                landing_html(&LandingProps {
+                    logged_in: true,
+                    email: Some("nicole@example.com".into()),
+                }),
+            ),
+            (
+                "machines",
+                machines_html(&MachinesProps {
+                    machines: vec![],
+                    invites: vec![],
+                    invited_code: None,
+                    root_domain: "example.net".into(),
+                    error: None,
+                }),
+            ),
+        ];
+        for (name, html) in surfaces {
+            let form_tag = html
+                .split("<form")
+                .filter_map(|chunk| chunk.split('>').next())
+                .find(|tag| tag.contains(r#"action="/auth/logout""#))
+                .unwrap_or_else(|| panic!("{name} must render a sign-out form: {html}"));
+            assert!(
+                form_tag.contains(r#"method="post""#),
+                "{name} sign-out must declare method=\"post\", got: {form_tag}"
+            );
+            assert!(
+                !html.contains(r#"href="/auth/logout""#),
+                "{name} must not offer sign-out as a GET link"
+            );
+        }
+    }
+
+    /// The bug the `Dormant` state exists to kill: the dashboard showed
+    /// "Name this machine" before any machine had dialed `begin`, so the
+    /// owner named a machine that did not exist — and approve then
+    /// allocated a peer for it. A dormant invite offers Revoke only.
+    #[test]
+    fn dormant_invite_offers_revoke_but_never_an_approve_form() {
+        let props = MachinesProps {
+            machines: vec![],
+            invites: vec![InviteRow {
+                code: "DRMNT00001".into(),
+                status: InviteStatus::Dormant,
+                device_pubkey: None,
+            }],
+            invited_code: None,
+            root_domain: "example.net".into(),
+            error: None,
+        };
+        let html = machines_html(&props);
+        assert!(
+            !html.contains("/auth/invite/DRMNT00001/approve"),
+            "a dormant invite has no machine to name: {html}"
+        );
+        assert!(
+            !html.contains("/auth/invite/DRMNT00001/deny"),
+            "deny is for a candidate that already dialed in: {html}"
+        );
+        assert!(
+            html.contains("/auth/invite/DRMNT00001/revoke"),
+            "the owner can still take the invite back"
+        );
+        assert!(
+            html.contains("Waiting for the machine to connect"),
+            "the owner must be told why there is nothing to approve"
+        );
+        assert!(html.contains("dormant"), "the state is labelled");
     }
 }
 

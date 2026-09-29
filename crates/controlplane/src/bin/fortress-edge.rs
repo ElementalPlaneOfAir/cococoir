@@ -21,7 +21,9 @@
 #![deny(unsafe_code)]
 
 use fortress_controlplane::controlplane::secret::redis_url;
-use fortress_controlplane::{control_plane, init_globals, Subnet64, WgSubnet};
+use fortress_controlplane::{
+    control_plane, init_globals, install_crypto_provider, wait_for_signal, Subnet64, WgSubnet,
+};
 
 /// The flag only exists under `cfg!(debug_assertions)`, so a shipped
 /// (release) edge cannot be put into dummy mode: `--dummy` hits the
@@ -91,9 +93,7 @@ async fn main() -> Result<(), std::io::Error> {
     // client (redis rediss, reqwest). With multiple provider features in
     // the dep tree, rustls refuses to pick one itself and aborts — that
     // was the edge crash-looping on boot (exit 101, restart counter N).
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("rustls crypto provider must install exactly once");
+    install_crypto_provider();
 
     let args = parse_args(std::env::args().skip(1))?;
     let subnet = Subnet64::from_str(&args.subnet).map_err(std::io::Error::other)?;
@@ -202,17 +202,6 @@ async fn main() -> Result<(), std::io::Error> {
     tokio::try_join!(api_task, reconcile_task, signal_task)
         .map_err(|err| std::io::Error::other(format!("edge task failed: {err}")))?;
     Ok(())
-}
-
-/// Waits for SIGINT or SIGTERM.
-async fn wait_for_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-    tokio::select! {
-        _ = sigint.recv() => {}
-        _ = sigterm.recv() => {}
-    }
 }
 
 /// A future that resolves when the shutdown signal fires — feeds

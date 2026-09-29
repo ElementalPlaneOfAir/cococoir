@@ -28,10 +28,13 @@ use fortress_controlplane::controlplane::mail::Mailer;
 
 /// The account plane + mailer, registered as topcoat app context so
 /// every handler reaches it with `app_context(cx)`. Built once at boot,
-/// lives for the process.
+/// lives for the process. Both fields are the process globals
+/// (`init_globals` builds the control plane + forwarder; the mailer is
+/// the process mailer), so nothing here is owned — `&'static` is the
+/// single-instance fact.
 pub struct SiteBackend {
-    pub cp: ControlPlane,
-    pub mailer: Box<dyn Mailer>,
+    pub cp: &'static ControlPlane,
+    pub mailer: &'static dyn Mailer,
 }
 
 /// The registered app-context type. The router registers `&'static
@@ -238,6 +241,7 @@ mod form_safety_tripwires {
     fn no_form_literal_omits_post() {
         let sources: &[&str] = &[
             include_str!("pages/auth.rs"),
+            include_str!("pages/machines.rs"),
             include_str!("pages/home.rs"),
             include_str!("pages/docs.rs"),
             include_str!("pages/install.rs"),
@@ -361,10 +365,10 @@ mod composition_tripwires {
             dns,
         )
         .expect("test control plane builds");
-        Box::leak(Box::new(SiteBackend {
-            cp,
-            mailer: Box::new(fortress_controlplane::controlplane::mail::ConsoleMailer),
-        }))
+        let cp: &'static ControlPlane = Box::leak(Box::new(cp));
+        let mailer: &'static dyn Mailer =
+            Box::leak(Box::new(fortress_controlplane::controlplane::mail::ConsoleMailer));
+        Box::leak(Box::new(SiteBackend { cp, mailer }))
     }
 
     fn get_req(uri: &str) -> axum::extract::Request {
@@ -378,6 +382,70 @@ mod composition_tripwires {
     async fn body_string(res: axum::response::Response) -> String {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn post_form_req(uri: &str, body: &'static str) -> axum::extract::Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    /// SEAM #5 — the account dashboard's contract paths land, and they
+    /// are session-gated before any store call (a missing cookie
+    /// short-circuits to Anonymous, so this needs no live Redis).
+    ///
+    /// This is the tripwire for the bug the topcoat arc fixes: the
+    /// landing's "Sign out" pointed at `GET /auth/logout` while the site
+    /// served only `POST /logout`, so the link 404'd and the customer
+    /// stayed signed in. Every path the shared `MachinesPage` /
+    /// `sign_out_form` emits must resolve here.
+    #[tokio::test]
+    async fn dashboard_contract_paths_resolve_and_gate_on_the_session() {
+        let app = server::app(test_backend());
+
+        let res = app.clone().oneshot(get_req("/machines")).await.unwrap();
+        assert_eq!(res.status(), 303, "GET /machines must gate on the session");
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/login",
+            "the gate sends the customer to log in"
+        );
+
+        for (uri, body) in [
+            ("/auth/invite", ""),
+            ("/auth/invite/C0DE000001/approve", "name=livingroom"),
+            ("/auth/invite/C0DE000001/deny", ""),
+            ("/auth/invite/C0DE000001/revoke", ""),
+        ] {
+            let res = app.clone().oneshot(post_form_req(uri, body)).await.unwrap();
+            assert_eq!(
+                res.status(), 303,
+                "POST {uri} must land on the owner-op route and gate on the session"
+            );
+            assert_eq!(
+                res.headers().get("location").unwrap().to_str().unwrap(),
+                "/login",
+                "POST {uri} must not run an owner op anonymously"
+            );
+        }
+
+        let res = app.oneshot(post_form_req("/auth/logout", "")).await.unwrap();
+        assert_eq!(
+            res.status(), 303,
+            "POST /auth/logout is the sign-out contract path"
+        );
+        assert!(
+            res.headers()
+                .get("set-cookie")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0"),
+            "sign-out must clear the session cookie"
+        );
     }
 
     /// SEAM #1 — axum's `nest("/api", …)` strips the prefix; this crate

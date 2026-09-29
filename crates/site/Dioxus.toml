@@ -1,4 +1,0 @@
-[application]
-name = "fortress-site"
-default_platform = "web"
-out_dir = "dist"

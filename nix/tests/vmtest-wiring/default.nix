@@ -12,9 +12,34 @@
 # this guards against lived in the composition of vmtest.nix
 # with the fortress modules, not in any single module. Only
 # the real composition is a faithful tripwire.
-{pkgs, vmtestConfig}:
+{pkgs, vmtestConfig, vmtestSystem}:
 let
   lib = pkgs.lib;
+
+  # ── dashboard port-collision tripwire ─────────────────────────
+  # The dashboard binds a loopback port that must not collide with a
+  # catalog service port (cryptpad owns 3000, forgejo 3001, ...).
+  # client.nix asserts that, but an assertion nobody exercises is a
+  # dead tripwire: prove it fires on a forced collision AND that the
+  # shipped default collides with nothing the composition enables.
+  clientEval = extra:
+    vmtestSystem.extendModules {
+      modules = [
+        {
+          services.fortress-client =
+            {
+              enable = true;
+              adminPasswordEnvFile = "/etc/fortress-admin.env";
+            }
+            // extra;
+        }
+      ];
+    };
+  collisionAssertionFires = eval: builtins.any
+    (a: !a.assertion && lib.hasInfix "shares its port" a.message)
+    eval.config.assertions;
+  dashboardDefaultCollides = collisionAssertionFires (clientEval {});
+  forcedCollisionFires = collisionAssertionFires (clientEval {dashboardAddr = "127.0.0.1:3000";});
 
   # ── dashboard.nix extraction ─────────────────────────────────
   # The service enables live in nixosConfigurations/dashboard.nix
@@ -79,6 +104,12 @@ let
     lib.hasInfix "bind 127.0.0.1 ::1 ${lanAddress}"
       vmtestConfig.services.caddy.virtualHosts."${d}".extraConfig)
     enabledDomains;
+  # The LAN IP is a DNS-free entry point to the embedded config
+  # dashboard. If this vhost silently vanishes (or stops binding the
+  # LAN address), typing the box's IP 404s and the customer has no
+  # zero-config way in — invisible to every per-service check.
+  dashboardAddr = vmtestConfig.services.fortress-client.dashboardAddr;
+  lanDashboardVhost = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}" or null;
 
   # ── media automation stack ───────────────────────────────────
   mediaStackServices = ["radarr" "sonarr" "qbittorrent" "seerr"];
@@ -243,6 +274,20 @@ assert lib.assertMsg (vmtestConfig.services.dnsmasq.resolveLocalQueries == false
   "vmtest-wiring: dnsmasq resolveLocalQueries is on — the box's own resolver would be hijacked by its LAN DNS layer";
 assert lib.assertMsg everyVhostBindsLan
   "vmtest-wiring: an enabled vhost does not bind the LAN address — dnsmasq answers with a closed port (correct DNS, dead ingress)";
+assert lib.assertMsg (lanDashboardVhost != null)
+  "vmtest-wiring: the LAN-IP dashboard vhost is missing — typing the box's LAN IP would 404 instead of serving the config homepage";
+assert lib.assertMsg (lanDashboardVhost != null && builtins.elem lanAddress lanDashboardVhost.listenAddresses)
+  "vmtest-wiring: the LAN-IP dashboard vhost does not bind the LAN address — the homepage would be unreachable on the LAN";
+assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "reverse_proxy ${dashboardAddr}" lanDashboardVhost.extraConfig)
+  "vmtest-wiring: the LAN-IP dashboard vhost does not reverse-proxy the client dashboard (${dashboardAddr}) — the homepage would 502";
+assert lib.assertMsg (lanDashboardVhost != null && !lib.hasInfix "tls " lanDashboardVhost.extraConfig)
+  "vmtest-wiring: the LAN-IP dashboard vhost emits a tls directive — HTTPS on a private IP is a browser warning, and the plain-HTTP homepage must not redirect to it";
+
+# ── dashboard port-collision assertions ───────────────────────
+assert lib.assertMsg (!dashboardDefaultCollides)
+  "vmtest-wiring: the dashboard's default bind port collides with an enabled catalog service port — fortress-client and the service both bind loopback and one fails at boot (the cryptpad :3000 landmine)";
+assert lib.assertMsg forcedCollisionFires
+  "vmtest-wiring: the dashboard/service port-collision assertion never fires on a forced collision — the tripwire in client.nix is dead";
 {
   vmtest-wiring = pkgs.runCommand "fortress-vmtest-wiring" {} ''
     cat > $out <<EOF
@@ -253,6 +298,8 @@ assert lib.assertMsg everyVhostBindsLan
       ingress: caddy.service orders after fortress-client.service (ACME over the tunnel)
       I2P seam: loopback dex issuer, per-path Location rewrites (clearnet + .i2p vhosts), .i2p callback registered
       LAN DNS: dnsmasq answers every enabled service domain with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
+      LAN dashboard: http://${lanAddress} reverse-proxies ${dashboardAddr} (DNS-free config homepage)
+      dashboard port: default bind collides with no enabled service port; the collision assertion fires on a forced collision
     EOF
   '';
 }

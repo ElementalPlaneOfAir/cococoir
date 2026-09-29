@@ -374,7 +374,10 @@ revisited.
   5th option (`otel`, `healthUrl`, `port`, …) is a deliberate
   decision, not an accident. The contract keeps the config
   surface minimal for the non-technical customer. *Extended by
-  ADR-020: the factory now enforces this by code.*
+  ADR-020: the factory now enforces this by code. Amended by
+  ADR-034: `domain` is now the subdomain-routed services'
+  hostname; path-routed services carry `path` and derive their
+  per-plane origin instead.*
 - **ADR-005: Native filesystem > S3 > FUSE — superseded by ADR-023.**
   Originally: services with a native S3 backend (Nextcloud) use S3;
   FUSE-mounting a bucket is the fallback. *Superseded by ADR-023
@@ -773,6 +776,46 @@ revisited.
   tunnel overhead measurably hurting customers. Until then the
   container tier + kernel wg in-container (`--cap-add NET_ADMIN
   --device /dev/net/tun`) is the portable path.
+
+- **ADR-034: One origin per plane, services at paths, with a
+  failover redirect matrix (amends ADR-004/ADR-020's contract).**
+  Each access plane gets exactly one origin —
+  `https://<baseDomain>` (clearnet), `http://<lanAddress>` (LAN),
+  `http://<label>.i2p` (I2P) — and every catalog service is
+  reachable at `/<name>` on it. The contract gains `routing =
+  "path" | "subdomain"` (a platform fact per service, from the
+  base-path audit in `.specify/specs/path-based-routing/proposal.md`)
+  and `path` (default `/<conventionalSubdomain>`; dex overrides to
+  `/dex`); `domain` survives only for subdomain-routed services
+  (seerr, cryptpad) and for redirect stubs. **The failover matrix
+  is the point**: whatever the service's canonical shape, the other
+  shape answers on the same origin and `307`s to the canonical —
+  `jellyfin.<base>` → `<origin>/jellyfin` and
+  `<origin>/seerr` → `seerr.<base>` — so `/<name>` is a uniform
+  entry point on every plane and a later routing flip ("swap the
+  redirects") is one line of contract, not a migration project.
+  Redirects are **307, never 301**: 301 is cached permanently and
+  the flip must stay reversible. Subdomain-routed services on the
+  LAN plane redirect to a **Caddy port-site** (`http://<lan>:<port>`
+  bound to `caddyBindAddresses`, `public`-gated, proxying the
+  loopback app) so the whole catalog is reachable at the bare IP
+  with zero DNS — the "no remote access" story. Shared-origin seams
+  are handled explicitly: `Set-Cookie` is rewritten to
+  `Path=/<svc>`, and the loopback dex issuer keeps ONE Location
+  rewrite per plane (→ `<origin>/dex`), not per service. Per-app
+  base URLs are global (jellyfin `<BaseUrl>`, *arr `<UrlBase>`,
+  forgejo `ROOT_URL`), so the cutover is per-app and total: internal
+  consumers (jellarr, seerr→arr) carry the path too. Origin
+  isolation is knowingly downgraded — one browser security context
+  per plane. Supersedes the per-service `i2pDomain`/N-name
+  `hosts.txt` shape of the i2p-resilience arc's slice 2 (deferred
+  with that arc; the i2p matrix rows derive from this contract).
+  Rejected: subdomain-per-service (DNS-dependent LAN, N×planes
+  Caddy machinery, N-name hosts.txt); port-per-service on the LAN
+  (port soup, no unified origin); HTML/asset rewriting to fake
+  prefixes (silent-failure seam, banned); 301 redirects (not
+  reversible); a second customer-facing routing option (the routing
+  mode is derived per service, never configured).
 
 ## Implementation backlog
 
