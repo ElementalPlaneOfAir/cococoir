@@ -37,6 +37,8 @@ let
   #   - `*.js` under any `/assets/`    vendored SPA assets (crates/web-ui)
   #   - `install.sh`                   scripts/install.sh (include_str! in
   #                                    crates/controlplane/…/web.rs)
+  #   - `words.txt`                    crates/controlplane/src/words.txt
+  #                                    (include_str! — machine-name lexicon)
   # Files outside the allowlist are pruned; the junk dirs (.git,
   # .direnv, target, result) survive as empty, fileless dirs.
   src = lib.cleanSourceWith {
@@ -49,6 +51,7 @@ let
       ])
       || (baseNameOf path == "Cargo.lock")
       || (baseNameOf path == "secretspec.toml")
+      || (baseNameOf path == "words.txt")
       || (lib.hasSuffix ".md" (baseNameOf path) && lib.hasInfix "/content/docs/" path)
       || (lib.hasSuffix ".js" (baseNameOf path) && lib.hasInfix "/assets/" path)
       || (baseNameOf path == "install.sh");

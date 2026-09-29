@@ -103,6 +103,29 @@
   # would. Production sets the box's DHCP-reserved address here.
   fortress.network.lanAddress = "10.0.2.15";
 
+  # The box's remote-access client in the claimable shape (claim-flow
+  # T7): the forwards reference a tunnel IP that does not exist yet,
+  # so the box boots its dashboard to be claimed instead of exiting —
+  # the exact dead end the claim flow kills. vmtest-bootstrap.sh
+  # asserts the claim surface serves. The admin hash is the known test
+  # credential ("password") — this is a dev VM, not a customer box.
+  services.fortress-client = {
+    enable = true;
+    adminPasswordEnvFile = "/etc/fortress-admin.env";
+  };
+  environment.etc."fortress-admin.env".text = ''
+    FORTRESS_ADMIN_PASSWORD_HASH=$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W
+  '';
+  environment.etc."fortress-client.json".text = builtins.toJSON {
+    forwards = [
+      {
+        listen_addr = "\${tunnel_ip}:80";
+        proto = "tcp";
+        dest_addr = "127.0.0.1:80";
+      }
+    ];
+  };
+
   # Jellyfin's StorageHelper.TestDataDirectorySize checks
   # /var/lib/jellyfin/data has >= 2GiB free at startup and aborts
   # with System.InvalidOperationException otherwise. The default

@@ -39,12 +39,15 @@ let
       "name = \"dex\";"
       "defaultPort = 5556;"
       "defaultHealthPath = "
+      "path = \"/dex\";"
     ];
     cryptpad = [
       "mkFortressService {"
       "name = \"cryptpad\";"
       "defaultPort = 3000;"
       "defaultHealthPath = "
+      "routing = \"subdomain\";"
+      "originLocked = true;"
     ];
     radarr = [
       "mkFortressService {"
@@ -73,6 +76,7 @@ let
       "defaultPort = 5055;"
       "defaultHealthPath = "
       "requires = [\"jellyfin\"];"
+      "routing = \"subdomain\";"
     ];
     forgejo = [
       "mkFortressService {"
@@ -80,6 +84,7 @@ let
       "defaultPort = 3001;"
       "defaultHealthPath = "
       "storageNeeded = true;"
+      "stripPath = true;"
     ];
   };
 

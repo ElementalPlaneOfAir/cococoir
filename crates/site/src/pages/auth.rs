@@ -1,5 +1,5 @@
 //! The account surfaces: register, login, forgot, reset, verify, resend,
-//! the `/a/{code}` join page, and account deletion.
+//! the `/i/{code}` join page, and account deletion.
 //!
 //! **Post/Redirect/Get, always.** Every mutating handler responds with a
 //! 303 to a GET. Failures redirect with a short `error=<code>` token —
@@ -426,18 +426,18 @@ pub async fn resend_post(cx: &Cx, Form(form): Form<EmailForm>) -> TcResult<impl 
 
 // ── the invite join page ───────────────────────────────────────────
 
-/// `GET /a/{code}` — the human half of an invite. The machine dials
+/// `GET /i/{code}` — the human half of an invite. The machine dials
 /// `/api/invites/{code}/begin` (axum, the machine contract); this page
 /// explains what to do with the invite URL.
-#[page("/a/{code}")]
+#[page("/i/{code}")]
 pub async fn join(cx: &Cx) -> TcResult<impl View> {
     let code = path_param::<Code>(cx);
     let html = format!(
         "<main class=\"mx-auto flex max-w-md flex-col gap-4 p-6\">\
            <h1 class=\"text-2xl font-black uppercase\">Join Fortress</h1>\
-           <p>Open this invite URL on the machine you want to enroll. \
-              It will ask the edge to register itself and then download its \
-              tunnel configuration.</p>\
+           <p>On the box, open its dashboard and paste this invite URL \
+              into Remote access. The box then registers itself and \
+              downloads its tunnel configuration.</p>\
            <p class=\"text-sm dim\">Invite code <code>{code}</code> is single-use \
               and expires in 30 days.</p>\
            <p class=\"text-sm dim\">Not a machine? \

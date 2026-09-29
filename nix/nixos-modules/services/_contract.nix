@@ -9,12 +9,9 @@
 # user, systemd unit, btrfs subvolume, env vars, etc. The factory owns:
 #
 #   - the standard option surface (enable / domain / public /
-#     port / healthUrl / journald.units)
+#     routing / path / port / healthUrl / journald.units)
 #   - the standard assertions (public → caddy, storageNeeded →
 #     storage, baseDomain or explicit domain)
-#   - the Caddy vhost with the right `tls` directive from
-#     fortress.tls and the right `reverse_proxy` / 403 from
-#     `public`
 #
 # What the service adds (via `extraOptions` and `extraConfig`):
 #   - per-service nixpkgs module activation (e.g. services.jellyfin)
@@ -22,16 +19,22 @@
 #   - per-service systemd unit
 #   - per-service storage (auto-declare btrfs subvolumes)
 #
+# Caddy rendering does NOT live here: `planes.nix` reads these
+# options and renders every vhost (plane origins + service hostnames
+# + LAN port-sites) from one matrix — one renderer, no module-merge
+# order seams (ADR-034).
+#
 # Adding a new service is then a single call to this factory with
-# the service's specifics. The 4-option contract is enforced by
-# code, not convention — drift (a missing health prober contract)
-# is impossible.
+# the service's specifics. The contract is enforced by code, not
+# convention — drift (a missing health prober contract) is
+# impossible.
 #
 # See:
 #   - nix/nixos-modules/services/jellyfin.nix — 4-option example
 #     with storageNeeded = true
 #   - nix/nixos-modules/services/dex.nix — 3-option example
 #     (storageNeeded = false)
+#   - nix/nixos-modules/planes.nix — the routing plane layer
 #   - nix/tests/contract-conformance/default.nix — asserts every
 #     service module uses this factory and exposes the standard
 #     hidden options
@@ -45,8 +48,8 @@ let
 in
 # mkFortressService :: Attrs -> Module
 # Returns a NixOS module that adds fortress.services.<name>.* and
-# the standard Caddy vhost + assertions. The caller composes
-# this with per-service config (extraOptions + extraConfig).
+# the standard assertions. The caller composes this with per-service
+# config (extraOptions + extraConfig).
 args:
 let
   cfg = config.fortress.services.${args.name};
@@ -54,13 +57,7 @@ let
   requires = args.requires or [];
   baseDomain = config.fortress.baseDomain;
   sub = args.conventionalSubdomain or args.name;
-  # Platform-owned bind list (fortress.network.caddyBindAddresses):
-  # localhost, plus the LAN address when fortress.network.lanAddress
-  # is set — so LAN devices that resolve a service domain via the
-  # box's dnsmasq (ADR-028) terminate TLS on the box directly. Never
-  # 0.0.0.0: the forwarder owns the tunnel IP.
-  bindAddrs = lib.concatStringsSep " " config.fortress.network.caddyBindAddresses;
-  # I2P plane naming: every public vhost gets a plain-HTTP twin at
+  # I2P plane naming: every public service gets a plain-HTTP twin at
   # `<domain first label>.<baseDomain first label>.i2p`, derived —
   # never a customer-facing option. Fail loud when baseDomain is
   # unset: there is no name to derive, and silent absence would be
@@ -74,19 +71,6 @@ let
       `fortress.services.${args.name}.i2pDomain` explicitly.
     ''
     else builtins.head (lib.splitString "." baseDomain);
-  escapeDots = s: lib.replaceStrings ["."] ["\\."] s;
-  dexOn = (options.fortress.services ? dex) && config.fortress.services.dex.enable;
-  dexPort = toString config.fortress.services.dex.port;
-  dexClearnetUrl = "https://${config.fortress.services.dex.domain}";
-  dexI2pUrl = "http://${config.fortress.services.dex.i2pDomain}";
-  # The dex issuer is a loopback address — never browser-reachable.
-  # Every vhost rewrites any redirect to it onto the dex surface of
-  # its own path: clearnet vhosts → the clearnet dex origin, I2P
-  # vhosts → the I2P dex origin. The `>` prefix defers the replace
-  # until the response header is written; `$`-free find/replace keeps
-  # the untouched remainder of the Location value.
-  issuerLocationRewrite = target:
-    "header >Location \"^http://127\\.0\\.0\\.1:${dexPort}\" \"${target}\"\n";
 in
 {
   options.fortress.services.${args.name} =
@@ -144,6 +128,69 @@ in
         '';
       };
 
+      routing = mkOption {
+        type = types.enum ["path" "subdomain"];
+        default = args.routing or "path";
+        defaultText = literalMD ''`"path"`'';
+        description = ''
+          Where this service's canonical URLs live (ADR-034).
+
+          `"path"` — canonical at `<plane origin>${args.path or "/${sub}"}`;
+          the service hostname is a 307 stub to it.
+
+          `"subdomain"` — canonical at the service hostname; the
+          plane origin's ``${args.path or "/${sub}"}`` is a 307
+          failover row (on the LAN it targets the service's Caddy
+          port-site, so the catalog works at the bare IP).
+
+          A platform fact from the base-path audit, not customer
+          config. Flipping it swaps the failover redirects.
+        '';
+        internal = true;
+      };
+
+      path = mkOption {
+        type = types.str;
+        default = args.path or "/${sub}";
+        defaultText = literalMD ''`/${sub}`'';
+        description = ''
+          The service's entry point on every plane origin — its
+          base path when `routing = "path"`, its failover alias
+          when `routing = "subdomain"`. Derived from the
+          conventional subdomain; override for services whose
+          surface lives elsewhere (dex serves at `/dex`).
+        '';
+        internal = true;
+      };
+
+      originLocked = mkOption {
+        type = types.bool;
+        default = args.originLocked or false;
+        defaultText = literalMD ''`false`'';
+        description = ''
+          The app pins its own origin (CryptPad's safe/unsafe
+          origin model) and breaks on a second one. Such services
+          fail over to their hostname, never to a LAN port-site.
+        '';
+        internal = true;
+      };
+
+      stripPath = mkOption {
+        type = types.bool;
+        default = args.stripPath or false;
+        defaultText = literalMD ''`false`'';
+        description = ''
+          The app generates URLs carrying `<path>` (its `ROOT_URL`)
+          but serves at its own root — the plane row strips `<path>`
+          before proxying (Forgejo works this way; its `ROOT_URL` is
+          URL-generation only). Jellyfin/dex/*arr `BaseUrl`-style
+          knobs instead make the app serve *under* the path, and
+          those rows preserve it. The prober's loopback URL matches
+          whichever shape the app serves.
+        '';
+        internal = true;
+      };
+
       port = mkOption {
         type = types.port;
         default = args.defaultPort;
@@ -170,7 +217,9 @@ in
       healthUrl = mkOption {
         type = types.str;
         default =
-          "http://127.0.0.1:${toString args.defaultPort}${args.defaultHealthPath or "/health"}";
+          "http://127.0.0.1:${toString args.defaultPort}"
+          + lib.optionalString (cfg.routing == "path" && !cfg.stripPath) cfg.path
+          + (args.defaultHealthPath or "/health");
         description = ''
           URL the fortress-client prober GETs for liveness
           (v2.4). Defaults to a localhost health endpoint.
@@ -206,16 +255,6 @@ in
               the security boundary.
             '';
           }
-          {
-            assertion = !cfg.public || (builtins.match ".*bind 127.0.0.1.*" config.services.caddy.virtualHosts."${cfg.domain}".extraConfig != null);
-            message = ''
-              fortress.services.${args.name}: the public Caddy vhost must
-              `bind 127.0.0.1` (localhost). The client forwarder owns the
-              tunnel IP as the external ingress and forwards to Caddy; a
-              wildcard Caddy bind would collide with it (EADDRINUSE) and
-              silently kill remote access.
-            '';
-          }
         ]
 ++ lib.optional hasBucket {
           assertion = hasBucket -> config.fortress.storage.enable;
@@ -233,47 +272,6 @@ in
             ${req} service group) to use ${args.name}.
           '';
         }) requires;
-
-        # ACME for this vhost traverses the tunnel (edge /128 → client
-        # forwarder → localhost Caddy), so Caddy must not start before
-        # the tunnel: a boot race fails the first orders and ACME backoff
-        # leaves the domain certless for up to an hour after every boot
-        # (auth/cryptpad incident, 2026-08-28). Ordering against a unit
-        # that doesn't exist (compositions without the client) is a
-        # systemd no-op.
-        systemd.services.caddy = lib.mkIf config.services.caddy.enable {
-          after = ["fortress-client.service"];
-        };
-
-        services.caddy.virtualHosts."${cfg.domain}".extraConfig =
-          lib.mkDefault (let
-            tls = config.fortress.tls;
-            tlsLine =
-              if tls.mode == "self-signed"
-              then "tls ${tls.certFile} ${tls.keyFile}\n"
-              else "";
-          in
-            # Bind to fortress.network.caddyBindAddresses (localhost +
-            # LAN address when set). The client forwarder owns the
-            # tunnel IP (10.10.0.<n>:80/443) as the external ingress and
-            # forwards to Caddy on 127.0.0.1; a wildcard Caddy bind would
-            # collide with it (EADDRINUSE) and silently kill remote access.
-            tlsLine + "bind ${bindAddrs}\n"
-            + (if dexOn then issuerLocationRewrite dexClearnetUrl else "")
-            + (if cfg.public
-              then "reverse_proxy 127.0.0.1:${toString cfg.port}"
-              else ''respond "Forbidden" 403''));
-
-        # Plain-HTTP twin for the I2P plane: loopback-only bind (the
-        # I2P tunnel is the local ingress), no TLS, no ACME, no
-        # HTTP→HTTPS redirect. The issuer rewrite points at the I2P
-        # dex origin so the SSO redirect chain stays on the path the
-        # browser is already on.
-        services.caddy.virtualHosts."http://${cfg.i2pDomain}".extraConfig =
-          lib.mkIf cfg.public (lib.mkDefault
-            ("bind 127.0.0.1\n"
-            + (if dexOn then issuerLocationRewrite dexI2pUrl else "")
-            + "reverse_proxy 127.0.0.1:${toString cfg.port}"));
       }
       ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; options = options; })
     ]

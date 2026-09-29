@@ -749,7 +749,7 @@ impl InvitesApi {
         };
         match cp.invite_create(&email).await {
             Ok(code) => InviteApiResponse::Created(Json(InviteCreatedBody {
-                url: format!("https://{}/a/{code}", cp.root_domain),
+                url: format!("https://{}/i/{code}", cp.root_domain),
                 code,
             })),
             Err(err) => invite_api_error(err),

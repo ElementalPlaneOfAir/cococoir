@@ -34,6 +34,7 @@ mkFortressService {
   defaultHealthPath = "/ping";
   requires = ["jellyfin"];
   extraConfig = {
+    cfg,
     lib,
     config,
     pkgs,
@@ -47,21 +48,26 @@ mkFortressService {
     ];
     # Radarr ignores the RADARR__SERVER__APIKEY env override once
     # config.xml exists (it keeps its own generated key), so the key is
-    # pinned straight into config.xml. The key file is 0640 root:jellyfin —
-    # ExecStartPre runs as radarr (jellyfin group).
+    # pinned straight into config.xml — and so is the base path
+    # (ADR-034): <UrlBase> is the app's own knob and nothing else
+    # (nixpkgs, seerr) can set it declaratively. The key file is 0640
+    # root:jellyfin — ExecStartPre runs as radarr (jellyfin group).
     pinApiKey = pkgs.writeShellScript "radarr-pin-api-key" ''
       set -euo pipefail
       key=$(cat /var/lib/fortress-media/radarr-api-key)
       dir=/var/lib/radarr/.config/Radarr
       install -d -m 0750 -o radarr -g jellyfin "$dir"
       if [ -f "$dir/config.xml" ]; then
-        ${pkgs.gnused}/bin/sed -i "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" "$dir/config.xml"
+        ${pkgs.gnused}/bin/sed -i \
+          -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
+          -e "s|<UrlBase>[^<]*</UrlBase>|<UrlBase>${cfg.path}</UrlBase>|" \
+          "$dir/config.xml"
       else
         cat > "$dir/config.xml" <<EOF
   <Config>
     <BindAddress>127.0.0.1</BindAddress>
     <Port>7878</Port>
-    <UrlBase></UrlBase>
+    <UrlBase>${cfg.path}</UrlBase>
     <ApiKey>$key</ApiKey>
     <AuthenticationMethod>External</AuthenticationMethod>
     <UpdateMechanism>External</UpdateMechanism>

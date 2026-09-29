@@ -211,6 +211,20 @@ impl<A: AddrBytes> Subnet<A> {
     pub fn host_string(&self, index: u64) -> String {
         self.host(index).to_string()
     }
+
+    /// The canonical `addr/len` form (host bits zero), e.g.
+    /// `10.10.0.0/24` — round-trips through [`Subnet::from_str`].
+    pub fn to_string(&self) -> String {
+        assert_eq!(
+            self.prefix.len() * 8,
+            self.prefix_len as usize,
+            "prefix is byte-aligned by construction"
+        );
+        assert!(self.prefix.len() <= A::LEN, "prefix never exceeds the address");
+        let mut octets = vec![0u8; A::LEN];
+        octets[..self.prefix.len()].copy_from_slice(&self.prefix);
+        format!("{}/{}", A::from_octets(&octets), self.prefix_len)
+    }
 }
 
 /// The edge's routed IPv6 subnet, e.g. `2a01:4f8:c17:1::/64`.
@@ -225,6 +239,24 @@ pub type Subnet64 = Subnet<std::net::Ipv6Addr>;
 /// `10.10.0.0/24` (byte-aligned `/8..=/30`). Host 1 is the edge
 /// itself; customers get hosts 2+ — the same index as their `/128`.
 pub type WgSubnet = Subnet<std::net::Ipv4Addr>;
+
+/// The WG dial-out port the edge's `wg0` listens on (the tofu firewall
+/// opens exactly this). Part of the tunnel-info contract the box dials.
+pub const WG_ENDPOINT_PORT: u16 = 51820;
+
+/// The box-side tunnel facts: everything an un-enrolled box needs to
+/// dial the edge, derived from config the edge already holds — a
+/// paste-only claim flow builds a complete tunnel config from the
+/// invite URL plus this.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelInfo {
+    /// The edge's WG public key (derived from the store-held key).
+    pub public_key: String,
+    /// The edge's dial-out endpoint, e.g. `proletariat.tech:51820`.
+    pub endpoint: String,
+    /// The tunnel range the box routes, e.g. `10.10.0.0/24`.
+    pub allowed_ips: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Object)]
 pub struct Machine {
@@ -416,6 +448,29 @@ impl ControlPlane {
             })?;
         let secret = StaticSecret::from(priv_bytes);
         Ok(B64.encode(PublicKey::from(&secret).as_bytes()))
+    }
+
+    /// The tunnel facts a claiming box fetches before it dials: the
+    /// edge's WG identity, the endpoint to dial, and the range to
+    /// route. The endpoint derives from the root domain — the single
+    /// edge serves the website and `wg0` on the same box — so a box
+    /// that has only an invite URL can configure its tunnel without
+    /// any operator-supplied values.
+    pub fn tunnel_info(&self) -> Result<TunnelInfo, ControlPlaneError> {
+        let info = TunnelInfo {
+            public_key: self.edge_public_key()?,
+            endpoint: format!("{}:{WG_ENDPOINT_PORT}", self.root_domain()),
+            allowed_ips: self.wg_subnet.to_string(),
+        };
+        assert!(
+            info.endpoint.ends_with(&format!(":{WG_ENDPOINT_PORT}")),
+            "the endpoint carries the wg dial port"
+        );
+        assert!(
+            info.allowed_ips.contains('/'),
+            "allowed-ips is a CIDR range, e.g. 10.10.0.0/24"
+        );
+        Ok(info)
     }
 
     /// The root domain a customer's machines are named under. `'static`
@@ -1572,6 +1627,43 @@ mod tests {
     }
 
     #[test]
+    fn subnet_to_string_round_trips_the_canonical_form() {
+        for cidr in ["10.10.0.0/24", "10.0.0.0/8"] {
+            assert_eq!(WgSubnet::from_str(cidr).unwrap().to_string(), cidr);
+        }
+        for cidr in ["2a01:4f8:c17:1::/64", "2a01:4f8:c17:1:ab00::/72", "2a01:4f8:c17:1:abcd::/96"] {
+            assert_eq!(Subnet64::from_str(cidr).unwrap().to_string(), cidr);
+        }
+    }
+
+    /// The claim-flow seam: a box holding only an invite URL must be
+    /// able to fetch everything else it needs to dial the edge.
+    #[test]
+    fn tunnel_info_derives_the_endpoint_and_range() {
+        let wg: &'static crate::controlplane::wg::MockWgClient =
+            Box::leak(Box::new(crate::controlplane::wg::MockWgClient::new()));
+        let dns: &'static crate::controlplane::dns::MockDnsApiClient =
+            Box::leak(Box::new(crate::controlplane::dns::MockDnsApiClient::new()));
+        let cp = ControlPlane::with_deps(
+            "redis://127.0.0.1:6399",
+            Subnet64::from_str("2a01:4f8:c17:1::/64").unwrap(),
+            WgSubnet::from_str("10.10.0.0/24").unwrap(),
+            "example.net",
+            DUMMY_EDGE_WG_PRIV,
+            wg,
+            dns,
+        )
+        .expect("constructs without a store");
+        let info = cp.tunnel_info().expect("pure derivation");
+        assert_eq!(info.endpoint, "example.net:51820");
+        assert_eq!(info.allowed_ips, "10.10.0.0/24");
+        assert!(
+            !info.public_key.is_empty(),
+            "the edge identity derives from the held key"
+        );
+    }
+
+    #[test]
     fn subnet72_parses_and_hosts() {
         // A /72 slice of a shared /64: the box's network prefix is 9
         // bytes, hosts live in the last 7 bytes.
@@ -2180,8 +2272,12 @@ mod tests {
         assert_eq!(resp.0.status(), StatusCode::CREATED);
         let body: serde_json::Value = resp.0.into_body().into_json().await.unwrap();
         let code = body["code"].as_str().unwrap().to_string();
-        assert_eq!(code.len(), 10);
-        assert_eq!(body["url"], format!("https://example.net/a/{code}"));
+        assert_eq!(
+            crate::controlplane::pairing::canonical_invite_code(&code).as_deref(),
+            Some(code.as_str()),
+            "the operator API mints canonical word codes"
+        );
+        assert_eq!(body["url"], format!("https://example.net/i/{code}"));
 
         // The machine begins.
         let machine_pub = generate_wg_keypair().0;

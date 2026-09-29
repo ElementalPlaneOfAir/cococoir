@@ -161,7 +161,7 @@ EOF
 fi
 
 # ---- Hosts entries (container tier uses *.vmtest.local) -------------
-HOSTS_ENTRIES="127.0.0.1 jellyfin.vmtest.local auth.vmtest.local cryptpad.vmtest.local git.vmtest.local"
+HOSTS_ENTRIES="127.0.0.1 vmtest.local jellyfin.vmtest.local auth.vmtest.local cryptpad.vmtest.local git.vmtest.local seerr.vmtest.local"
 if ! grep -qs 'jellyfin.vmtest.local' /etc/hosts; then
   warn "Hosts entries needed so your browser finds the local services."
   $SUDO sh -c "printf '\n$HOSTS_ENTRIES\n' >> /etc/hosts" 2>/dev/null &&

@@ -111,6 +111,15 @@ let
   dashboardAddr = vmtestConfig.services.fortress-client.dashboardAddr;
   lanDashboardVhost = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}" or null;
 
+  # ── claim-flow boot tripwire (claim-flow T7) ──────────────────
+  # vmtest-bootstrap.sh's claim-flow section only bites when the e2e
+  # runs; if the client (or its claimable config) silently drops out
+  # of the vmtest composition, the boot-dead-end guard is gone and
+  # nothing else in L1 would notice.
+  clientEnabled = vmtestConfig.services.fortress-client.enable or false;
+  clientConfigJson = vmtestConfig.environment.etc."fortress-client.json".text or "";
+  claimableConfig = lib.hasInfix "{tunnel_ip}" clientConfigJson;
+
   # ── media automation stack ───────────────────────────────────
   mediaStackServices = ["radarr" "sonarr" "qbittorrent" "seerr"];
   mediaServiceEnabled = name: vmtestConfig.fortress.services.${name}.enable;
@@ -119,15 +128,37 @@ let
   qbittorrentCfg = vmtestConfig.services.qbittorrent;
   qbittorrentFortressCfg = vmtestConfig.fortress.services.qbittorrent;
 
-  # ── I2P rewrite seam ─────────────────────────────────────────
+  # ── path-routing matrix (ADR-034) ────────────────────────────
+  # The failover matrix renders from planes.nix: one site per plane,
+  # every service at `/<path>` on each, and each service's
+  # non-canonical shape307s to its canonical. The silent seams: a
+  # dropped plane row (service unreachable at its uniform entry
+  # point), a lost issuer Location rewrite (SSO dead-ends on
+  # loopback), and a lost cookie Path scope (apps collide on a
+  # shared origin).
   dexIssuer = vmtestConfig.services.dex.settings.issuer or null;
+  baseDomain = vmtestConfig.fortress.baseDomain;
+  i2pPlaneHost = "${builtins.head (lib.splitString "." baseDomain)}.i2p";
+  baseEscaped = lib.replaceStrings ["."] ["\\."] baseDomain;
   jfDomain = vmtestConfig.fortress.services.jellyfin.domain;
+  jfPath = vmtestConfig.fortress.services.jellyfin.path;
   jfI2p = vmtestConfig.fortress.services.jellyfin.i2pDomain;
-  dxI2p = vmtestConfig.fortress.services.dex.i2pDomain;
+  clearnetPlane = vmtestConfig.services.caddy.virtualHosts."${baseDomain}".extraConfig or "";
+  lanPlane = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}".extraConfig or "";
+  i2pPlane = vmtestConfig.services.caddy.virtualHosts."http://${i2pPlaneHost}".extraConfig or "";
   jellyfinVhost = vmtestConfig.services.caddy.virtualHosts."${jfDomain}".extraConfig or "";
   jellyfinI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${jfI2p}".extraConfig or null;
-  authI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${dxI2p}".extraConfig or null;
   jellyfinDexClient = lib.findFirst (c: c.id == "jellyfin") null dexStaticClients;
+  seerrCfg = vmtestConfig.fortress.services.seerr;
+  cryptpadCfg = vmtestConfig.fortress.services.cryptpad;
+  seerrPortSite = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}:${toString seerrCfg.port}".extraConfig or null;
+  cryptpadPortSite = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}:${toString cryptpadCfg.port}".extraConfig or null;
+  routableEnabled =
+    lib.filterAttrs (_: s: (s.enable or false) && (s ? path) && (s ? routing))
+    vmtestConfig.fortress.services;
+  rowIn = plane: name: s:
+    lib.hasInfix "@row-${name} path ${s.path} ${s.path}/*" plane;
+  pathRoutedNames = lib.attrNames (lib.filterAttrs (_: s: s.routing == "path") routableEnabled);
 
   # ── forgejo OIDC ─────────────────────────────────────────────
   forgejoCfg = vmtestConfig.fortress.services.forgejo;
@@ -136,7 +167,6 @@ let
   forgejoBootstrap = vmtestConfig.systemd.services.fortress-forgejo-oidc-bootstrap or null;
   forgejoVhost = vmtestConfig.services.caddy.virtualHosts."${forgejoCfg.domain}".extraConfig or "";
   forgejoI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${forgejoCfg.i2pDomain}".extraConfig or null;
-  forgejoDomainEscaped = lib.replaceStrings ["."] ["\\."] forgejoCfg.domain;
 in
 # ── dashboard.nix assertions ──────────────────────────────────
 # Every service declared in the customer-edited dashboard.nix must
@@ -182,24 +212,24 @@ assert lib.assertMsg (builtins.elem "multi-user.target" vmtestConfig.systemd.ser
 # ── forgejo assertions ────────────────────────────────────────
 assert lib.assertMsg forgejoCfg.enable
   "vmtest-wiring: forgejo is not enabled — the dashboard.nix extraction dropped the forgejo toggle";
-assert lib.assertMsg (forgejoSettings.ROOT_URL or "" == "https://${forgejoCfg.domain}/" && forgejoSettings.HTTP_ADDR or "" == "127.0.0.1" && forgejoSettings.DISABLE_SSH or false)
-  "vmtest-wiring: forgejo server settings diverged — ROOT_URL must be the clearnet domain (OIDC callback origin) on a loopback HTTP bind, SSH disabled";
+assert lib.assertMsg (forgejoSettings.ROOT_URL or "" == "https://${baseDomain}${forgejoCfg.path}/" && forgejoSettings.HTTP_ADDR or "" == "127.0.0.1" && forgejoSettings.DISABLE_SSH or false)
+  "vmtest-wiring: forgejo server settings diverged — ROOT_URL must be the clearnet plane origin + base path (OIDC callback origin) on a loopback HTTP bind, SSH disabled";
 assert lib.assertMsg (vmtestConfig.services.forgejo.database.type == "sqlite3")
   "vmtest-wiring: forgejo is not on SQLite — the single-db-instance contract was dropped";
 assert lib.assertMsg (forgejoDexClient != null)
   "vmtest-wiring: dex staticClients has no 'forgejo' entry — client registration was dropped";
-assert lib.assertMsg (forgejoDexClient != null && builtins.elem "https://${forgejoCfg.domain}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []) && builtins.elem "http://${forgejoCfg.i2pDomain}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []))
-  "vmtest-wiring: forgejo dex client redirect URIs (clearnet + i2p) mismatch — SSO callbacks would dead-end";
+assert lib.assertMsg (forgejoDexClient != null && builtins.elem "https://${baseDomain}${forgejoCfg.path}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []) && builtins.elem "http://${i2pPlaneHost}${forgejoCfg.path}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []))
+  "vmtest-wiring: forgejo dex client redirect URIs (clearnet plane + I2P plane) mismatch — SSO callbacks would dead-end";
 assert lib.assertMsg (forgejoBootstrap != null && builtins.elem "multi-user.target" (forgejoBootstrap.wantedBy or []))
   "vmtest-wiring: fortress-forgejo-oidc-bootstrap is missing or has no boot activation — the dex auth source would never be registered";
 assert lib.assertMsg (forgejoBootstrap != null && builtins.elem "forgejo.service" (forgejoBootstrap.after or []) && builtins.elem "dex.service" (forgejoBootstrap.after or []))
   "vmtest-wiring: fortress-forgejo-oidc-bootstrap does not order after forgejo + dex — it could run against an un-migrated DB or a down dex";
-assert lib.assertMsg (lib.hasInfix "header >Location" forgejoVhost && lib.hasInfix "https://${vmtestConfig.fortress.services.dex.domain}" forgejoVhost)
-  "vmtest-wiring: the forgejo clearnet vhost lost the dex issuer Location rewrite — SSO login would redirect the browser to an unreachable loopback address";
-assert lib.assertMsg (forgejoI2pVhost != null && lib.hasInfix "http://${dxI2p}" forgejoI2pVhost)
-  "vmtest-wiring: the forgejo .i2p vhost is missing or lost the dex issuer rewrite to the I2P dex origin — SSO would leave the I2P path mid-flow";
-assert lib.assertMsg (authI2pVhost != null && lib.hasInfix "^https://${forgejoDomainEscaped}" authI2pVhost)
-  "vmtest-wiring: the dex .i2p vhost lost the forgejo callback rewrite — dex would redirect the browser to the clearnet callback, dead on the I2P path";
+assert lib.assertMsg (lib.hasInfix "redir https://${baseDomain}${forgejoCfg.path}{uri} 307" forgejoVhost)
+  "vmtest-wiring: the forgejo clearnet hostname is no longer a 307 stub to ${baseDomain}${forgejoCfg.path} — the failover matrix row for forgejo is gone";
+assert lib.assertMsg (forgejoI2pVhost != null && lib.hasInfix "redir http://${i2pPlaneHost}${forgejoCfg.path}{uri} 307" forgejoI2pVhost)
+  "vmtest-wiring: the forgejo .i2p twin is missing or no longer a 307 stub to the I2P plane path — forgejo would dead-end on the I2P plane";
+assert lib.assertMsg (lib.hasInfix ">Location \"^http://127" clearnetPlane && lib.hasInfix "\"https://${baseDomain}\"" clearnetPlane)
+  "vmtest-wiring: the clearnet plane vhost lost the dex issuer Location rewrite — SSO login would redirect the browser to an unreachable loopback address";
 
 # ── media library layout assertions ───────────────────────────
 # Jellyfin must scan the `library/` subdir of each media subvolume,
@@ -252,22 +282,26 @@ assert lib.assertMsg caddyOrdersAfterClient
 # login button pointing at an unreachable address.
 assert lib.assertMsg (dexIssuer != null && lib.hasPrefix "http://127.0.0.1:" dexIssuer)
   "vmtest-wiring: dex issuer is not a loopback address (got: ${toString dexIssuer}) — a public issuer makes multi-origin SSO structurally impossible";
-assert lib.assertMsg (lib.hasInfix "header >Location" jellyfinVhost && lib.hasInfix "https://${vmtestConfig.fortress.services.dex.domain}" jellyfinVhost)
-  "vmtest-wiring: the jellyfin clearnet vhost lost the dex issuer Location rewrite — SSO login would redirect the browser to an unreachable loopback address";
-assert lib.assertMsg (jellyfinI2pVhost != null && lib.hasInfix "bind 127.0.0.1" jellyfinI2pVhost)
-  "vmtest-wiring: the jellyfin .i2p vhost is missing — the I2P plane has no ingress for the service";
-assert lib.assertMsg (jellyfinI2pVhost != null && lib.hasInfix "http://${dxI2p}" jellyfinI2pVhost)
-  "vmtest-wiring: the jellyfin .i2p vhost lost the dex issuer rewrite to the I2P dex origin — SSO would leave the I2P path mid-flow";
-assert lib.assertMsg (authI2pVhost != null && lib.hasInfix "^https://${lib.replaceStrings ["."] ["\\."] jfDomain}" authI2pVhost)
-  "vmtest-wiring: the dex .i2p vhost lost the callback rewrite — dex would redirect the browser to the clearnet callback, dead on the I2P path";
-assert lib.assertMsg (jellyfinDexClient != null && builtins.elem "http://${jfI2p}/sso/OIDC/Callback/dex" (jellyfinDexClient.redirectURIs or []))
-  "vmtest-wiring: the jellyfin .i2p callback is not registered in dex staticClients";
+assert lib.assertMsg (lib.hasInfix "redir https://${baseDomain}${jfPath}{uri} 307" jellyfinVhost)
+  "vmtest-wiring: the jellyfin clearnet hostname is no longer a 307 stub to ${baseDomain}${jfPath} — the failover matrix row for jellyfin is gone";
+assert lib.assertMsg (jellyfinI2pVhost != null && lib.hasInfix "bind 127.0.0.1" jellyfinI2pVhost && lib.hasInfix "redir http://${i2pPlaneHost}${jfPath}{uri} 307" jellyfinI2pVhost)
+  "vmtest-wiring: the jellyfin .i2p twin is missing or no longer a 307 stub to the I2P plane path — jellyfin would dead-end on the I2P plane";
+assert lib.assertMsg (lib.hasInfix ">Location \"^http://127" i2pPlane && lib.hasInfix "\"http://${i2pPlaneHost}\"" i2pPlane)
+  "vmtest-wiring: the I2P plane vhost lost the dex issuer Location rewrite — SSO would redirect the browser to an unreachable loopback address";
+assert lib.assertMsg (lib.hasInfix "^https://${baseEscaped}(/|$)" i2pPlane && lib.hasInfix "\"http://${i2pPlaneHost}\$1\"" i2pPlane)
+  "vmtest-wiring: the I2P plane vhost lost the clearnet-callback swap — dex would redirect the browser to the clearnet callback, dead on the I2P path";
+assert lib.assertMsg (lib.hasInfix "^https://${baseEscaped}(/|$)" lanPlane && lib.hasInfix "\"http://${lanAddress}\$1\"" lanPlane)
+  "vmtest-wiring: the LAN plane vhost lost the clearnet-callback swap — a login would drag the LAN browser onto the clearnet origin mid-flow";
+assert lib.assertMsg (jellyfinDexClient != null && builtins.elem "http://${i2pPlaneHost}${jfPath}/sso/OIDC/Callback/dex" (jellyfinDexClient.redirectURIs or []) && builtins.elem "https://${baseDomain}${jfPath}/sso/OIDC/Callback/dex" (jellyfinDexClient.redirectURIs or []))
+  "vmtest-wiring: the jellyfin plane callbacks (clearnet + I2P) are not registered in dex staticClients — SSO callbacks would dead-end";
 
 # ── LAN access plane assertions (ADR-028) ─────────────────────
 assert lib.assertMsg (lanAddress == "10.0.2.15" && lanDnsEnabled)
   "vmtest-wiring: vmtest does not set fortress.network.lanAddress — the LAN DNS plane is not exercised by the suite";
 assert lib.assertMsg everyDomainAnswered
   "vmtest-wiring: dnsmasq does not answer every enabled service domain with the LAN address (got: ${builtins.toJSON dnsmasqAddresses}) — the LAN DNS enumeration dropped a service";
+assert lib.assertMsg (builtins.elem "/${baseDomain}/${lanAddress}" dnsmasqAddresses)
+  "vmtest-wiring: dnsmasq does not answer ${baseDomain} with the LAN address — the shared path-routing origin would not resolve on the LAN";
 assert lib.assertMsg canaryAnswered
   "vmtest-wiring: dnsmasq does not NXDOMAIN the Firefox DoH canary (use-application-dns.net) — secure-DNS browsers bypass the split-horizon";
 assert lib.assertMsg (vmtestConfig.services.dnsmasq.resolveLocalQueries == false)
@@ -276,8 +310,39 @@ assert lib.assertMsg everyVhostBindsLan
   "vmtest-wiring: an enabled vhost does not bind the LAN address — dnsmasq answers with a closed port (correct DNS, dead ingress)";
 assert lib.assertMsg (lanDashboardVhost != null)
   "vmtest-wiring: the LAN-IP dashboard vhost is missing — typing the box's LAN IP would 404 instead of serving the config homepage";
-assert lib.assertMsg (lanDashboardVhost != null && builtins.elem lanAddress lanDashboardVhost.listenAddresses)
-  "vmtest-wiring: the LAN-IP dashboard vhost does not bind the LAN address — the homepage would be unreachable on the LAN";
+assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "bind 127.0.0.1 ::1 ${lanAddress}" lanDashboardVhost.extraConfig)
+  "vmtest-wiring: the LAN-IP plane vhost does not bind the LAN address — the homepage and every /<path> row would be unreachable on the LAN";
+
+# ── path-routing matrix assertions (ADR-034) ──────────────────
+# The uniform entry point contract: every enabled service answers at
+# `/<path>` on EVERY plane origin (proxy if path-routed, 307 if
+# subdomain-routed), and the non-canonical hostname shape307s to the
+# canonical. A dropped row or a lost redirect silently removes a
+# service from one plane with no error anywhere.
+assert lib.assertMsg (clearnetPlane != "" && lanPlane != "" && i2pPlane != "")
+  "vmtest-wiring: a plane origin vhost is missing (clearnet/lan/i2p) — services would be unreachable at that plane's /<path> entry points";
+assert lib.assertMsg (builtins.all (name: let s = routableEnabled.${name}; in
+    rowIn clearnetPlane name s && rowIn lanPlane name s && rowIn i2pPlane name s)
+    (lib.attrNames routableEnabled))
+  "vmtest-wiring: an enabled service lost its /<path> row on a plane origin — its uniform entry point is gone";
+assert lib.assertMsg (builtins.all (name: let s = routableEnabled.${name}; in
+    !s.public || s.routing != "path" || (
+      lib.hasInfix "reverse_proxy 127.0.0.1:${toString s.port}" clearnetPlane
+      && lib.hasInfix "; Path=${s.path}" clearnetPlane))
+    pathRoutedNames)
+  "vmtest-wiring: a public path-routed service's plane row lost its proxy or its Set-Cookie Path=/<path> scope — apps sharing an origin would collide";
+assert lib.assertMsg (lib.hasInfix "uri strip_prefix ${forgejoCfg.path}" clearnetPlane && lib.hasInfix "uri strip_prefix ${forgejoCfg.path}" lanPlane)
+  "vmtest-wiring: a forgejo plane row lost its prefix strip — ROOT_URL is URL-generation only (forgejo serves at its root), so /git requests would 404";
+assert lib.assertMsg (lib.hasInfix "redir https://${seerrCfg.domain}{uri} 307" clearnetPlane && lib.hasInfix "redir https://${seerrCfg.domain}/ 307" clearnetPlane)
+  "vmtest-wiring: the clearnet plane's seerr row no longer307s to seerr's canonical hostname — the failover entry is gone";
+assert lib.assertMsg (lib.hasInfix "redir http://${lanAddress}:${toString seerrCfg.port}{uri} 307" lanPlane)
+  "vmtest-wiring: the LAN plane's seerr row no longer307s to its port-site — the bare-IP failover for the media front door is gone";
+assert lib.assertMsg (lib.hasInfix "redir https://${cryptpadCfg.domain}{uri} 307" lanPlane)
+  "vmtest-wiring: the LAN plane's cryptpad row no longer307s to its hostname — originLocked apps must fail over to their origin, not a second one";
+assert lib.assertMsg (seerrPortSite != null && lib.hasInfix "bind ${lanAddress}" seerrPortSite && lib.hasInfix "reverse_proxy 127.0.0.1:${toString seerrCfg.port}" seerrPortSite)
+  "vmtest-wiring: the seerr LAN port-site is missing or does not bind the LAN address and proxy the loopback app — the DNS-free seerr failover would 404";
+assert lib.assertMsg (cryptpadPortSite == null)
+  "vmtest-wiring: cryptpad got a LAN port-site despite originLocked — a second origin breaks CryptPad's safe/unsafe origin model";
 assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "reverse_proxy ${dashboardAddr}" lanDashboardVhost.extraConfig)
   "vmtest-wiring: the LAN-IP dashboard vhost does not reverse-proxy the client dashboard (${dashboardAddr}) — the homepage would 502";
 assert lib.assertMsg (lanDashboardVhost != null && !lib.hasInfix "tls " lanDashboardVhost.extraConfig)
@@ -288,18 +353,26 @@ assert lib.assertMsg (!dashboardDefaultCollides)
   "vmtest-wiring: the dashboard's default bind port collides with an enabled catalog service port — fortress-client and the service both bind loopback and one fails at boot (the cryptpad :3000 landmine)";
 assert lib.assertMsg forcedCollisionFires
   "vmtest-wiring: the dashboard/service port-collision assertion never fires on a forced collision — the tripwire in client.nix is dead";
+
+# ── claim-flow boot tripwire assertions ───────────────────────
+assert lib.assertMsg clientEnabled
+  "vmtest-wiring: services.fortress-client is not enabled in the vmtest composition — the claimable-boot bootstrap check has nothing to check";
+assert lib.assertMsg claimableConfig
+  "vmtest-wiring: vmtest's fortress-client.json is not the claimable shape (no {tunnel_ip} forward) — a boot-dead-end regression would not fire";
 {
   vmtest-wiring = pkgs.runCommand "fortress-vmtest-wiring" {} ''
     cat > $out <<EOF
     fortress vmtest-wiring: PASS
       jellyfin: OIDC wired (plugins + branding), jellarr boot-activated
-      forgejo: OIDC wired (dex client clearnet+i2p, auth-source bootstrap boot-activated, vhost issuer rewrite)
+      forgejo: OIDC wired (dex client clearnet+i2p, auth-source bootstrap boot-activated)
       cryptpad: OIDC wired (SSO enabled + enforced, dex client registered, secret oneshot boot-activated, CRYPTPAD_CONFIG env set, SSO plugin bundled in package)
       ingress: caddy.service orders after fortress-client.service (ACME over the tunnel)
-      I2P seam: loopback dex issuer, per-path Location rewrites (clearnet + .i2p vhosts), .i2p callback registered
-      LAN DNS: dnsmasq answers every enabled service domain with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
+      path-routing matrix (ADR-034): one site per plane, every service at /<path> on each, failover307s both directions, cookie Path scoping, per-plane dex issuer rewrite + I2P callback swap, seerr LAN port-site (cryptpad originLocked)
+      I2P seam: loopback dex issuer, .i2p callback registered
+      LAN DNS: dnsmasq answers every enabled service domain — and ${baseDomain} — with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
       LAN dashboard: http://${lanAddress} reverse-proxies ${dashboardAddr} (DNS-free config homepage)
       dashboard port: default bind collides with no enabled service port; the collision assertion fires on a forced collision
+      claim flow: fortress-client enabled in the claimable shape ({tunnel_ip} forwards) — the box boots its dashboard to be claimed
     EOF
   '';
 }

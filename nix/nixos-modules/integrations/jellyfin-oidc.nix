@@ -77,10 +77,18 @@ mkIf oidcEnabled (lib.mkMerge [
       {
         id = "jellyfin";
         name = "Jellyfin";
-        redirectURIs = [
-          "https://${jf.domain}/sso/OIDC/Callback/dex"
-          "http://${jf.i2pDomain}/sso/OIDC/Callback/dex"
-        ];
+        # The plugin derives its callback from ServerBaseUrl (the
+        # clearnet canonical, incl. the /jellyfin base path); the
+        # plane variants are registered so a plane-swapped callback
+        # (planes.nix keeps the browser on its plane) is always a
+        # known redirect_uri.
+        redirectURIs =
+          lib.optional (config.fortress.planes.clearnetOrigin != null)
+            "${config.fortress.planes.clearnetOrigin}${jf.path}/sso/OIDC/Callback/dex"
+          ++ lib.optional (config.fortress.planes.lanOrigin != null)
+            "${config.fortress.planes.lanOrigin}${jf.path}/sso/OIDC/Callback/dex"
+          ++ lib.optional (config.fortress.planes.i2pOrigin != null)
+            "${config.fortress.planes.i2pOrigin}${jf.path}/sso/OIDC/Callback/dex";
         secretFile = secretFile;
       }
     ];
@@ -95,7 +103,7 @@ mkIf oidcEnabled (lib.mkMerge [
   (lib.optionalAttrs (options.services ? jellarr) {
     services.jellarr.config = {
       branding = {
-        loginDisclaimer = ''<a href="/sso/OIDC/Start/dex" class="raised block emby-button button-submit" style="display:block;margin:1em 0;padding:0.9em;text-align:center;text-decoration:none;">Sign in with Dex</a>'';
+        loginDisclaimer = ''<a href="${jf.path}/sso/OIDC/Start/dex" class="raised block emby-button button-submit" style="display:block;margin:1em 0;padding:0.9em;text-align:center;text-decoration:none;">Sign in with Dex</a>'';
         splashscreenEnabled = false;
       };
       plugins = [{
@@ -117,7 +125,7 @@ mkIf oidcEnabled (lib.mkMerge [
             ButtonColor = "#4285F4";
             ButtonIcon = "";
             AdditionalParameters = "";
-            ServerBaseUrl = "https://${jf.domain}";
+            ServerBaseUrl = "${config.fortress.planes.clearnetOrigin}${jf.path}";
           }];
           RoleMappings = [];
           DefaultProvider = "dex";

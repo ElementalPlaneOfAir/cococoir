@@ -24,6 +24,7 @@ mkFortressService {
   defaultHealthPath = "/ping";
   requires = ["jellyfin"];
   extraConfig = {
+    cfg,
     lib,
     config,
     pkgs,
@@ -41,13 +42,16 @@ mkFortressService {
       dir=/var/lib/sonarr/.config/NzbDrone
       install -d -m 0750 -o sonarr -g jellyfin "$dir"
       if [ -f "$dir/config.xml" ]; then
-        ${pkgs.gnused}/bin/sed -i "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" "$dir/config.xml"
+        ${pkgs.gnused}/bin/sed -i \
+          -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
+          -e "s|<UrlBase>[^<]*</UrlBase>|<UrlBase>${cfg.path}</UrlBase>|" \
+          "$dir/config.xml"
       else
         cat > "$dir/config.xml" <<EOF
   <Config>
     <BindAddress>127.0.0.1</BindAddress>
     <Port>8989</Port>
-    <UrlBase></UrlBase>
+    <UrlBase>${cfg.path}</UrlBase>
     <ApiKey>$key</ApiKey>
     <AuthenticationMethod>External</AuthenticationMethod>
     <UpdateMechanism>External</UpdateMechanism>

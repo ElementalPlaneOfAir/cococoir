@@ -47,6 +47,8 @@ mkFortressService {
   defaultPort = 3000;
   defaultHealthPath = "/checkup/";
   storageNeeded = true;
+  routing = "subdomain";
+  originLocked = true;
   extraConfig = {cfg, lib, pkgs, config, ...}: let
     btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
     dataRoot = config.fortress.storage.dataRoot;

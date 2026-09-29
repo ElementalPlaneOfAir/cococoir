@@ -72,8 +72,8 @@ in {
   system.stateVersion = "25.11";
 
   networking.hosts = {
-    "127.0.0.1" = ["auth.vmtest.local" "jellyfin.vmtest.local" "cryptpad.vmtest.local"
-                      "radarr.vmtest.local" "sonarr.vmtest.local" "git.vmtest.local"];
+    "127.0.0.1" = ["vmtest.local" "auth.vmtest.local" "jellyfin.vmtest.local" "cryptpad.vmtest.local"
+                      "radarr.vmtest.local" "sonarr.vmtest.local" "git.vmtest.local" "seerr.vmtest.local"];
   };
 
   security.pki.certificates = [

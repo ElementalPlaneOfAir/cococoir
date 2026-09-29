@@ -2,7 +2,7 @@
 //! Invite-based machine enrollment — the box side (T8).
 //!
 //! A box that ships without a tunnel config joins by dialing an invite
-//! URL (`https://{domain}/a/{code}`): it posts its WG public key to the
+//! URL (`https://{domain}/i/{words}`): it posts its WG public key to the
 //! edge (`POST /api/invites/{code}/begin`), polls until the owner
 //! approves, then persists the assigned route as `tunnel.json` and its
 //! device token (0600) — the token authorizes pubkey rotation later
@@ -39,18 +39,15 @@ pub fn device_token_path() -> std::path::PathBuf {
 
 /// The per-box invite configuration. Sits beside (never with) a static
 /// `tunnel` in the config file — the app rejects both at once, because
-/// a box cannot be both Nix-wired and self-enrolling.
+/// a box cannot be both Nix-wired and self-enrolling. The edge's tunnel
+/// facts (its WG key, endpoint, allowed-ips) are NOT config: the box
+/// fetches them from the edge, so a paste-only claim needs just the URL.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InviteConfig {
     /// The full invite URL the owner shared, e.g.
-    /// `https://proletariat.tech/a/kowiqmz4xy`.
+    /// `https://proletariat.tech/i/polluted-move-cheetah-apple`.
     pub invite_url: String,
-    /// The edge's dial-out endpoint (static edge property), e.g.
-    /// `62.238.111.21:51820`.
-    pub edge_endpoint: String,
-    /// The edge's tunnel range to route, e.g. `10.10.0.0/24`.
-    pub edge_allowed_ips: String,
     #[serde(default = "default_iface")]
     pub iface: String,
     #[serde(default = "default_prefix")]
@@ -59,35 +56,72 @@ pub struct InviteConfig {
     pub listen_port: u16,
 }
 
-impl InviteConfig {
-    /// The edge's API base (scheme + host) and the invite code, parsed
-    /// from the invite URL. Malformed URLs fail fast — a typo'd paste
-    /// must not silently become a broken enrollment.
-    pub fn parse(&self) -> Result<(String, String), EnrollError> {
-        let rest = self
-            .invite_url
-            .strip_prefix("https://")
-            .or_else(|| self.invite_url.strip_prefix("http://"))
-            .ok_or_else(|| EnrollError::InviteUrl(self.invite_url.clone()))?;
-        let (base, code) = match rest.split_once('/') {
-            Some((host, path)) => (host, path.strip_prefix("a/").unwrap_or(path)),
-            None => return Err(EnrollError::InviteUrl(self.invite_url.clone())),
-        };
-        if base.is_empty() || code.is_empty() || code.contains('/') {
-            return Err(EnrollError::InviteUrl(self.invite_url.clone()));
-        }
-        Ok((format!("https://{base}"), code.to_string()))
+/// The edge's API base (scheme + host) and the invite code, parsed
+/// from an invite URL (`https://{domain}/i/{words}`). Malformed URLs
+/// fail fast — a typo'd paste must not silently become a broken
+/// enrollment.
+pub fn parse_invite_url(invite_url: &str) -> Result<(String, String), EnrollError> {
+    let rest = invite_url
+        .strip_prefix("https://")
+        .or_else(|| invite_url.strip_prefix("http://"))
+        .ok_or_else(|| EnrollError::InviteUrl(invite_url.to_string()))?;
+    let (base, code) = match rest.split_once('/') {
+        Some((host, path)) => (
+            host,
+            path.strip_prefix("i/")
+                .ok_or_else(|| EnrollError::InviteUrl(invite_url.to_string()))?,
+        ),
+        None => return Err(EnrollError::InviteUrl(invite_url.to_string())),
+    };
+    if base.is_empty() || code.is_empty() || code.contains('/') {
+        return Err(EnrollError::InviteUrl(invite_url.to_string()));
     }
+    Ok((format!("https://{base}"), code.to_string()))
+}
+
+impl InviteConfig {
+    pub fn parse(&self) -> Result<(String, String), EnrollError> {
+        parse_invite_url(&self.invite_url)
+    }
+
+    /// A claim-time config from just the pasted URL: fail fast on a
+    /// malformed URL, otherwise take the tun defaults.
+    pub fn from_url(invite_url: &str) -> Result<Self, EnrollError> {
+        parse_invite_url(invite_url)?;
+        Ok(Self {
+            invite_url: invite_url.to_string(),
+            iface: default_iface(),
+            prefix: default_prefix(),
+            listen_port: 0,
+        })
+    }
+}
+
+/// The tunnel facts the edge serves (`GET /api/wireguard/info`) —
+/// everything besides the invite code and the approval payload that a
+/// box needs to build its tunnel config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeInfo {
+    /// The edge's WG public key.
+    pub public_key: String,
+    /// The edge's dial-out endpoint, e.g. `proletariat.tech:51820`.
+    pub endpoint: String,
+    /// The tunnel range to route, e.g. `10.10.0.0/24`.
+    pub allowed_ips: String,
 }
 
 /// What the edge's poll returns (box-side view).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollOutcome {
-    /// `waiting` | `approved` | `denied`.
+    /// `dormant` | `waiting` | `approved` | `denied`.
     pub status: String,
     /// The machine's assigned tunnel IP — present on `approved`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wg_ip: Option<String>,
+    /// The machine's own name (`{name}.{domain}`) — present on
+    /// `approved`, shown back to the owner on the claim status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
     /// The device token — delivered exactly once with `approved`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_token: Option<String>,
@@ -115,7 +149,7 @@ pub enum EnrollError {
 pub trait EdgeClient: Send + Sync {
     async fn begin(&self, code: &str, public_key: &str) -> Result<PollOutcome, EnrollError>;
     async fn poll(&self, code: &str) -> Result<PollOutcome, EnrollError>;
-    async fn edge_pubkey(&self) -> Result<String, EnrollError>;
+    async fn edge_info(&self) -> Result<EdgeInfo, EnrollError>;
     /// Rotate this machine's WG key on its existing route. The device
     /// token is the credential — no invite, no session, no AdminKey.
     async fn rotate(&self, device_token: &str, public_key: &str) -> Result<(), EnrollError>;
@@ -130,15 +164,7 @@ pub struct HttpEdgeClient {
 
 impl HttpEdgeClient {
     pub fn new(invite_url: &str) -> Result<Self, EnrollError> {
-        let (base, _code) = (InviteConfig {
-            invite_url: invite_url.to_string(),
-            edge_endpoint: String::new(),
-            edge_allowed_ips: String::new(),
-            iface: String::new(),
-            prefix: 24,
-            listen_port: 0,
-        })
-        .parse()?;
+        let (base, _code) = parse_invite_url(invite_url)?;
         Ok(Self {
             http: reqwest::Client::new(),
             base,
@@ -201,6 +227,11 @@ fn poll_outcome(value: serde_json::Value) -> PollOutcome {
             .and_then(|m| m.get("wg_ip"))
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        hostname: value
+            .get("machine")
+            .and_then(|m| m.get("hostname"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         device_token: value
             .get("deviceToken")
             .and_then(|v| v.as_str())
@@ -225,13 +256,24 @@ impl EdgeClient for HttpEdgeClient {
             .map(poll_outcome)
     }
 
-    async fn edge_pubkey(&self) -> Result<String, EnrollError> {
-        let value = self.get_json("/api/wireguard/pubkey").await?;
-        value
-            .get("public_key")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| EnrollError::Api("pubkey response missing public_key".to_string()))
+    async fn edge_info(&self) -> Result<EdgeInfo, EnrollError> {
+        let value = self.get_json("/api/wireguard/info").await?;
+        let field = |name: &str| {
+            value
+                .get(name)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        match (field("public_key"), field("endpoint"), field("allowed_ips")) {
+            (Some(public_key), Some(endpoint), Some(allowed_ips)) => Ok(EdgeInfo {
+                public_key,
+                endpoint,
+                allowed_ips,
+            }),
+            _ => Err(EnrollError::Api(
+                "tunnel info response must carry public_key, endpoint and allowed_ips".to_string(),
+            )),
+        }
     }
 
     async fn rotate(&self, device_token: &str, public_key: &str) -> Result<(), EnrollError> {
@@ -260,16 +302,7 @@ impl EdgeClient for HttpEdgeClient {
 
 /// Parse the invite URL's edge base for a config that has only the URL.
 pub fn edge_base(invite_url: &str) -> Result<String, EnrollError> {
-    (InviteConfig {
-        invite_url: invite_url.to_string(),
-        edge_endpoint: String::new(),
-        edge_allowed_ips: String::new(),
-        iface: String::new(),
-        prefix: 24,
-        listen_port: 0,
-    })
-    .parse()
-    .map(|(base, _)| base)
+    parse_invite_url(invite_url).map(|(base, _)| base)
 }
 
 /// Enroll the box: begin → poll until approved → persist the tunnel
@@ -313,32 +346,54 @@ pub async fn enroll(
         .wg_ip
         .clone()
         .ok_or_else(|| EnrollError::Api("approved payload missing wg_ip".to_string()))?;
+    let hostname = approved
+        .hostname
+        .clone()
+        .ok_or_else(|| EnrollError::Api("approved payload missing hostname".to_string()))?;
     let device_token = approved
         .device_token
         .clone()
         .ok_or_else(|| EnrollError::Api("approved payload missing device token".to_string()))?;
-    let edge_pubkey = client.edge_pubkey().await?;
+    let info = client.edge_info().await?;
     let tunnel = TunnelConfig {
         iface: cfg.iface.clone(),
         ip: wg_ip,
         prefix: cfg.prefix,
-        edge_pubkey,
-        edge_endpoint: cfg.edge_endpoint.clone(),
-        edge_allowed_ips: cfg.edge_allowed_ips.clone(),
+        edge_pubkey: info.public_key,
+        edge_endpoint: info.endpoint,
+        edge_allowed_ips: info.allowed_ips,
         listen_port: cfg.listen_port,
     };
-    persist_tunnel_state(tunnel_state_path, &tunnel)?;
+    persist_tunnel_state(tunnel_state_path, &tunnel, &hostname)?;
     persist_device_token(device_token_path, &device_token)?;
     Ok(tunnel)
 }
 
-/// Write the tunnel state (read at every boot, so a reboot skips
+/// The persisted enrollment (written after approval, read at every
+/// boot): the tunnel facts plus the machine's own name, which the
+/// claim status shows back to the owner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTunnel {
+    pub tunnel: TunnelConfig,
+    pub hostname: String,
+}
+
+/// Write the enrollment state (read at every boot, so a reboot skips
 /// enrollment even if the edge is unreachable).
-pub fn persist_tunnel_state(path: &Path, tunnel: &TunnelConfig) -> Result<(), EnrollError> {
+pub fn persist_tunnel_state(
+    path: &Path,
+    tunnel: &TunnelConfig,
+    hostname: &str,
+) -> Result<(), EnrollError> {
+    assert!(!hostname.is_empty(), "an approved machine always has a hostname");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(tunnel)
+    let state = PersistedTunnel {
+        tunnel: tunnel.clone(),
+        hostname: hostname.to_string(),
+    };
+    let json = serde_json::to_string_pretty(&state)
         .map_err(|err| EnrollError::Io(std::io::Error::other(err.to_string())))?;
     std::fs::write(path, json)?;
     Ok(())
@@ -357,8 +412,8 @@ pub fn persist_device_token(path: &Path, token: &str) -> Result<(), EnrollError>
     Ok(())
 }
 
-/// The persisted tunnel state, if any. Boot reads this BEFORE enrolling.
-pub fn persisted_tunnel_state(path: &Path) -> Option<TunnelConfig> {
+/// The persisted enrollment, if any. Boot reads this BEFORE enrolling.
+pub fn persisted_tunnel_state(path: &Path) -> Option<PersistedTunnel> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -389,6 +444,22 @@ pub async fn rotate(
 /// Replace the `{tunnel_ip}` placeholder in every forward's dest_addr
 /// with the assigned tunnel IP. Enrollment assigns the IP at runtime;
 /// the config can only reference it as a placeholder.
+/// A forward that references the tunnel IP — in either address field:
+/// the self-enrolled shape is `{listen_addr: "{tunnel_ip}:443",
+/// dest_addr: "127.0.0.1:443"}` (the box listens ON its tunnel IP and
+/// forwards to local Caddy). Such a forward can only bind once
+/// enrollment has assigned the IP.
+pub fn forward_needs_tunnel(f: &fortress_core::forwarder::Forward) -> bool {
+    f.dest_addr.contains("{tunnel_ip}") || f.listen_addr.contains("{tunnel_ip}")
+}
+
+fn substitute_field(field: &mut String, tunnel_ip: &str) {
+    if field.contains("{tunnel_ip}") {
+        assert!(!tunnel_ip.is_empty(), "tunnel ip required for substitution");
+        *field = field.replace("{tunnel_ip}", tunnel_ip);
+    }
+}
+
 pub fn substitute_tunnel_ip(
     forwards: &[fortress_core::forwarder::Forward],
     tunnel: &TunnelConfig,
@@ -397,57 +468,66 @@ pub fn substitute_tunnel_ip(
         .iter()
         .map(|f| {
             let mut fwd = f.clone();
-            if fwd.dest_addr.contains("{tunnel_ip}") {
-                assert!(!tunnel.ip.is_empty(), "tunnel ip required for substitution");
-                fwd.dest_addr = fwd.dest_addr.replace("{tunnel_ip}", &tunnel.ip);
-            }
+            substitute_field(&mut fwd.listen_addr, &tunnel.ip);
+            substitute_field(&mut fwd.dest_addr, &tunnel.ip);
             fwd
         })
         .collect()
 }
 
 #[cfg(test)]
-mod tests {
+#[cfg(test)]
+pub(crate) mod mocks {
     use super::*;
     use std::sync::Mutex;
 
-    struct MockEdge {
-        begin_calls: Mutex<Vec<(String, String)>>,
-        poll_calls: Mutex<Vec<String>>,
-        rotated: Mutex<Vec<(String, String)>>,
+    pub(crate) struct MockEdge {
+        pub(crate) begin_calls: Mutex<Vec<(String, String)>>,
+        pub(crate) poll_calls: Mutex<Vec<String>>,
+        pub(crate) rotated: Mutex<Vec<(String, String)>>,
         /// The scripted poll responses, popped in order.
-        poll_script: Mutex<Vec<PollOutcome>>,
-        edge_pubkey: String,
+        pub(crate) poll_script: Mutex<Vec<PollOutcome>>,
+        pub(crate) info: EdgeInfo,
     }
 
     impl MockEdge {
-        fn new(edge_pubkey: &str) -> Self {
+        pub(crate) fn new(info: EdgeInfo) -> Self {
             Self {
                 begin_calls: Mutex::new(Vec::new()),
                 poll_calls: Mutex::new(Vec::new()),
                 rotated: Mutex::new(Vec::new()),
                 poll_script: Mutex::new(Vec::new()),
-                edge_pubkey: edge_pubkey.to_string(),
+                info,
             }
         }
 
-        fn script(&mut self, polls: Vec<PollOutcome>) {
+        pub(crate) fn script(&mut self, polls: Vec<PollOutcome>) {
             self.poll_script = Mutex::new(polls);
         }
     }
 
-    fn waiting() -> PollOutcome {
+    pub(crate) fn mock_edge_info() -> EdgeInfo {
+        EdgeInfo {
+            public_key: "edgEK=".to_string(),
+            endpoint: "edge.example.net:51820".to_string(),
+            allowed_ips: "10.10.0.0/24".to_string(),
+        }
+    }
+
+    pub(crate) fn waiting() -> PollOutcome {
         PollOutcome {
             status: "waiting".to_string(),
             wg_ip: None,
+            hostname: None,
             device_token: None,
         }
     }
 
-    fn approved() -> PollOutcome {
+    pub(crate) fn approved() -> PollOutcome {
         PollOutcome {
             status: "approved".to_string(),
             wg_ip: Some("10.10.0.7".to_string()),
+            hostname: Some("mainbox.example.net".to_string()),
             device_token: Some("tok-123".to_string()),
         }
     }
@@ -471,8 +551,8 @@ mod tests {
             Ok(script.remove(0))
         }
 
-        async fn edge_pubkey(&self) -> Result<String, EnrollError> {
-            Ok(self.edge_pubkey.clone())
+        async fn edge_info(&self) -> Result<EdgeInfo, EnrollError> {
+            Ok(self.info.clone())
         }
 
         async fn rotate(&self, device_token: &str, public_key: &str) -> Result<(), EnrollError> {
@@ -483,38 +563,84 @@ mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mocks::*;
+    use super::*;
 
     fn invite_config() -> InviteConfig {
         InviteConfig {
-            invite_url: "https://proletariat.tech/a/kowiqmz4xy".to_string(),
-            edge_endpoint: "62.238.111.21:51820".to_string(),
-            edge_allowed_ips: "10.10.0.0/24".to_string(),
+            invite_url: "https://proletariat.tech/i/polluted-move-cheetah-apple".to_string(),
             iface: "wg0".to_string(),
             prefix: 24,
             listen_port: 0,
         }
     }
 
+    /// The self-enrolled shape listens ON the tunnel IP; the edge-style
+    /// shape forwards TO it. Both fields substitute.
+    #[test]
+    fn substitute_tunnel_ip_rewrites_both_address_fields() {
+        use fortress_core::forwarder::{Forward, Proto};
+        let forwards = vec![
+            Forward {
+                listen_addr: "{tunnel_ip}:443".to_string(),
+                proto: Proto::Tcp,
+                dest_addr: "127.0.0.1:443".to_string(),
+            },
+            Forward {
+                listen_addr: "0.0.0.0:80".to_string(),
+                proto: Proto::Tcp,
+                dest_addr: "{tunnel_ip}:80".to_string(),
+            },
+        ];
+        let tunnel = TunnelConfig {
+            iface: "wg0".to_string(),
+            ip: "10.10.0.7".to_string(),
+            prefix: 24,
+            edge_pubkey: "k".to_string(),
+            edge_endpoint: "e:51820".to_string(),
+            edge_allowed_ips: "10.10.0.0/24".to_string(),
+            listen_port: 0,
+        };
+        let resolved = substitute_tunnel_ip(&forwards, &tunnel);
+        assert_eq!(resolved[0].listen_addr, "10.10.0.7:443");
+        assert_eq!(resolved[0].dest_addr, "127.0.0.1:443");
+        assert_eq!(resolved[1].listen_addr, "0.0.0.0:80");
+        assert_eq!(resolved[1].dest_addr, "10.10.0.7:80");
+        assert!(resolved.iter().all(|f| !forward_needs_tunnel(f)));
+    }
+
     #[test]
     fn invite_config_parse_extracts_base_and_code() {
         let (base, code) = invite_config().parse().unwrap();
         assert_eq!(base, "https://proletariat.tech");
-        assert_eq!(code, "kowiqmz4xy");
+        assert_eq!(code, "polluted-move-cheetah-apple");
         let bad = InviteConfig {
-            invite_url: "ftp://proletariat.tech/a/x".to_string(),
+            invite_url: "ftp://proletariat.tech/i/polluted-move-cheetah-apple".to_string(),
             ..invite_config()
         };
         assert!(bad.parse().is_err());
         let no_code = InviteConfig {
-            invite_url: "https://proletariat.tech/a/".to_string(),
+            invite_url: "https://proletariat.tech/i/".to_string(),
             ..invite_config()
         };
         assert!(no_code.parse().is_err());
+        let legacy = InviteConfig {
+            invite_url: "https://proletariat.tech/a/kowiqmz4xy".to_string(),
+            ..invite_config()
+        };
+        assert!(
+            legacy.parse().is_err(),
+            "the /a/ shape is cut over, not dual-supported"
+        );
     }
 
     #[tokio::test]
     async fn enroll_polls_until_approved_and_persists_state() {
-        let mut edge = MockEdge::new("edgEK="); // derive not required by the mock
+        let mut edge = MockEdge::new(mock_edge_info());
         edge.script(vec![waiting(), waiting(), approved()]);
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("wg-private.key");
@@ -531,18 +657,24 @@ mod tests {
         )
         .await
         .expect("enroll");
-        // The route came from the approval payload.
+        // The route came from the approval payload; the tunnel facts
+        // came from the FETCHED edge info, not from config.
         assert_eq!(tunnel.ip, "10.10.0.7");
         assert_eq!(tunnel.edge_pubkey, "edgEK=");
-        assert_eq!(tunnel.edge_endpoint, "62.238.111.21:51820");
+        assert_eq!(tunnel.edge_endpoint, "edge.example.net:51820");
+        assert_eq!(tunnel.edge_allowed_ips, "10.10.0.0/24");
         // The machine called begin exactly once with its pubkey.
         let begins = edge.begin_calls.lock().unwrap();
         assert_eq!(begins.len(), 1);
-        assert_eq!(begins[0].0, "kowiqmz4xy");
+        assert_eq!(begins[0].0, "polluted-move-cheetah-apple");
         assert!(!begins[0].1.is_empty(), "pubkey sent");
         // State persisted: a reboot reads it back instead of re-enrolling.
         let persisted = persisted_tunnel_state(&state_path).expect("tunnel.json persisted");
-        assert_eq!(persisted.ip, "10.10.0.7");
+        assert_eq!(persisted.tunnel.ip, "10.10.0.7");
+        assert_eq!(
+            persisted.hostname, "mainbox.example.net",
+            "the claim status names the machine back to the owner"
+        );
         let token = persisted_device_token(&token_path).expect("token persisted");
         assert_eq!(token, "tok-123");
         // 0600 token.
@@ -555,12 +687,13 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_denied_is_terminal() {
-        let mut edge = MockEdge::new("edgEK=");
+        let mut edge = MockEdge::new(mock_edge_info());
         edge.script(vec![
             waiting(),
             PollOutcome {
                 status: "denied".to_string(),
                 wg_ip: None,
+                hostname: None,
                 device_token: None,
             },
         ]);
@@ -580,7 +713,7 @@ mod tests {
 
     #[tokio::test]
     async fn enroll_times_out_after_max_polls() {
-        let mut edge = MockEdge::new("edgEK=");
+        let mut edge = MockEdge::new(mock_edge_info());
         edge.script(vec![]); // forever waiting
         let dir = tempfile::tempdir().unwrap();
         let result = enroll(
@@ -604,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn rotate_uses_the_persisted_token() {
-        let edge = MockEdge::new("edgEK=");
+        let edge = MockEdge::new(mock_edge_info());
         let dir = tempfile::tempdir().unwrap();
         let token_path = dir.path().join("device-token");
         persist_device_token(&token_path, "rot-token").unwrap();

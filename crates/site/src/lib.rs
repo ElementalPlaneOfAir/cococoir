@@ -285,7 +285,7 @@ mod form_safety_tripwires {
 
 #[cfg(test)]
 mod wire_contract_tripwires {
-    use crate::api::{BeginBody, MachineInfo, PollOutcome, PubkeyOut, RegisterBody};
+    use crate::api::{BeginBody, MachineInfo, PollOutcome, RegisterBody, WireguardInfo};
 
     /// `crates/client/src/pairing.rs` reads these exact keys. The mixed
     /// style (snake in, camel out) is the contract; tidying it breaks
@@ -314,7 +314,7 @@ mod wire_contract_tripwires {
 
         let poll = serde_json::to_value(PollOutcome {
             status: "approved".into(),
-            machine: Some(MachineInfo { wg_ip: "10.10.0.3".into() }),
+            machine: Some(MachineInfo { wg_ip: "10.10.0.3".into(), hostname: "mainbox.example.net".into() }),
             device_token: Some("tok".into()),
         })
         .expect("PollOutcome serializes");
@@ -327,13 +327,17 @@ mod wire_contract_tripwires {
             "poll nests machine.wg_ip in snake: {poll}"
         );
 
-        let pk = serde_json::to_value(PubkeyOut {
+        let info = serde_json::to_value(WireguardInfo {
             public_key: "pk".into(),
+            endpoint: "proletariat.tech:51820".into(),
+            allowed_ips: "10.10.0.0/24".into(),
         })
-        .expect("PubkeyOut serializes");
+        .expect("WireguardInfo serializes");
         assert!(
-            pk.get("public_key").is_some(),
-            "pubkey response key is snake: {pk}"
+            info.get("public_key").is_some()
+                && info.get("endpoint").is_some()
+                && info.get("allowed_ips").is_some(),
+            "tunnel info keys are snake: {info}"
         );
     }
 }
@@ -460,13 +464,13 @@ mod composition_tripwires {
     #[tokio::test]
     async fn pairing_wire_paths_land_on_the_api_tree() {
         let app = api::router(test_backend());
-        // begin: valid-shaped code, invalid pubkey → domain's
+        // begin: valid word-code, invalid pubkey → domain's
         // InvalidPubkey (400), not a stub. The exact wire path resolves.
         let res = app
             .clone()
             .oneshot(axum::http::Request::builder()
                 .method("POST")
-                .uri("/api/invites/ABC123XYZ0/begin")
+                .uri("/api/invites/that-what-this-have/begin")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"public_key":"not-a-pubkey"}"#))
                 .unwrap())
@@ -488,19 +492,27 @@ mod composition_tripwires {
             "GET /api/invites/{{code}}/poll must reach the domain's validation"
         );
 
-        // pubkey is a pure derivation — no store — so it answers 200
-        // with the real edge identity (the dummy key derives a pubkey),
-        // proving the stub's empty-string contract is gone.
+        // tunnel info is a pure derivation — no store — so it answers
+        // 200 with the real edge identity (the dummy key derives a
+        // pubkey) plus the endpoint and range a claiming box dials.
         let res = app
             .clone()
-            .oneshot(get_req("/api/wireguard/pubkey"))
+            .oneshot(get_req("/api/wireguard/info"))
             .await
             .unwrap();
-        assert_eq!(res.status(), 200, "pubkey needs no store");
+        assert_eq!(res.status(), 200, "tunnel info needs no store");
         let body = body_string(res).await;
         assert!(
             body.contains("public_key") && !body.contains("\"public_key\":\"\""),
-            "pubkey response carries a real edge identity, not the stub's empty key: {body}"
+            "tunnel info carries a real edge identity, not the stub's empty key: {body}"
+        );
+        assert!(
+            body.contains("\"endpoint\":\"example.net:51820\""),
+            "the endpoint derives from the root domain + the wg port: {body}"
+        );
+        assert!(
+            body.contains("\"allowed_ips\":\"10.10.0.0/24\""),
+            "the box learns the tunnel range to route: {body}"
         );
 
         // register: invalid pubkey → domain's InvalidPubkey (400) before
@@ -532,6 +544,10 @@ mod composition_tripwires {
         assert!(
             body.contains("/api/invites/{code}/begin"),
             "spec documents the pairing contract: {body}"
+        );
+        assert!(
+            body.contains("/api/wireguard/info"),
+            "spec documents the tunnel-info contract a claiming box dials: {body}"
         );
     }
 

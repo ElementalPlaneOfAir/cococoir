@@ -49,6 +49,9 @@ in
     defaultHealthPath = "/api/healthz";
     storageNeeded = true;
     conventionalSubdomain = "git";
+    # ROOT_URL is URL-generation only: Forgejo serves at its own
+    # root, so the plane row strips /git before proxying (ADR-034).
+    stripPath = true;
     extraConfig = {
       cfg,
       lib,
@@ -67,8 +70,8 @@ in
 
         settings = {
           server = {
-            DOMAIN = cfg.domain;
-            ROOT_URL = "https://${cfg.domain}/";
+            DOMAIN = config.fortress.baseDomain;
+            ROOT_URL = "https://${config.fortress.baseDomain}${cfg.path}/";
             HTTP_ADDR = "127.0.0.1";
             HTTP_PORT = cfg.port;
             DISABLE_SSH = true;

@@ -786,7 +786,7 @@ fn machines_body(props: &MachinesProps) -> Node {
                 let dormant = invite.status == InviteStatus::Dormant;
                 let revocable = waiting || dormant;
                 let fresh = Some(code.clone()) == props.invited_code;
-                let share_url = format!("https://{}/a/{code}", props.root_domain);
+                let share_url = format!("https://{}/i/{code}", props.root_domain);
                 let candidate = match &invite.device_pubkey {
                     Some(pubkey) => {
                         rsx!(<p class="text-xs faint break-all">"Candidate: "{pubkey.clone()}</p>)
@@ -832,7 +832,7 @@ fn machines_body(props: &MachinesProps) -> Node {
                 } else {
                     Node::Empty
                 };
-                let share = if fresh {
+                let share = if fresh || dormant {
                     rsx!(
                         <div class="text-xs dim">
                             "Share this link with the machine: "<code class="break-all">{share_url}</code>
@@ -1015,7 +1015,7 @@ mod tests {
         // momenta escapes `/` as `&#x2F;` in text content; assert the
         // rendered form so the share URL's construction is still pinned.
         assert!(
-            html.contains("https:&#x2F;&#x2F;example.net&#x2F;a&#x2F;W8TNG00001"),
+            html.contains("https:&#x2F;&#x2F;example.net&#x2F;i&#x2F;W8TNG00001"),
             "the fresh invite's share URL must render"
         );
         for label in ["waiting", "approved"] {
@@ -1122,6 +1122,30 @@ mod tests {
             "the owner must be told why there is nothing to approve"
         );
         assert!(html.contains("dormant"), "the state is labelled");
+    }
+
+    /// The share URL must outlive the `?invited=` highlight: an owner
+    /// who reloads the page still has to hand the link to the box, and
+    /// the URL shape is `/i/{words}` — typeable when copy-paste is not
+    /// an option.
+    #[test]
+    fn dormant_invite_keeps_its_share_url_visible() {
+        let props = MachinesProps {
+            machines: vec![],
+            invites: vec![InviteRow {
+                code: "polluted-move-cheetah-apple".into(),
+                status: InviteStatus::Dormant,
+                device_pubkey: None,
+            }],
+            invited_code: None,
+            root_domain: "example.net".into(),
+            error: None,
+        };
+        let html = machines_html(&props);
+        assert!(
+            html.contains("https:&#x2F;&#x2F;example.net&#x2F;i&#x2F;polluted-move-cheetah-apple"),
+            "a dormant invite's share URL survives a reload: {html}"
+        );
     }
 }
 

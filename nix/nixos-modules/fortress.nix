@@ -12,6 +12,8 @@
 #     from it so customer configs stay small
 #   - fortress.network — LAN access plane: lanAddress + dnsmasq +
 #     the Caddy bind address list (ADR-028)
+#   - planes.nix — access-plane routing + the failover redirect
+#     matrix; renders every fortress Caddy vhost (ADR-034)
 #   - fortress.secrets — sops-nix secret inventory (Phase 2)
 #   - fortress.storage.* — btrfs pool + subvolumes (ADR-023)
 #   - fortress.services.<name> — 4-option (or 3-option for
@@ -23,6 +25,7 @@
     ./tls.nix
     ./base-domain.nix
     ./network.nix
+    ./planes.nix
     ./secrets.nix
     ./storage/btrfs.nix
     ./storage/plain-dirs.nix

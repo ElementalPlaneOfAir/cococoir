@@ -177,6 +177,22 @@ in
             mediaPaths.music
             mediaPaths.metadata
           ];
+          # Jellyfin's base path (ADR-034) lives in network.xml — no
+          # nixpkgs/jellarr knob exists (T0 audit). The file is
+          # normalized at start, so pin it before every boot the same
+          # way radarr pins config.xml: sed an existing file, else
+          # write the minimal document (Jellyfin fills the defaults).
+          preStart = lib.mkAfter ''
+            cfgDir=${config.services.jellyfin.configDir}
+            if [ -f "$cfgDir/network.xml" ]; then
+              ${pkgs.gnused}/bin/sed -i "s|<BaseUrl>[^<]*</BaseUrl>|<BaseUrl>${cfg.path}</BaseUrl>|" "$cfgDir/network.xml"
+            else
+              ${pkgs.coreutils}/bin/printf '%s\n' \
+                '<NetworkConfiguration>' \
+                '  <BaseUrl>${cfg.path}</BaseUrl>' \
+                '</NetworkConfiguration>' > "$cfgDir/network.xml"
+            fi
+          '';
         };
       };
     in
@@ -198,7 +214,7 @@ in
           pkgs.writeShellScript "wait-jellyfin-ready" ''
             set -euo pipefail
             for i in $(seq 1 120); do
-              if ${pkgs.curl}/bin/curl -sf http://127.0.0.1:8096/health >/dev/null 2>&1; then
+              if ${pkgs.curl}/bin/curl -sf http://127.0.0.1:8096${cfg.path}/health >/dev/null 2>&1; then
                 sleep 60
                 exit 0
               fi
@@ -219,7 +235,7 @@ in
           environmentFile = "/var/lib/jellarr/jellarr.env";
           config = {
             version = 1;
-            base_url = "http://127.0.0.1:8096";
+            base_url = "http://127.0.0.1:8096${cfg.path}";
             system = {};
             startup.completeStartupWizard = true;
             library.virtualFolders = lib.mkDefault [

@@ -13,19 +13,21 @@
 #   - fortress.network.dns.enable defaults to true when lanAddress is
 #     set — setting the address IS the intent signal. No second toggle.
 #   - dnsmasq (DNS only; the router keeps DHCP) answers every enabled
-#     service's `domain` with lanAddress, enumerated from
-#     fortress.services — new catalog services are covered with zero
-#     config. Other queries forward upstream via the box's own
+#     service's `domain` — and `fortress.baseDomain`, the shared
+#     path-routing origin (ADR-034) — with lanAddress, enumerated
+#     from fortress.services — new catalog services are covered with
+#     zero config. Other queries forward upstream via the box's own
 #     resolver config (resolv.conf), so no loop is possible as long as
 #     the box does not resolve from itself (asserted below).
 #   - NXDOMAIN for use-application-dns.net: the Firefox DoH canary.
 #     Browsers with "Secure DNS" enabled would bypass split-horizon
 #     entirely; this auto-disables it on Firefox. Default-on, no option.
-#   - The service factory's Caddy vhosts bind
-#     fortress.network.caddyBindAddresses (localhost + lanAddress), so
-#     LAN traffic terminates TLS on the box directly. The forwarder's
-#     tunnel IP (10.10.0.<n>:443) stays the remote ingress; a wildcard
-#     bind would still collide with it (EADDRINUSE), hence the explicit
+#   - `fortress.network.caddyBindAddresses` (localhost + lanAddress
+#     when set) is the bind list the routing layer (`planes.nix`)
+#     renders every fortress Caddy vhost with, so LAN traffic
+#     terminates TLS on the box directly. The forwarder's tunnel IP
+#     (10.10.0.<n>:443) stays the remote ingress; a wildcard bind
+#     would still collide with it (EADDRINUSE), hence the explicit
 #     address list instead of 0.0.0.0.
 #
 # Split-horizon safety (ADR-028): the global answer (edge /128 →
@@ -42,6 +44,7 @@
 let
   inherit (lib) mkOption types;
   cfg = config.fortress.network;
+  baseDomain = config.fortress.baseDomain;
 
   # Domains of every enabled factory service. Derived, never
   # configured — dnsmasq coverage tracks the service tree. The
@@ -130,6 +133,10 @@ in
             # Firefox DoH canary: NXDOMAIN makes Firefox drop
             # "Secure DNS" on this network (RFC 8764-ish precedent).
             ["/use-application-dns.net/"]
+            # baseDomain first: it is the shared path-routing origin
+            # (ADR-034) every `/<path>` URL hangs off, so the LAN
+            # must resolve it like any service hostname.
+            ++ lib.optional (baseDomain != null) "/${baseDomain}/${cfg.lanAddress}"
             ++ map (d: "/${d}/${cfg.lanAddress}") enabledDomains;
         };
       };
@@ -145,21 +152,7 @@ in
       };
       systemd.services.caddy = lib.mkIf config.services.caddy.enable {
         after = ["network-online.target"];
-      };
-    })
-
-    # The box's LAN IP is a DNS-free entry point: Caddy serves the
-    # embedded config dashboard there, so a customer reaches the
-    # homepage by typing the box's IP without remembering any service
-    # domain. HTTP-only, and keyed to the concrete LAN address — never a
-    # hostless `:80` catch-all, which would shadow ACME HTTP-01 challenge
-    # responses for the service domains and silently break cert issuance.
-    # The tunnel is untouched: the forwarder owns the tunnel IP; Caddy
-    # binds caddyBindAddresses.
-    (lib.mkIf (cfg.lanAddress != null) {
-      services.caddy.virtualHosts."http://${cfg.lanAddress}" = {
-        listenAddresses = cfg.caddyBindAddresses;
-        extraConfig = "reverse_proxy ${config.services.fortress-client.dashboardAddr}";
+        wants = ["network-online.target"];
       };
     })
   ];

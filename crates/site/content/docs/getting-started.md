@@ -8,9 +8,10 @@ depend on anyone's cloud account.
 
 1. Plug the box into power and ethernet. Wait for it to boot —
    under five minutes on first start.
-2. Create your account at [proletariat.tech](/), then follow the
-   claim flow: the welcome flow on the box and the dashboard's
-   machines page walk you through naming it and claiming it.
+2. Claim it: sign in at [proletariat.tech](/), open **Your machines**
+   and generate an invite link. On the box, open its dashboard and
+   paste the link into **Remote access**. Approve and name the machine
+   back on **Your machines**.
 3. Sign in at your domain (`https://<machine>.<your-domain>`).
 
 ## If you installed on your own hardware

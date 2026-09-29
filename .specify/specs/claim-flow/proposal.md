@@ -156,7 +156,12 @@ component) with its OWN display `InviteStatus` (incl. `Dormant` +
 approve-gating tests) and `api.rs` maps `NotBegun`. The domain enum +
 transitions are this task; the display half already exists there.
 
-### T2: Word invite codes
+### T2: Word invite codes — DONE 2026-09-28
+**Proof:** `cargo test --workspace` 241/241 with `REDIS_URL` (valkey);
+`invite_code_is_four_typeable_words_and_self_validates` ran (shape,
+case-normalize, off-list reject, entropy floor 2^14). List:
+`src/words.txt` = 37,618 words (hermitdave/FrequencyWords en_50k top,
+`^[a-z]{4,9}$`, profanity-blocked) → 4-word codes ≈ 61 bits.
 **Depends on:** T1 (same file)
 **Verification:** `cargo test --workspace` — code shape
 (`^[a-z]+(-[a-z]+){3}$`), case-insensitive accept/normalize, off-list word
@@ -166,7 +171,12 @@ collision retry still terminates. Fixtures updated to word codes
 **Files:** `crates/controlplane/src/words.txt` (new),
 `crates/controlplane/src/controlplane/pairing.rs`
 
-### T3: Machines surface renders states; `/i/{words}` URLs
+### T3: Machines surface renders states; `/i/{words}` URLs — DONE 2026-09-28
+**Proof:** `cargo test --workspace` 242/242 (valkey);
+`dormant_invite_keeps_its_share_url_visible`, escaped-URL pins in
+`machines_dashboard_renders_rows_statuses_and_waiting_forms`, join-page
+tests. (Share-URL persistence + `/i/` shape; state rendering landed with
+T1's sibling work.) T3b (client parse, legacy `/a/` rejected) folded in.
 **Depends on:** T1, T2
 **Verification:** named tests: share URL persistently visible on dormant
 (still `fresh`-gated in the shared markup); join page + invite URLs use
@@ -179,7 +189,11 @@ with T1's sibling work in `crates/web-ui/src/lib.rs`; T3 keeps only the
 share-URL persistence + `/i/` shape. `crates/site/src/pages/auth.rs`
 join page still moves here if the site surface keeps one.
 
-### T4: Edge tunnel-info endpoint; InviteConfig slimmed to URL
+### T4: Edge tunnel-info endpoint; InviteConfig slimmed to URL — DONE 2026-09-28
+**Proof:** `cargo test --workspace` 244/244 (valkey); `tunnel_info_derives_the_endpoint_and_range`,
+`subnet_to_string_round_trips_the_canonical_form`, site seam asserting
+`/api/wireguard/info` carries `endpoint: example.net:51820` +
+`allowed_ips: 10.10.0.0/24`; client enroll test pins FETCHED facts.
 **Depends on:** none (parallel with T1–T3)
 **Verification:** `cargo test --workspace` — info response carries
 `publicKey`, `endpoint`, `allowedIps`; `enroll()` builds `TunnelConfig`
@@ -188,7 +202,11 @@ the mock `EdgeClient`; Nix-wired static `tunnel` path unchanged.
 **Files:** `crates/controlplane/src/controlplane/mod.rs`,
 `crates/site/src/api.rs`, `crates/client/src/pairing.rs`
 
-### T5: Claimable degraded boot mode
+### T5: Claimable degraded boot mode — DONE 2026-09-28
+**Proof:** `cargo test --workspace` 247/247 (valkey);
+`boot_mode_is_claimable_only_without_a_tunnel_when_forwards_need_one`
+(the reported dead end's tripwire), `claim_enrolls_persists_and_restarts_into_full_mode`,
+`claim_denied_leaves_the_box_claimable`.
 **Depends on:** T4
 **Verification:** `cargo test -p fortress-client` — boot with no tunnel
 state + `{tunnel_ip}` forwards does not exit; dashboard+health serve;
@@ -197,23 +215,66 @@ enroll persists then triggers re-exec; full boot resolves from
 with `vmtest-wiring` assertion added if module wiring changes.
 **Files:** `crates/client/src/app.rs`, `crates/client/src/pairing.rs`
 
-### T6: Dashboard claim surface
+### T6: Dashboard claim surface — DONE 2026-09-28
+**Proof:** `cargo test --workspace` 250/250 (valkey); T6a wire pin
+(`map_poll_produces_the_pairing_wire_shape` — hostname crosses, the
+sensitive fields still don't) + hostname persistence; T6b
+`claim_form_validates_and_drives_the_state_surfaces`,
+`claimed_box_shows_its_domain_and_no_form`, `claim_route_requires_a_session`.
 **Depends on:** T5
-**Verification:** `cargo test -p fortress-client` — claim form posts an
-invite URL, status surfaces (not claimed / awaiting approval / claimed with
-`{name}.{domain}`) driven by the shared enroll state; admin auth still
-gates it. Then the L2 leg: T7.
-**Files:** `crates/client/src/dashboard/mod.rs`,
+**Split 2026-09-28 into T6a (wire + persistence) and T6b (the form):**
+the acceptance wants "claimed as `{name}.{domain}`", which needs the
+hostname on the box-facing wire — `map_poll` pins `machine.wg_ip` as the
+ONLY machine field today. The machine's own name is not a secret from
+itself: `machine.hostname` joins the wire (the pin flips to "hostname
+crosses; owner/ipv6/device_token_hash/wg_public_key never"). The
+persisted tunnel state gains the hostname (nested `tunnel` + `hostname`),
+boot keeps resolving the tunnel from it.
+**Verification:** `cargo test --workspace` — T6a: wire pin updated
+(hostname crosses, the sensitive fields still don't), enroll persists
+the hostname, boot resolves. T6b: claim form posts an invite URL, state
+surfaces (not claimed / awaiting approval / claimed with
+`{name}.{domain}`) driven by persisted state + shared in-flight status;
+admin auth still gates it.
+**Files:** T6a `crates/site/src/api.rs`, `crates/client/src/pairing.rs`,
+`crates/client/src/app.rs`; T6b `crates/client/src/dashboard/mod.rs`,
 `crates/client/src/dashboard/components.rs`
+
+### T8: `{tunnel_ip}` substitution covers listen_addr — discovered 2026-09-28 during T7
+**Bug:** the product-shaped self-enrolled forward is
+`{listen_addr: "{tunnel_ip}:443", dest_addr: "127.0.0.1:443"}` (the box
+listens on its tunnel IP and forwards to local Caddy — the shape
+`client.nix` documents with a concrete IP for Nix-wired boxes).
+`substitute_tunnel_ip` only rewrites `dest_addr`, so after a claim the
+forwarder would bind a literal `{tunnel_ip}:443` and die; and
+`boot_mode`'s claimable detection only scans `dest_addr`, so such a
+config would boot `Full` and fail at forwarder init instead of serving
+a claim surface.
+**Fix:** substitution + claimable detection + the resolved-forward
+check all treat `{tunnel_ip}` in either `listen_addr` or `dest_addr`.
+**Verification:** `cargo test -p fortress-client` — substitution test
+covers both fields; `boot_mode` test gains the listen-side claimable
+case. `cargo test --workspace` green.
+**Files:** `crates/client/src/pairing.rs`, `crates/client/src/app.rs`
 
 ### T7: Onboarding e2e + STATUS
 **Depends on:** T1–T6
-**Verification:** `scripts/vmtest-e2e.sh` (accounts-and-pairing T11 shape:
-invite → claim via dashboard form → approve+name on `/machines` → curl
-through the `/128`); `docs/STATUS.md` updated in the same commit with the
-proof named.
-**Files:** `scripts/vmtest-e2e.sh` (or `vmtest-bootstrap.sh`),
-`docs/STATUS.md`
+**Amendment 2026-09-28 (reality objects):** the T11 shape (invite →
+approve → curl through the /128) needs the in-VM edge of
+accounts-and-pairing T10, which does not exist — and it has a real
+design problem (edge + client both own `wg0`, one VM) that belongs to
+T10, not here. T7 delivers the boot-dead-end leg the AGENTS protocol
+mandates for T5: `vmtest.nix` enables `services.fortress-client` in the
+claimable shape, `vmtest-bootstrap.sh` asserts the claimable dashboard
+serves the Remote access card (the box that used to exit before serving),
+plus an L1 `vmtest-wiring` tripwire that vmtest keeps the client enabled.
+The full invite→approve→curl loop stays the named gate (T11).
+**Verification:** `nix flake check` green (incl. new vmtest-wiring
+assertion); `scripts/vmtest-e2e.sh` PASS with the new claim-flow
+bootstrap section; `docs/STATUS.md` updated in the same commit with the
+proof named and the T11 gate stated.
+**Files:** `nixosConfigurations/vmtest.nix`, `scripts/vmtest-bootstrap.sh`,
+`nix/tests/vmtest-wiring/default.nix`, `docs/STATUS.md`
 
 ## Strongest objection
 

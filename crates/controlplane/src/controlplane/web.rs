@@ -428,9 +428,9 @@ pub fn JoinPage(props: &JoinProps) -> Node {
                 <>
                     <h1 class="text-2xl font-black uppercase">"Join a machine"</h1>
                     <p class="text-sm dim">
-                        "This link enrolls a machine into its owner's fortress. Paste it into the box's "
-                        <code>"Join network"</code>
-                        " screen — the owner then approves and names the machine from their dashboard."
+                        "This link enrolls a machine into its owner's fortress. On the box, open its "
+                        <code>"dashboard"</code>
+                        " and paste the link into Remote access — then approve and name the machine from your machines page."
                     </p>
                     <p class="text-xs faint">"Invite code: "<code>{props.code.clone()}</code></p>
                     <p class="text-sm"><a href="/" class="link-zine">"Back to the front page"</a></p>
@@ -1058,7 +1058,7 @@ async fn invite_revoke(
     }
 }
 
-/// The public invite URL page (`/a/{code}`).
+/// The public invite URL page (`/i/{words}`).
 #[handler]
 async fn join_page(Path(code): Path<String>) -> Response {
     Html(component::<JoinPage>(JoinProps { code }).to_html()).into_response()
@@ -1126,7 +1126,7 @@ pub fn web_routes() -> Route {
         .at("/reset", get(reset_page))
         .at("/verify", get(verify))
         .at("/machines", get(machines))
-        .at("/a/:code", get(join_page))
+        .at("/i/:code", get(join_page))
         .at("/auth/signup", post(signup))
         .at("/auth/login", post(login))
         .at("/auth/logout", post(logout))
@@ -1872,11 +1872,11 @@ mod tests {
             return;
         };
         let client = TestClient::new(test_app(cp, mailer));
-        let resp = client.get("/a/kowiqmzabc").send().await;
+        let resp = client.get("/i/polluted-move-cheetah-apple").send().await;
         resp.assert_status(StatusCode::OK);
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("Join a machine"));
-        assert!(body.contains("kowiqmzabc"));
+        assert!(body.contains("polluted-move-cheetah-apple"));
     }
 
     /// The dashboard flow over real forms: create an invite → the
@@ -1926,7 +1926,11 @@ mod tests {
             .strip_prefix("/machines?invited=")
             .expect("redirect carries the code")
             .to_string();
-        assert_eq!(code.len(), 10);
+        assert_eq!(
+            crate::controlplane::pairing::canonical_invite_code(&code).as_deref(),
+            Some(code.as_str()),
+            "the dashboard mints canonical word codes"
+        );
 
         // The dashboard highlights the fresh code + its share URL.
         let resp = client

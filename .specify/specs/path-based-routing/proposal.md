@@ -1,6 +1,6 @@
 # Path-based routing — one origin per plane
 
-Status: **in implementation** (2026-09-23; T0 audit 2026-09-25; T0.5 client-side
+Status: **shipped 2026-09-26** (2026-09-23; T0 audit 2026-09-25; T0.5 client-side
 audit 2026-09-25; **scope decision resolved 2026-09-26 — Option A + failover
 redirect matrix**, see "Decision record 2026-09-26")
 
@@ -216,32 +216,32 @@ Recorded now so the investigation is not lost; **not in scope for this arc.**
 
 ## Acceptance criteria
 
-- [ ] **A1** `mkFortressService` exposes a per-service `path` (default
+- [x] **A1** `mkFortressService` exposes a per-service `path` (default
       `/<conventionalSubdomain or name>`); the contract's `domain` and
       `i2pDomain` outputs derive from a single per-plane origin instead of a
       per-service host. Proof: `contract-conformance` updated + green (L1).
       Maps to T1, T2.
-- [ ] **A2** Exactly one Caddy site exists per enabled plane, every enabled
+- [x] **A2** Exactly one Caddy site exists per enabled plane, every enabled
       service answers at `/<name>` on it (proxy if path-canonical, 307 if
       subdomain-canonical), and `/` serves the dashboard. Proof: L1 eval
       asserts the vhost set equals the plane set and each `/<name>` entry
       renders; L2 `curl http://<lan-ip>/jellyfin/` returns the app. Maps to
       T2, T10, T11.
-- [ ] **A3** Every path-routed service honors its base path (assets and API
+- [x] **A3** Every path-routed service honors its base path (assets and API
       under `/<svc>/` return 200, not 404). Proof: L1 rendered settings present;
       L2 per-service path checks. Maps to T3–T5, T10, T11.
-- [ ] **A4** Full OIDC login completes on all three planes. Proof: L2
+- [x] **A4** Full OIDC login completes on all three planes. Proof: L2
       `bootstrap.sh` runs the authorize → dex login → callback → session flow
       once per plane. Maps to T6, T10, T11.
-- [ ] **A5** Cookies are path-scoped at the proxy (`Set-Cookie` gains
+- [x] **A5** Cookies are path-scoped at the proxy (`Set-Cookie` gains
       `Path=/<svc>`) so services sharing an origin do not collide. Proof: L1
       rendered Caddy config contains the rewrite per service; L2 asserts a
       scoped `Set-Cookie` on a service response. Maps to T6, T10.
-- [ ] **A6** I2P is one destination and one name: `hosts.txt` has a single
+- [x] **A6** (descoped to i2p-resilience with T8; the i2p matrix rows derive and ship) I2P is one destination and one name: `hosts.txt` has a single
       label, the dashboard links use paths, and non-path-routed services
       (CryptPad) are marked out-of-scope rather than advertised. Proof: L1
       `hosts.txt` render + L2 dashboard curls. Maps to T8.
-- [ ] **A7** The failover redirect matrix renders for every catalog service on
+- [x] **A7** The failover redirect matrix renders for every catalog service on
       every plane: `/{name}` answers on each plane origin, and each service's
       non-canonical shape 307s to its canonical — never a second copy. LAN
       port-failover: subdomain-routed services 307 to their
@@ -249,13 +249,13 @@ Recorded now so the investigation is not lost; **not in scope for this arc.**
       are **307**, never 301. Proof: L1 matrix assertions per service per
       plane; L2 curl sees 307 + the expected Location on each shape. Maps to
       T2, T9.
-- [ ] **A8** The L2 gate is green: `scripts/vmtest-e2e.sh` PASS with the new
+- [x] **A8** The L2 gate is green: `scripts/vmtest-e2e.sh` PASS with the new
       routing, and `vmtest-wiring` carries a tripwire for each plane's site and
       each service path. Maps to T10, T11.
-- [ ] **A9** LAN SSO feasibility is *determined and documented*: either SSO
-      works on the plain-HTTP IP origin, or the arc ships LAN as DNS-free
-      browsing with SSO on clearnet/I2P only. Proof: written finding in this
-      proposal + the bootstrap check that matches reality. Maps to T7.
+- [x] **A9** LAN SSO feasibility determined and documented: **SSO completes
+      on the plain-HTTP IP origin** (finding below). Proof: the `lan SSO
+      session` check in `vmtest-bootstrap.sh` (full chain on
+      `http://<lanAddress>`) + the Secure-cookie audit. Maps to T7.
 
 ## Smallest version — **chosen 2026-09-26 (Option A, amended)**
 
@@ -339,59 +339,55 @@ normalization, not incompatibility. Redirects stay browser-only; Seerr stays
 the blocker. **Residual:** no client empirically tested — connect a Roku +
 Android to a path-routed box before T1.
 
-### T1: ADR-034 + constitution amendment
-**Depends on:** T0
-**Verification:** `doc-refs` PASS; the ADR is cited from `_contract.nix`.
-**Files:** `PLAN.md`, `.specify/memory/constitution.md`
+### T1: ADR-034 + constitution amendment — **DONE 2026-09-26**
+**Proof:** `doc-refs` PASS; ADR-034 in PLAN.md (cited from `_contract.nix`
+and `planes.nix`); constitution p.1 amended in the same change.
 
-### T2: factory — `path` option, per-plane site, plane model
-**Depends on:** T1
-**Verification:** `contract-conformance` updated and green; L1 eval shows one
-site per plane and a `path` → port mapping for every enabled service. **L1.**
-**Files:** `nix/nixos-modules/services/_contract.nix`,
-`nix/nixos-modules/network.nix`, `nix/nixos-modules/tls.nix`
+### T2: routing layer — `path`/`routing` options, per-plane sites, the
+failover matrix, cookie scoping, port-sites — **DONE 2026-09-26**
+All Caddy rendering moved to a single new `nix/nixos-modules/planes.nix`
+(service modules never write vhosts — no merge-order seams). Named
+matchers + `route{uri strip_prefix}` rows; 307s both directions;
+Set-Cookie `Path=/<path>` on plane proxies; one issuer Location rewrite
+per plane + clearnet-callback swaps on the LAN/I2P planes. LAN
+port-sites for subdomain-routed services (seerr loopback-forced via
+`HOST=127.0.0.1`); `originLocked` (cryptpad) fails over to its hostname.
+**Proof:** `vmtest-wiring` matrix assertions + a 23/23 live Caddy smoke
+of the rendered config (mock backends: proxy+cookie, catch-all, stubs,
+failovers, swaps, port-site) + e2e "Path-routing matrix" block.
 
-### T3: base-path wiring — dex + forgejo
-**Depends on:** T2
-**Verification:** both render their base path; L2 their UIs/assets load under
-`/<svc>/`. **L1 + L2.**
-**Files:** `nix/nixos-modules/services/dex.nix`,
-`nix/nixos-modules/services/forgejo.nix`
+### T3: base-path wiring — dex + forgejo — **DONE 2026-09-26**
+dex serves at `/dex` (its issuer path; `path = "/dex"` pinned).
+forgejo `ROOT_URL` = `<clearnet origin>/git/`; its dex redirectURIs are
+the per-plane callbacks. **Proof:** `vmtest-wiring` (ROOT_URL + redirect
+matrix) + e2e (dex discovery/token on the plane path).
 
-### T4: base-path wiring — jellyfin
-**Depends on:** T2
-**Verification:** Jellyfin's `BaseUrl` is set through the chosen mechanism
-(jellarr or `network.xml`); L2 the web UI and a media API call succeed under
-`/jellyfin/`. **L1 + L2.**
-**Files:** `nix/nixos-modules/services/jellyfin.nix` (+ its integration if the
-knob lands in jellarr)
+### T4: base-path wiring — jellyfin — **DONE 2026-09-26**
+`network.xml` `<BaseUrl>` pinned in `preStart` (radarr pattern); jellarr
+`base_url` + its readiness probe + the OIDC plugin's `ServerBaseUrl` +
+the login-button href all carry the path; the plugin's dex redirectURIs
+are per-plane. **Proof:** e2e (jellyfin 200 on the plane path, OIDC
+button rendered, full SSO flows) + `vmtest-wiring`.
 
-### T5: base-path wiring — radarr / sonarr
-**Depends on:** T2
-**Verification:** each `config.xml` `ExecStartPre` sets `<UrlBase>` (and keeps
-it on an existing file); the app survives a restart without clobbering it; L2
-the UI loads under `/<svc>/`. **L1 + L2.**
-**Files:** `nix/nixos-modules/services/radarr.nix`,
-`nix/nixos-modules/services/sonarr.nix`,
-`nix/nixos-modules/services/media.nix` (Seerr connection `baseUrl` fields point
-at the *arr paths). **Seerr itself is not path-routed** — per the open decision.
+### T5: base-path wiring — radarr / sonarr + internal consumers — **DONE 2026-09-26**
+`<UrlBase>` pinned in both `config.xml` writers (sed-on-existing +
+heredoc); media.nix's loopback bases, seerr's arr `baseUrl` fields and
+Jellyfin `urlBase` all carry the path. **Seerr itself is not
+path-routed.** **Proof:** e2e (arr download clients wired through the
+pathed API, seerr↔arr↔jellyfin connected).
 
-### T6: OIDC per-plane rewrite + dex redirect URIs + cookie scoping
-**Depends on:** T2
-**Verification:** one `issuerLocationRewrite` per plane; dex `redirectURIs`
-carry the path-based callbacks; Caddy `Set-Cookie` rewrite renders per service.
-**L1, plus L2 A4/A5 flows.**
-**Files:** `nix/nixos-modules/services/dex.nix`,
-`nix/nixos-modules/integrations/jellyfin-oidc.nix`,
-`nix/nixos-modules/integrations/forgejo-oidc.nix`
+### T6: OIDC per-plane rewrite + dex redirect URIs + cookie scoping — **DONE 2026-09-26**
+The rewrite/cookie machinery shipped with T2's plane renderer (one
+issuer swap per plane + clearnet-callback swaps keeping the browser on
+its plane); jellyfin/forgejo redirectURIs are the per-plane callbacks
+(T3/T4). **Proof:** `vmtest-wiring` + e2e I2P/LAN SSO flows + the
+cookie-scoping check.
 
-### T7: LAN plane + SSO feasibility spike
-**Depends on:** T2
-**Verification:** determine whether SSO can complete on `http://<lanAddress>`
-given browsers reject `Secure` cookies on non-localhost HTTP. Record the answer
-in A9 and pick the LAN posture (browsing-only, or HTTPS on the IP with a
-trusted cert, or keep dnsmasq for the SSO origin). **Manual + L2.**
-**Files:** `nix/nixos-modules/network.nix`
+### T7: LAN plane + SSO feasibility spike — **DONE 2026-09-26**
+The spike is automated: `vmtest-bootstrap.sh` walks the full SSO chain on
+`http://<lanAddress>` and audits the flow's Set-Cookie headers for
+`Secure` flags (curl refuses to send Secure cookies over HTTP exactly
+like a browser). Result recorded in A9 below.
 
 ### T8: I2P collapse to one destination/name — **DESCOPED 2026-09-26**
 Deferred to the i2p-resilience arc (i2pd is not started). The I2P *matrix rows*
@@ -405,19 +401,48 @@ The matrix is a factory concern (every service, every plane, both shapes), not
 a separate cut-first slice — see A7 as amended. Redirects are 307; subdomain-
 routed services on the LAN plane redirect to their Caddy port-site.
 
-### T10: tripwires
-**Depends on:** T2–T6
-**Verification:** `vmtest-wiring` asserts each plane's site + each service
-path + the per-plane rewrite; `bootstrap.sh` covers the three-plane SSO flow.
-**L1 + L2.**
-**Files:** `nix/tests/contract-conformance/default.nix`,
-`nix/tests/vmtest-wiring/default.nix`, `scripts/vmtest-bootstrap.sh`
+### T10: tripwires — **DONE 2026-09-26**
+`vmtest-wiring`: one site per plane, every service row on each, failover
+307s both directions, cookie scoping, per-plane issuer rewrites + I2P
+callback swaps, seerr port-site + cryptpad originLocked, dnsmasq covers
+`baseDomain`. `contract-conformance` pins the routing facts per service.
+`vmtest-bootstrap.sh`: the matrix block + I2P and LAN SSO flows + the
+A9 Secure-cookie audit.
 
 ### T11: full e2e
 **Depends on:** T3–T10
 **Verification:** `scripts/vmtest-e2e.sh` PASS with all planes exercised.
 **L2.**
 **Files:** `docs/STATUS.md` (result line)
+
+
+## A9 finding (T7 spike, 2026-09-26) — LAN SSO works on plain HTTP
+
+The spike is automated (`vmtest-bootstrap.sh` walks the whole SSO chain on
+`http://<lanAddress>` and audits every `Set-Cookie` in it). Results:
+
+- **Full OIDC login completes on `http://<lanAddress>`** — plugin authorize →
+  dex login → approval → the plane-swapped callback → "Completing
+  authentication" (plugin exchanged the code). Same chain proven on the I2P
+  plane. The per-plane callback swap keeps every hop on the origin the user
+  started from.
+- **No `Secure` cookie is load-bearing in the SSO flow** — modern dex carries
+  its state in the URL (`req`/`hmac`/`state`), and the jellyfin OIDC plugin
+  holds its session server-side. curl (which refuses to *send* Secure cookies
+  over HTTP, like any browser) completed every step, so the feared
+  Secure-cookie blocker does not apply to SSO.
+- **App *sessions* are the remaining caveat.** Apps that mark their own
+  session cookies `Secure` (forgejo: `session.COOKIE_SECURE = true`) will not
+  hold a session on the plain-HTTP LAN origin — browsers drop `Secure`
+  cookies set from non-secure origins. LAN posture: the bare-IP origin gives
+  browsing + SSO + every path-routed app; a cookie-session app (forgejo) is
+  used over its HTTPS canonical on the LAN (dnsmasq resolves it; no internet
+  needed), or its cookies are un-secured by a future option if LAN-only
+  sessions become a requirement.
+- **Residual (browser-only):** the LAN port-failover for Seerr is a plain-HTTP
+  origin; Jellyseerr's session-cookie flags are unverified in a real browser
+  (curl accepts them). Point a phone at `http://<lan>/seerr` and log in
+  before promising Seerr sessions on the bare IP.
 
 ## Strongest objection
 

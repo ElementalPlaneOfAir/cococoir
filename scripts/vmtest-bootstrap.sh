@@ -140,7 +140,7 @@ if [ "$apply_ok" = "1" ]; then
     key=$(cat "/var/lib/fortress-media/$svc-api-key")
     arr_ok=0
     for i in $(seq 1 30); do
-      if curl -sf -H "X-Api-Key: $key" "http://127.0.0.1:$port/api/v3/downloadclient" \
+      if curl -sf -H "X-Api-Key: $key" "http://127.0.0.1:$port/$svc/api/v3/downloadclient" \
         | jq -e 'map(select(.name == "qBittorrent")) | length > 0' >/dev/null 2>&1; then
         arr_ok=1
         pass "$svc download client" "qBittorrent wired (category)"
@@ -156,7 +156,7 @@ if [ "$apply_ok" = "1" ]; then
   # Seerr's only first-boot admin path is Jellyfin sign-in (local login
   # has no admin-creation route); re-auth the bootstrap user.
   if curl -sf -c "$seerr_cookie" -H 'Content-Type: application/json' \
-      -d "{\"username\": \"seerr-bootstrap\", \"password\": \"$(cat /var/lib/fortress-media/seerr-admin-password)\", \"hostname\": \"127.0.0.1\", \"port\": 8096, \"useSsl\": false, \"urlBase\": \"\", \"serverType\": 2}" \
+      -d "{\"username\": \"seerr-bootstrap\", \"password\": \"$(cat /var/lib/fortress-media/seerr-admin-password)\", \"hostname\": \"127.0.0.1\", \"port\": 8096, \"useSsl\": false, \"urlBase\": \"/jellyfin\", \"serverType\": 2}" \
       http://127.0.0.1:5055/api/v1/auth/jellyfin >/dev/null \
     || curl -sf -c "$seerr_cookie" -H 'Content-Type: application/json' \
       -d "{\"username\": \"seerr-bootstrap\", \"password\": \"$(cat /var/lib/fortress-media/seerr-admin-password)\", \"useSsl\": false, \"serverType\": 2}" \
@@ -184,7 +184,7 @@ fi
 if [ "$jellarr_ok" = "1" ]; then
   oidc_ok=0
   for i in $(seq 1 30); do
-    if curl -sk https://jellyfin.vmtest.local/Branding/Configuration | grep -q "Sign in with Dex"; then
+    if curl -sk https://vmtest.local/jellyfin/Branding/Configuration | grep -q "Sign in with Dex"; then
       oidc_ok=1
       pass "OIDC login button" "rendered"
       break
@@ -249,27 +249,28 @@ else
 fi
 
 # The full LAN ingress: resolve → connect to the LAN IP → cert
-# verifies against the VM trust store → HTTP 200.
+# verifies against the VM trust store → HTTP 200. The path is the
+# plane row (ADR-034): the shared origin is what LAN clients use.
 lan_code=$(curl --cacert /etc/ssl/certs/ca-certificates.crt \
-  --resolve "jellyfin.vmtest.local:443:$LAN" \
+  --resolve "vmtest.local:443:$LAN" \
   -o /dev/null -w '%{http_code}' \
-  https://jellyfin.vmtest.local/health 2>/dev/null || echo 000)
+  https://vmtest.local/jellyfin/health 2>/dev/null || echo 000)
 case "$lan_code" in
   200) pass "LAN ingress (resolve+TLS)" "200" ;;
   *)   fail "LAN ingress (resolve+TLS)" "$lan_code" ;;
 esac
 
-# Dex OIDC discovery
+# Dex OIDC discovery on the clearnet plane
 dx_code=$(curl -sk -o /dev/null -w '%{http_code}' \
-  https://auth.vmtest.local/dex/.well-known/openid-configuration 2>/dev/null || echo 000)
+  https://vmtest.local/dex/.well-known/openid-configuration 2>/dev/null || echo 000)
 case "$dx_code" in
   200) pass "dex OIDC discovery" "$dx_code" ;;
   *)   fail "dex OIDC discovery" "$dx_code" ;;
 esac
 
-# Jellyfin health
+# Jellyfin health on its plane row
 jf_code=$(curl -sk -o /dev/null -w '%{http_code}' \
-  https://jellyfin.vmtest.local/health 2>/dev/null || echo 000)
+  https://vmtest.local/jellyfin/health 2>/dev/null || echo 000)
 case "$jf_code" in
   200) pass "jellyfin" "$jf_code" ;;
   *)   fail "jellyfin" "$jf_code" ;;
@@ -281,6 +282,75 @@ cp_code=$(curl -sk -o /dev/null -w '%{http_code}' \
 case "$cp_code" in
   200) pass "cryptpad" "$cp_code" ;;
   *)   fail "cryptpad" "$cp_code" ;;
+esac
+
+echo ""
+echo "─── Path-routing matrix (ADR-034) ───"
+# Every service answers at /<path> on every plane origin (uniform
+# entry point), and the non-canonical shape 307s to its canonical —
+# never a second copy. These rows ARE the customer-facing contract.
+redir_check() {
+  local label=$1 url=$2 want_loc=$3
+  local out code loc
+  out=$(curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' "$url" 2>/dev/null || echo "000 -")
+  code=${out%% *}; loc=${out#* }
+  if [ "$code" = "307" ] && [ "$loc" = "$want_loc" ]; then
+    pass "$label" "307 -> $loc"
+  else
+    fail "$label" "$code ${loc}"
+  fi
+}
+
+# clearnet: jellyfin hostname stub -> the plane path
+redir_check "clearnet stub (jellyfin)" \
+  https://jellyfin.vmtest.local/ "https://vmtest.local/jellyfin/"
+# clearnet: seerr row fails over to its canonical hostname
+redir_check "clearnet failover (seerr)" \
+  https://vmtest.local/seerr "https://seerr.vmtest.local/"
+# LAN: the headline UX — the bare IP serves the path row, zero DNS
+lan_jf_code=$(curl -s -o /dev/null -w '%{http_code}' \
+  http://10.0.2.15/jellyfin/health 2>/dev/null || echo 000)
+case "$lan_jf_code" in
+  200) pass "LAN bare-IP jellyfin" "http://$LAN/jellyfin/health -> 200" ;;
+  *)   fail "LAN bare-IP jellyfin" "$lan_jf_code" ;;
+esac
+# LAN: seerr fails over to its port-site (zero DNS for the front door)
+redir_check "LAN failover (seerr)" \
+  http://10.0.2.15/seerr "http://10.0.2.15:5055/"
+# LAN: originLocked cryptpad fails over to its own origin, not a port
+redir_check "LAN failover (cryptpad, originLocked)" \
+  http://10.0.2.15/cryptpad "https://cryptpad.vmtest.local/"
+# LAN: the seerr port-site is live
+seerr_ps=$(curl -s -o /dev/null -w '%{http_code}' \
+  http://10.0.2.15:5055/api/v1/status 2>/dev/null || echo 000)
+case "$seerr_ps" in
+  200) pass "seerr LAN port-site" "200" ;;
+  *)   fail "seerr LAN port-site" "$seerr_ps" ;;
+esac
+# forgejo generates URLs with /git but serves at its own root — the
+# row strips the prefix (ROOT_URL is URL-generation only).
+fg_code=$(curl -sk -o /dev/null -w '%{http_code}' \
+  https://vmtest.local/git/ 2>/dev/null || echo 000)
+case "$fg_code" in
+  200) pass "forgejo under /git (strip row)" "200" ;;
+  *)   fail "forgejo under /git (strip row)" "$fg_code" ;;
+esac
+# A5: the proxy appends Path=/<path> to every Set-Cookie (the trailing
+# attribute wins per RFC 6265) — forgejo's session cookies show the
+# rewrite's fingerprint (`; Path=/git` at the end of the line).
+if curl -sk -D - -o /dev/null --max-time 15 https://vmtest.local/git/user/login 2>/dev/null \
+    | tr -d '\r' | grep -i '^set-cookie:' | grep -q 'Path=/git$'; then
+  pass "cookie Path scoping (A5)" "Set-Cookie rewritten to Path=/git"
+else
+  fail "cookie Path scoping (A5)" "no rewritten Set-Cookie on forgejo's login page"
+fi
+
+# the shared origin's root is the dashboard
+dash_code=$(curl -sk -o /dev/null -w '%{http_code}' \
+  https://vmtest.local/ 2>/dev/null || echo 000)
+case "$dash_code" in
+  200|303) pass "plane root dashboard" "$dash_code (serves or logs in)" ;;
+  *)   fail "plane root dashboard" "$dash_code" ;;
 esac
 
 echo ""
@@ -328,7 +398,7 @@ done
 
 echo ""
 echo "─── Dex test user (admin@example.com / password) ───"
-TOKEN=$(curl -sk -X POST https://auth.vmtest.local/dex/token \
+TOKEN=$(curl -sk -X POST https://vmtest.local/dex/token \
   -H 'Authorization: Basic dm10ZXN0LWNsaTo=' \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=password' \
@@ -340,7 +410,7 @@ if [ -n "$TOKEN" ]; then
   echo "  got access token (first 20 chars): ${TOKEN:0:20}..."
   echo ""
   echo "─── ID token claims ───"
-  ID_TOKEN=$(curl -sk -X POST https://auth.vmtest.local/dex/token \
+  ID_TOKEN=$(curl -sk -X POST https://vmtest.local/dex/token \
     -H 'Authorization: Basic dm10ZXN0LWNsaTo=' \
     -H 'Content-Type: application/x-www-form-urlencoded' \
     -d 'grant_type=password' \
@@ -363,80 +433,173 @@ else
 fi
 
 echo ""
-echo "─── I2P plane SSO flow (hermetic, Host-pinned) ───"
-# The .i2p vhosts are plain-HTTP Caddy sites bound to loopback; the
-# i2pd tunnel terminates at Caddy on 127.0.0.1:80. --resolve pins the
-# .i2p names to loopback so this flow runs exactly as an I2P client
-# would drive it (same Host, same cookie jar), with no I2P network
-# needed. It walks the REAL SSO chain end to end: plugin authorize →
-# issuer rewrite → dex login → dex callback → callback rewrite →
-# plugin session established.
-JAR=/tmp/i2p-sso-cookies
-rm -f "$JAR"
-I2P_CURL=(curl -s --resolve jellyfin.vmtest.i2p:80:127.0.0.1 --resolve auth.vmtest.i2p:80:127.0.0.1 --max-time 30)
+echo "─── SSO flows: I2P plane + LAN plane (A4/A5/A9) ───"
+# One flow, two planes (ADR-034): the plugin Start -> dex authorize ->
+# (dex 302s twice: connector -> login form) -> login -> optional
+# approval -> the plane-swapped callback -> plugin session. The i2p
+# run is Host-pinned to loopback (exactly what an i2pd tunnel drives);
+# the LAN run is the T7 spike on the plain-HTTP IP origin — curl
+# refuses to SEND Secure cookies over HTTP like a browser, so a pass
+# proves no Secure cookie is load-bearing (A9).
+walk_dex_login() { # $1=base $2=jar $3=header-prefix $4=auth-url — follows dex's
+                    # 302s (authorize -> connector -> login form), then
+                    # returns the form page in DEX_HTML/DEX_ACTION.
+  local base=$1 jar=$2 prefix=$3 url=$4 hop hf bf loc
+  DEX_HFILES=""
+  DEX_HTML=""
+  DEX_ACTION=""
+  for hop in 1 2 3 4 5; do
+    hf="/tmp/${prefix}-dh${hop}"; bf="/tmp/${prefix}-db${hop}"
+    "${S_CURL[@]}" -b "$jar" -c "$jar" -D "$hf" -o "$bf" "$url" 2>/dev/null || true
+    DEX_HFILES="$DEX_HFILES $hf"
+    loc=$(tr -d '\r' < "$hf" | sed -n 's/^[Ll]ocation: //p' | head -1 || true)
+    if [ -n "$loc" ]; then
+      case "$loc" in
+        http*) url=$loc ;;
+        *) url="$base$loc" ;;
+      esac
+      continue
+    fi
+    DEX_HTML=$(cat "$bf" 2>/dev/null || true)
+    DEX_ACTION=$(printf '%s' "$DEX_HTML" | grep -o 'action="[^"]*"' | head -1 \
+      | sed 's/^action="//;s/"$//' | sed 's/&amp;/\&/g; s/&#38;/\&/g; s/&#34;/"/g' || true)
+    # no action attribute = the form posts to the page it is on
+    DEX_ACTION=${DEX_ACTION:-$url}
+    return 0
+  done
+  return 1
+}
 
-jf2_code=$("${I2P_CURL[@]}" -o /dev/null -w '%{http_code}' \
-  http://jellyfin.vmtest.i2p/health 2>/dev/null || echo 000)
-case "$jf2_code" in
-  200) pass "i2p jellyfin ingress" "200" ;;
-  *)   fail "i2p jellyfin ingress" "$jf2_code" ;;
-esac
+sso_flow() { # $1=plane-name $2=base $3=cookie-jar
+  local plane=$1 base=$2 jar=$3
+  local start login_url action nxt app cb html hfiles=""
+  S_CURL=(curl -s --max-time 30)
+  if [ "$plane" = "i2p" ]; then
+    S_CURL+=(--resolve "vmtest.i2p:80:127.0.0.1")
+  fi
 
-DX_DISC=$("${I2P_CURL[@]}" \
-  http://auth.vmtest.i2p/dex/.well-known/openid-configuration 2>/dev/null || echo "")
-if printf '%s' "$DX_DISC" | grep -q '"issuer": *"http://127.0.0.1:5556/dex"'; then
-  pass "i2p dex discovery" "loopback issuer served"
-else
-  fail "i2p dex discovery" "issuer mismatch or unreachable"
-fi
-
-START_LOC=$("${I2P_CURL[@]}" -c "$JAR" -D - -o /dev/null \
-  http://jellyfin.vmtest.i2p/sso/OIDC/Start/dex 2>/dev/null \
-  | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | head -1)
-case "$START_LOC" in
-  http://auth.vmtest.i2p/dex/auth*) pass "i2p authorize rewrite" "auth.vmtest.i2p" ;;
-  *) fail "i2p authorize rewrite" "got ${START_LOC:-none}" ;;
-esac
-
-LOGIN_HTML=$("${I2P_CURL[@]}" -b "$JAR" -c "$JAR" "$START_LOC" 2>/dev/null || echo "")
-ACTION=$(printf '%s' "$LOGIN_HTML" | grep -o 'action="[^"]*"' | head -1 | sed 's/^action="//;s/"$//')
-case "$ACTION" in
-  http*) : ;;
-  /*)    ACTION="http://auth.vmtest.i2p$ACTION" ;;
-  *)     ACTION="http://auth.vmtest.i2p/$ACTION" ;;
-esac
-
-"${I2P_CURL[@]}" -b "$JAR" -c "$JAR" -D /tmp/i2p-h1 -o /tmp/i2p-b1 \
-  --data-urlencode "login=admin@example.com" \
-  --data-urlencode "password=password" \
-  "$ACTION" 2>/dev/null
-NEXT_LOC=$(grep -i '^location:' /tmp/i2p-h1 2>/dev/null | tr -d '\r' | sed 's/^[Ll]ocation: //p' | head -1)
-
-# dex may render the approval screen instead of redirecting; approve it.
-if [ -z "$NEXT_LOC" ]; then
-  APP_ACTION=$(printf '%s' "$(cat /tmp/i2p-b1 2>/dev/null)" | grep -o 'action="[^"]*"' | head -1 | sed 's/^action="//;s/"$//')
-  case "$APP_ACTION" in
-    http*) : ;;
-    /*)    APP_ACTION="http://auth.vmtest.i2p$APP_ACTION" ;;
-    *)     APP_ACTION="http://auth.vmtest.i2p/$APP_ACTION" ;;
+  "${S_CURL[@]}" -c "$jar" -D "/tmp/${plane}-h0" -o /dev/null \
+    "$base/jellyfin/sso/OIDC/Start/dex" 2>/dev/null || true
+  hfiles="/tmp/${plane}-h0"
+  start=$(tr -d '\r' < "/tmp/${plane}-h0" | sed -n 's/^[Ll]ocation: //p' | head -1 || true)
+  case "$start" in
+    "$base/dex/auth"*) pass "$plane authorize rewrite" "$base" ;;
+    *) fail "$plane authorize rewrite" "got ${start:-none}"; return 0 ;;
   esac
-  NEXT_LOC=$("${I2P_CURL[@]}" -b "$JAR" -c "$JAR" -D - -o /dev/null \
-    --data-urlencode "approval=approve" "$APP_ACTION" 2>/dev/null \
-    | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | head -1)
-fi
 
-case "$NEXT_LOC" in
-  https://jellyfin.vmtest.local/sso/OIDC/Callback/dex*) pass "i2p dex login" "callback issued (registered clearnet)" ;;
-  *) fail "i2p dex login" "got ${NEXT_LOC:-none}" ;;
-esac
+  if ! walk_dex_login "$base" "$jar" "$plane" "$start"; then
+    fail "$plane dex login page" "redirect chain did not end in a form"
+    return 0
+  fi
+  hfiles="$hfiles $DEX_HFILES"
+  action=$DEX_ACTION
+  [ -n "$action" ] || echo "  (dex page empty/form-less: $(wc -c < /tmp/${plane}-db5 2>/dev/null || echo 0) bytes)" >&2
+  case "$action" in
+    http*) : ;;
+    /*)    action="$base$action" ;;
+    *)     action="$base/$action" ;;
+  esac
 
-I2P_CB=${NEXT_LOC/https:\/\/jellyfin.vmtest.local/http://jellyfin.vmtest.i2p}
-CB_HTML=$("${I2P_CURL[@]}" -b "$JAR" "$I2P_CB" 2>/dev/null || echo "")
-if printf '%s' "$CB_HTML" | grep -q "Completing authentication"; then
-  pass "i2p SSO session" "plugin exchanged the code at loopback"
+  "${S_CURL[@]}" -b "$jar" -c "$jar" -D "/tmp/${plane}-h1" -o "/tmp/${plane}-b1" \
+    --data-urlencode "login=admin@example.com" \
+    --data-urlencode "password=password" \
+    "$action" 2>/dev/null || true
+  hfiles="$hfiles /tmp/${plane}-h1"
+  nxt=$(grep -i '^location:' "/tmp/${plane}-h1" 2>/dev/null | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | head -1 || true)
+
+  # After login dex may hand back the callback directly, or walk
+  # through its approval screen (302 -> a form we must submit).
+  # Follow either shape until the callback shows up.
+  for hop in 1 2 3 4 5; do
+    case "$nxt" in
+      *"/jellyfin/sso/OIDC/Callback/dex"*) break ;;
+    esac
+    [ -n "$nxt" ] || break
+    case "$nxt" in
+      http*) : ;;
+      /*)    nxt="$base$nxt" ;;
+      *)     nxt="$base/$nxt" ;;
+    esac
+    page=$nxt
+    "${S_CURL[@]}" -b "$jar" -c "$jar" -D "/tmp/${plane}-ap${hop}" -o "/tmp/${plane}-ab${hop}" \
+      "$nxt" 2>/dev/null || true
+    hfiles="$hfiles /tmp/${plane}-ap${hop}"
+    nxt=$(tr -d '\r' < "/tmp/${plane}-ap${hop}" | sed -n 's/^[Ll]ocation: //p' | head -1 || true)
+    if [ -z "$nxt" ]; then
+      app=$(printf '%s' "$(cat /tmp/${plane}-ab${hop} 2>/dev/null)" | grep -o 'action="[^"]*"' | head -1 \
+        | sed 's/^action="//;s/"$//' | sed 's/&amp;/\&/g; s/&#38;/\&/g; s/&#34;/"/g' || true)
+      app=${app:-$page}
+      case "$app" in
+        http*) : ;;
+        /*)    app="$base$app" ;;
+        *)     app="$base/$app" ;;
+      esac
+      "${S_CURL[@]}" -b "$jar" -c "$jar" -D "/tmp/${plane}-apx${hop}" -o /dev/null \
+        --data-urlencode "approval=approve" "$app" 2>/dev/null || true
+      hfiles="$hfiles /tmp/${plane}-apx${hop}"
+      nxt=$(tr -d '\r' < "/tmp/${plane}-apx${hop}" | sed -n 's/^[Ll]ocation: //p' | head -1 || true)
+    fi
+  done
+
+  # The clearnet-canonical callback must arrive swapped onto the plane
+  # the browser is on — never a mid-flow jump to another origin.
+  case "$nxt" in
+    "$base/jellyfin/sso/OIDC/Callback/dex"*) pass "$plane dex login" "callback swapped onto the $plane plane" ;;
+    *) fail "$plane dex login" "got ${nxt:-none}"; return 0 ;;
+  esac
+
+  "${S_CURL[@]}" -b "$jar" -D "/tmp/${plane}-cb-h" "$nxt" -o "/tmp/${plane}-cb.html" 2>/dev/null || true
+  hfiles="$hfiles /tmp/${plane}-cb-h"
+  html=$(cat "/tmp/${plane}-cb.html" 2>/dev/null || true)
+  if printf '%s' "$html" | grep -q "Completing authentication"; then
+    pass "$plane SSO session" "plugin exchanged the code at loopback"
+  else
+    fail "$plane SSO session" "$(printf '%s' "$html" | grep -o 'Authentication failed[^<]*' | head -1 || echo 'no callback page')"
+  fi
+
+  # A9 evidence: Secure cookies on the HTTP LAN flow would be the
+  # browser failure mode (curl will not send them over HTTP either).
+  if grep -ih '^set-cookie:' $hfiles 2>/dev/null | grep -qi 'secure'; then
+    echo "  A9 note ($plane): Secure Set-Cookie observed:"
+    grep -ih '^set-cookie:' $hfiles 2>/dev/null | sed 's/^/    /' || true
+  else
+    pass "$plane secure-cookie audit" "no Secure cookies in the flow"
+  fi
+}
+
+JAR=/tmp/i2p-sso-cookies; rm -f "$JAR"
+sso_flow "i2p" "http://vmtest.i2p" "$JAR"
+JAR2=/tmp/lan-sso-cookies; rm -f "$JAR2"
+sso_flow "lan" "http://10.0.2.15" "$JAR2"
+
+# ── claim flow (claim-flow T5/T7) ───
+# The boot-dead-end tripwire: a fresh box whose forwards need a
+# tunnel used to EXIT before its dashboard served. Claimable boot
+# keeps it up and serves the Remote access claim card — assert both,
+# or the dead end returns silently on the next refactor.
+echo ""
+echo "─── Claim flow (remote access) ───"
+if systemctl is-active --quiet fortress-client.service 2>/dev/null; then
+  pass "fortress-client.service" "active (claimable boot)"
 else
-  fail "i2p SSO session" "$(printf '%s' "$CB_HTML" | grep -o 'Authentication failed[^<]*' | head -1 || echo 'no callback page')"
+  fail "fortress-client.service" "not active — the box exited instead of serving a claim surface"
 fi
+
+claim_cookie=$(mktemp)
+if curl -sf -c "$claim_cookie" -X POST -d "password=password" \
+    http://127.0.0.1:3210/auth/login >/dev/null 2>&1; then
+  claim_home=$(curl -sf -b "$claim_cookie" http://127.0.0.1:3210/ 2>/dev/null || true)
+  if printf '%s' "$claim_home" | grep -q "Remote access" \
+     && printf '%s' "$claim_home" | grep -q "not claimed" \
+     && printf '%s' "$claim_home" | grep -q 'action="/claim"'; then
+    pass "claim surface" "Remote access card + claim form serve"
+  else
+    fail "claim surface" "claim card/form missing on the unclaimed dashboard"
+  fi
+else
+  fail "dashboard login" "admin login rejected (password=password)"
+fi
+rm -f "$claim_cookie"
 
 echo ""
 if [ "$fails" -ne 0 ]; then

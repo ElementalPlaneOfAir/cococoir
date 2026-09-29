@@ -31,10 +31,17 @@ mkFortressService {
   defaultPort = 5055;
   defaultHealthPath = "/api/v1/status";
   requires = ["jellyfin"];
+  routing = "subdomain";
   extraConfig = {lib, ...}: {
     services.seerr = {
       enable = true;
       openFirewall = false;
     };
+
+    # Jellyseerr binds 0.0.0.0 unless told otherwise; the LAN plane's
+    # failover port-site (planes.nix) binds <lanAddress>:<port> in
+    # front of it and would collide (EADDRINUSE). Loopback-only keeps
+    # the Caddy vhost the single ingress — including on the LAN.
+    systemd.services.seerr.environment.HOST = "127.0.0.1";
   };
 }

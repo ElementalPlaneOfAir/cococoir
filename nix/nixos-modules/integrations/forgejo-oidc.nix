@@ -21,10 +21,9 @@
 # files it creates stay owned by the forgejo user.
 #
 # SSO redirect flow: Forgejo redirects the browser to the loopback
-# dex issuer from its discovery doc; the contract factory's generic
-# issuerLocationRewrite rewrites that Location to the clearnet dex
-# origin on the forgejo vhost, and the dex module's i2p rewrite keeps
-# the flow on the I2P plane. Nothing forgejo-specific is needed for
+# dex issuer from its discovery doc; the routing layer (planes.nix)
+# rewrites that Location onto the plane the browser is on, so the
+# flow never leaves its plane. Nothing forgejo-specific is needed for
 # the redirect hop.
 {config, lib, pkgs, ...}:
 let
@@ -70,10 +69,17 @@ mkIf oidcEnabled {
     {
       id = "forgejo";
       name = "Forgejo";
-      redirectURIs = [
-        "https://${fj.domain}/user/oauth2/dex/callback"
-        "http://${fj.i2pDomain}/user/oauth2/dex/callback"
-      ];
+      # Forgejo derives its callback from ROOT_URL (the clearnet
+      # canonical, incl. the /git base path); the plane variants are
+      # registered so a plane-swapped callback (planes.nix keeps the
+      # browser on its plane) is always a known redirect_uri.
+      redirectURIs =
+        lib.optional (config.fortress.planes.clearnetOrigin != null)
+          "${config.fortress.planes.clearnetOrigin}${fj.path}/user/oauth2/dex/callback"
+        ++ lib.optional (config.fortress.planes.lanOrigin != null)
+          "${config.fortress.planes.lanOrigin}${fj.path}/user/oauth2/dex/callback"
+        ++ lib.optional (config.fortress.planes.i2pOrigin != null)
+          "${config.fortress.planes.i2pOrigin}${fj.path}/user/oauth2/dex/callback";
       secretFile = secretFile;
     }
   ];

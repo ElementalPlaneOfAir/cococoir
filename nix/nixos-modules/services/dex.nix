@@ -40,8 +40,9 @@ mkFortressService {
   description = "Dex OIDC provider";
   defaultEnable = true;
   defaultPort = 5556;
-  defaultHealthPath = "/dex/.well-known/openid-configuration";
+  defaultHealthPath = "/.well-known/openid-configuration";
   conventionalSubdomain = "auth";
+  path = "/dex";
   extraConfig = {cfg, lib, config, ...}: {
     services.dex = {
       enable = true;
@@ -60,18 +61,5 @@ mkFortressService {
     systemd.services.dex.serviceConfig = {
       StateDirectory = "dex";
     };
-
-    services.caddy.virtualHosts."http://${config.fortress.services.dex.i2pDomain}".extraConfig =
-      let
-        appServices = lib.filterAttrs (_: s:
-          (s.enable or false)
-          && (s.public or false)
-          && (s ? i2pDomain)
-          && s.i2pDomain != config.fortress.services.dex.i2pDomain)
-          config.fortress.services;
-      in
-        lib.mkDefault (lib.concatMapStringsSep "\n" (s:
-          "header >Location \"^https://${lib.replaceStrings ["."] ["\\."] s.domain}\" \"http://${s.i2pDomain}\"")
-        (lib.attrValues appServices));
   };
 }

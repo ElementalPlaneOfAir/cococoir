@@ -66,11 +66,14 @@ let
       ${envFor "radarr"} ${envFor "sonarr"}
   '';
 
+  # Loopback connection URLs incl. each app's base path (ADR-034):
+  # the *arrs serve their API under <UrlBase>, Jellyfin under its
+  # <BaseUrl> — a bare port here 404s every handshake call.
   qbtBase = "http://127.0.0.1:8080";
-  radarrBase = "http://127.0.0.1:7878";
-  sonarrBase = "http://127.0.0.1:8989";
+  radarrBase = "http://127.0.0.1:7878${config.fortress.services.radarr.path}";
+  sonarrBase = "http://127.0.0.1:8989${config.fortress.services.sonarr.path}";
   seerrBase = "http://127.0.0.1:5055";
-  jellyfinBase = "http://127.0.0.1:8096";
+  jellyfinBase = "http://127.0.0.1:8096${config.fortress.services.jellyfin.path}";
   seerrBootstrapUser = "seerr-bootstrap";
   moviesRoot = "${dataRoot}/media/movies/library";
   showsRoot = "${dataRoot}/media/shows/library";
@@ -175,7 +178,7 @@ let
     }
 
     register_seerr_service() {
-      local kind=$1 label=$2 port=$3 arr_base=$4 arr_key=$5 root=$6 extra=$7
+      local kind=$1 label=$2 port=$3 arr_base=$4 arr_key=$5 root=$6 extra=$7 urlbase=$8
       local list profile payload
       list=$(${pkgs.curl}/bin/curl -sf -b "''${cookie_jar}" "${seerrBase}/api/v1/settings/''${kind}")
       if ${pkgs.jq}/bin/jq -e --argjson port "''${port}" \
@@ -187,9 +190,10 @@ let
         | ${pkgs.jq}/bin/jq '.[0]')
       payload=$(${pkgs.jq}/bin/jq -n \
         --arg label "''${label}" --arg apiKey "''${arr_key}" --arg root "''${root}" \
+        --arg urlbase "''${urlbase}" \
         --argjson port "''${port}" --argjson profile "''${profile}" --argjson extra "''${extra}" \
         '{name: $label, hostname: "127.0.0.1", port: $port, apiKey: $apiKey,
-          useSsl: false, baseUrl: "", activeProfileId: $profile.id,
+          useSsl: false, baseUrl: $urlbase, activeProfileId: $profile.id,
           activeProfileName: $profile.name, activeDirectory: $root,
           is4k: false, minimumAvailability: "Released", isDefault: true,
           syncEnabled: true, preventSearch: false, externalUrl: ""} + $extra')
@@ -259,7 +263,7 @@ let
     # 500s with "already configured" once settings.jellyfin.ip is set).
     # Try WITH hostname first (first-boot bootstrap), then without it
     # (steady-state re-auth) when the "already configured" guard fires.
-    login_with_host="{\"username\": \"${seerrBootstrapUser}\", \"password\": \"$seerr_password\", \"hostname\": \"127.0.0.1\", \"port\": 8096, \"useSsl\": false, \"urlBase\": \"\", \"serverType\": 2}"
+    login_with_host="{\"username\": \"${seerrBootstrapUser}\", \"password\": \"$seerr_password\", \"hostname\": \"127.0.0.1\", \"port\": 8096, \"useSsl\": false, \"urlBase\": \"${config.fortress.services.jellyfin.path}\", \"serverType\": 2}"
     login_without_host="{\"username\": \"${seerrBootstrapUser}\", \"password\": \"$seerr_password\", \"useSsl\": false, \"serverType\": 2}"
     login_code=$(${pkgs.curl}/bin/curl -s -o /dev/null -w '%{http_code}' -X POST \
       -H 'Content-Type: application/json' -c "$cookie_jar" \
@@ -285,10 +289,10 @@ let
     ${pkgs.jq}/bin/jq -e 'type == "array"' <<<"$jellyfin_libraries" >/dev/null
 
     ${lib.optionalString config.services.radarr.enable ''
-    register_seerr_service radarr "Radarr Main" 7878 ${radarrBase} "$radarr_key" ${moviesRoot} '{}'
+    register_seerr_service radarr "Radarr Main" 7878 ${radarrBase} "$radarr_key" ${moviesRoot} '{}' ${config.fortress.services.radarr.path}
     ''}
     ${lib.optionalString config.services.sonarr.enable ''
-    register_seerr_service sonarr "Sonarr Main" 8989 ${sonarrBase} "$sonarr_key" ${showsRoot} '{"enableSeasonFolders": false}'
+    register_seerr_service sonarr "Sonarr Main" 8989 ${sonarrBase} "$sonarr_key" ${showsRoot} '{"enableSeasonFolders": false}' ${config.fortress.services.sonarr.path}
     ''}
     echo "[fortress-media-apply] seerr wired to jellyfin + radarr + sonarr"
     ''}

@@ -4,7 +4,7 @@
 //! survive **byte-for-byte**:
 //!   POST /api/invites/{code}/begin    {"public_key"}
 //!   GET  /api/invites/{code}/poll     {"status","machine":{"wg_ip"},"deviceToken"}
-//!   GET  /api/wireguard/pubkey        {"public_key"}
+//!   GET  /api/wireguard/info          {"public_key","endpoint","allowed_ips"}
 //!   POST /api/device/register         {"device_token","public_key"}
 //!
 //! Key styles are deliberately mixed (snake in, camel out) — that IS the
@@ -46,6 +46,10 @@ pub struct RegisterBody {
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MachineInfo {
     pub wg_ip: String,
+    /// The machine's own name — it is what the box shows the owner
+    /// after a claim ("claimed as main.example.net"), never a secret
+    /// from the machine itself.
+    pub hostname: String,
 }
 
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
@@ -60,9 +64,23 @@ pub struct PollOutcome {
     pub device_token: Option<String>,
 }
 
+/// The tunnel facts a claiming box fetches before it dials — the wire
+/// shape of `ControlPlane::tunnel_info`.
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
-pub struct PubkeyOut {
+pub struct WireguardInfo {
     pub public_key: String,
+    pub endpoint: String,
+    pub allowed_ips: String,
+}
+
+impl From<fortress_controlplane::controlplane::TunnelInfo> for WireguardInfo {
+    fn from(info: fortress_controlplane::controlplane::TunnelInfo) -> Self {
+        WireguardInfo {
+            public_key: info.public_key,
+            endpoint: info.endpoint,
+            allowed_ips: info.allowed_ips,
+        }
+    }
 }
 
 /// The error surface: a status code plus a short machine-facing message
@@ -137,14 +155,16 @@ impl From<ControlPlaneError> for ApiError {
     }
 }
 
-/// Map the domain outcome onto the wire shape. Only `wg_ip` crosses the
-/// wire from the machine record; the domain's own `PollOutcome` (snake
-/// `device_token`, full `Machine`) must not.
+/// Map the domain outcome onto the wire shape. Only `wg_ip` and the
+/// machine's own `hostname` cross the wire from the machine record; the
+/// domain's own `PollOutcome` (snake `device_token`, full `Machine`)
+/// must not.
 fn map_poll(outcome: fortress_controlplane::controlplane::pairing::PollOutcome) -> PollOutcome {
     PollOutcome {
         status: outcome.status,
         machine: outcome.machine.map(|machine| MachineInfo {
             wg_ip: machine.wg_ip,
+            hostname: machine.hostname,
         }),
         device_token: outcome.device_token,
     }
@@ -180,14 +200,14 @@ pub async fn invite_poll(
 
 #[utoipa::path(
     get,
-    path = "/api/wireguard/pubkey",
-    responses((status = 200, body = PubkeyOut))
+    path = "/api/wireguard/info",
+    responses((status = 200, body = WireguardInfo))
 )]
-pub async fn wireguard_pubkey(
+pub async fn wireguard_info(
     State(backend): State<&'static SiteBackend>,
-) -> Result<Json<PubkeyOut>, ApiError> {
-    let public_key = backend.cp.edge_public_key()?;
-    Ok(Json(PubkeyOut { public_key }))
+) -> Result<Json<WireguardInfo>, ApiError> {
+    let info = backend.cp.tunnel_info()?;
+    Ok(Json(WireguardInfo::from(info)))
 }
 
 #[utoipa::path(
@@ -205,7 +225,7 @@ pub async fn device_register(
 }
 
 #[derive(OpenApi)]
-#[openapi(paths(invite_begin, invite_poll, wireguard_pubkey, device_register))]
+#[openapi(paths(invite_begin, invite_poll, wireguard_info, device_register))]
 pub struct ApiDoc;
 
 /// The `/api/*` tree, declared with full `/api/...` paths and merged at
@@ -216,7 +236,7 @@ pub fn router(backend: &'static SiteBackend) -> AxumRouter {
     AxumRouter::new()
         .route("/api/invites/{code}/begin", post(invite_begin))
         .route("/api/invites/{code}/poll", get(invite_poll))
-        .route("/api/wireguard/pubkey", get(wireguard_pubkey))
+        .route("/api/wireguard/info", get(wireguard_info))
         .route("/api/device/register", post(device_register))
         .route("/api/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .with_state(backend)
@@ -258,15 +278,21 @@ mod wire_mapping_tests {
         assert_eq!(
             wire.pointer("/machine/wg_ip").and_then(|v| v.as_str()),
             Some("10.10.0.2"),
-            "machine.wg_ip is the ONLY machine field on the wire: {wire}"
+            "machine.wg_ip crosses so the box can build its tunnel: {wire}"
+        );
+        assert_eq!(
+            wire.pointer("/machine/hostname").and_then(|v| v.as_str()),
+            Some("mainbox.example.net"),
+            "machine.hostname crosses — the box shows the owner their own machine's name after a claim: {wire}"
         );
         assert_eq!(
             wire.get("deviceToken").and_then(|v| v.as_str()),
             Some("64chars"),
             "deviceToken is camel on the wire — the client reads deviceToken, not device_token: {wire}"
         );
-        // The rest of the Machine record must NOT leak to the machine.
-        for leaked in ["device_token_hash", "hostname", "wg_public_key", "owner", "ipv6"] {
+        // Everything else of the Machine record must NOT leak to the
+        // machine.
+        for leaked in ["device_token_hash", "wg_public_key", "owner", "ipv6"] {
             assert!(
                 wire.get(leaked).is_none(),
                 "machine field '{leaked}' must not cross the wire: {wire}"

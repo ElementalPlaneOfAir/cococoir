@@ -57,6 +57,87 @@ struct Flags {
     dashboard_addr: String,
 }
 
+/// How the box boots: `Full` runs the forwarder (tunnel resolved or not
+/// needed); `Claimable` has forwards waiting on a tunnel that does not
+/// exist yet, so it serves the dashboard and waits to be claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootMode {
+    Full,
+    Claimable,
+}
+
+/// Decide the boot mode. A box whose forwards need `{tunnel_ip}` and
+/// has no tunnel state cannot serve anything yet — it must survive to
+/// show a claim surface instead of exiting (the dead end this mode
+/// exists to kill).
+pub fn boot_mode(tunnel: Option<&TunnelConfig>, forwards: &[Forward]) -> BootMode {
+    let needs_tunnel = forwards.iter().any(pairing::forward_needs_tunnel);
+    let mode = match (tunnel, needs_tunnel) {
+        (None, true) => BootMode::Claimable,
+        _ => BootMode::Full,
+    };
+    assert_eq!(
+        mode == BootMode::Claimable,
+        tunnel.is_none() && needs_tunnel,
+        "claimable mode is exactly 'no tunnel + forwards that need one'"
+    );
+    mode
+}
+
+/// The process-image restart a runtime claim triggers: after
+/// `tunnel.json` exists, re-exec this very binary so the one boot path
+/// resolves the persisted state and brings wg0 up. A seam so tests can
+/// record the call instead of replacing the test process.
+pub trait Restarter: Send + Sync {
+    fn restart(&self);
+}
+
+/// The production [`Restarter`]: replace this process with the same
+/// command line. systemd sees the same PID; dev runs behave the same.
+pub struct ProcessRestarter;
+
+impl Restarter for ProcessRestarter {
+    fn restart(&self) {
+        use std::os::unix::process::CommandExt;
+        let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        let Some((arg0, rest)) = argv.split_first() else {
+            panic!("restart requires argv[0]");
+        };
+        let err = std::process::Command::new(arg0).args(rest).exec();
+        panic!("re-exec of this process failed: {err}");
+    }
+}
+
+/// The runtime claim action the dashboard's Remote access form drives:
+/// enroll with the pasted invite URL, then re-exec into full mode. The
+/// poll budget matches boot enrollment (5s x ~10k = 30 days of waiting
+/// for the owner's approval). The edge is a parameter so tests script
+/// it; the dashboard passes the HTTP client the URL derives.
+pub async fn claim(
+    edge: &dyn crate::pairing::EdgeClient,
+    invite_url: &str,
+    key_path: &std::path::Path,
+    tunnel_state_path: &std::path::Path,
+    device_token_path: &std::path::Path,
+    restarter: &dyn Restarter,
+) -> Result<(), EnrollError> {
+    assert!(!invite_url.is_empty(), "claim needs an invite URL");
+    let invite = InviteConfig::from_url(invite_url)?;
+    let tunnel = pairing::enroll(
+        edge,
+        &invite,
+        key_path,
+        tunnel_state_path,
+        device_token_path,
+        std::time::Duration::from_secs(5),
+        10_000,
+    )
+    .await?;
+    info!(ip = %tunnel.ip, "claim: enrolled; restarting into full mode");
+    restarter.restart();
+    Ok(())
+}
+
 /// Shared entry point. `component` and `default_config` come from the
 /// binary wrapper. Returns the process exit code.
 pub async fn run(component: &str, default_config: &str) -> i32 {
@@ -120,8 +201,13 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
     let tunnel_cfg: Option<TunnelConfig> = if let Some(persisted) =
         persisted_tunnel_state(&tunnel_state_path())
     {
-        tracing::info!(ip = %persisted.ip, iface = %persisted.iface, "tunnel: persisted enrollment");
-        Some(persisted)
+        tracing::info!(
+            ip = %persisted.tunnel.ip,
+            iface = %persisted.tunnel.iface,
+            hostname = %persisted.hostname,
+            "tunnel: persisted enrollment"
+        );
+        Some(persisted.tunnel)
     } else if let Some(invite) = &cfg.invite {
         let key_path = tunnel::key_path();
         let edge = match HttpEdgeClient::new(&invite.invite_url) {
@@ -178,28 +264,39 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
 
     // The forwards may reference the tunnel IP via the `{tunnel_ip}`
     // placeholder (enrollment assigns it at runtime). Substitution is a
-    // no-op for configs with concrete addresses.
-    let resolved_forwards = tunnel_cfg
-        .as_ref()
-        .map(|t| substitute_tunnel_ip(&cfg.forwards, t))
-        .unwrap_or_else(|| cfg.forwards.clone());
-    let forwards_valid = resolved_forwards
-        .iter()
-        .all(|f| !f.dest_addr.contains("{tunnel_ip}"));
-    if !forwards_valid {
-        error!("config: a forward still references {{tunnel_ip}} but no tunnel state exists");
-        return 1;
-    }
-
-    let forwarder = match Forwarder::new(Config {
-        forwards: resolved_forwards,
-        component: component.to_string(),
-        ..Config::default()
-    }) {
-        Ok(f) => Arc::new(f),
-        Err(err) => {
-            error!(err = %err, "forwarder init failed");
-            return 1;
+    // no-op for configs with concrete addresses. A box whose forwards
+    // need a tunnel that does not exist yet boots claimable: no
+    // forwarder to bind, just the dashboard and health, so the owner
+    // can claim it instead of watching it exit.
+    let mode = boot_mode(tunnel_cfg.as_ref(), &cfg.forwards);
+    let forwarder: Option<Arc<Forwarder>> = match mode {
+        BootMode::Claimable => {
+            info!("claimable: no tunnel yet — claim this box from its dashboard's Remote access panel");
+            None
+        }
+        BootMode::Full => {
+            let resolved_forwards = tunnel_cfg
+                .as_ref()
+                .map(|t| substitute_tunnel_ip(&cfg.forwards, t))
+                .unwrap_or_else(|| cfg.forwards.clone());
+            let forwards_valid = resolved_forwards
+                .iter()
+                .all(|f| !pairing::forward_needs_tunnel(f));
+            assert!(
+                forwards_valid,
+                "claimable mode gates every forward that still needs a tunnel"
+            );
+            match Forwarder::new(Config {
+                forwards: resolved_forwards,
+                component: component.to_string(),
+                ..Config::default()
+            }) {
+                Ok(f) => Some(Arc::new(f)),
+                Err(err) => {
+                    error!(err = %err, "forwarder init failed");
+                    return 1;
+                }
+            }
         }
     };
 
@@ -209,6 +306,46 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
     // session store that cannot open would leave a login page that can
     // never persist a session — a box that "boots" but is unmanageable.
     let dashboard_addr = flags.dashboard_addr.clone();
+    let claim_state = std::sync::Arc::new(std::sync::Mutex::new(dashboard::ClaimState::Unclaimed));
+    let spawn_state = claim_state.clone();
+    let claim_support = dashboard::ClaimSupport {
+        state: claim_state,
+        tunnel_state_path: tunnel_state_path(),
+        spawn_claim: std::sync::Arc::new(move |url: String| {
+            let state = spawn_state.clone();
+            tokio::spawn(async move {
+                let restarter = ProcessRestarter;
+                let edge = match HttpEdgeClient::new(&url) {
+                    Ok(edge) => edge,
+                    Err(err) => {
+                        *state.lock().unwrap() = dashboard::ClaimState::Failed {
+                            message: err.to_string(),
+                        };
+                        return;
+                    }
+                };
+                let result = claim(
+                    &edge,
+                    &url,
+                    &tunnel::key_path(),
+                    &tunnel_state_path(),
+                    &device_token_path(),
+                    &restarter,
+                )
+                .await;
+                if let Err(err) = result {
+                    *state.lock().unwrap() = dashboard::ClaimState::Failed {
+                        message: match err {
+                            EnrollError::Denied => {
+                                "the owner denied this machine's enrollment".to_string()
+                            }
+                            other => other.to_string(),
+                        },
+                    };
+                }
+            });
+        }),
+    };
     let dashboard_task = match dashboard::Db::open().await {
         Ok(db) => {
             let config_path = dashboard::ConfigPath::resolve();
@@ -216,9 +353,15 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
             let auth = admin_config.clone();
             let dashboard_shutdown = shutdown_rx.clone();
             Some(tokio::spawn(async move {
-                if let Err(err) =
-                    dashboard::serve(db, auth, config_path, &dashboard_addr, dashboard_shutdown)
-                        .await
+                if let Err(err) = dashboard::serve(
+                    db,
+                    auth,
+                    config_path,
+                    &dashboard_addr,
+                    dashboard_shutdown,
+                    claim_support,
+                )
+                .await
                 {
                     error!(err = %err, "dashboard server exited with error");
                 }
@@ -235,11 +378,15 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
     };
 
     // Health server. The status closure reads the forwarder's stats
-    // on every request. Same decoupling as Go: health never imports
-    // forwarder types.
-    let status_func: StatusFunc = {
-        let f = forwarder.clone();
-        Arc::new(move || serde_json::to_value(f.stats()).unwrap_or(serde_json::Value::Null))
+    // on every request (or reports claimable mode before the forwarder
+    // exists). Same decoupling as Go: health never imports forwarder
+    // types.
+    let status_func: StatusFunc = match &forwarder {
+        Some(f) => {
+            let f = f.clone();
+            Arc::new(move || serde_json::to_value(f.stats()).unwrap_or(serde_json::Value::Null))
+        }
+        None => Arc::new(|| serde_json::json!({ "status": "claimable" })),
     };
     let health = HealthServer::new(flags.health_addr.clone(), status_func);
     let health_shutdown = shutdown_rx.clone();
@@ -256,13 +403,22 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
         let _ = shutdown_tx.send(true);
     });
 
-    let forwarder_run = forwarder.clone();
-    let forwarder_shutdown = shutdown_rx.clone();
-    let code = match forwarder_run.run(forwarder_shutdown).await {
-        Ok(()) => 0,
-        Err(err) => {
-            error!(err = %err, "forwarder exited with error");
-            1
+    let code = match &forwarder {
+        Some(f) => {
+            let forwarder_run = f.clone();
+            let forwarder_shutdown = shutdown_rx.clone();
+            match forwarder_run.run(forwarder_shutdown).await {
+                Ok(()) => 0,
+                Err(err) => {
+                    error!(err = %err, "forwarder exited with error");
+                    1
+                }
+            }
+        }
+        None => {
+            let mut claimable_shutdown = shutdown_rx.clone();
+            let _ = claimable_shutdown.wait_for(|v| *v).await;
+            0
         }
     };
 
@@ -411,7 +567,7 @@ mod tests {
     #[test]
     fn config_file_parses_invite_shape() {
         let cfg: ConfigFile = serde_json::from_str(
-            r#"{"forwards":[{"listen_addr":"0.0.0.0:80","dest_addr":"{tunnel_ip}:80","proto":"tcp"}],"invite":{"invite_url":"https://proletariat.tech/a/kowiqmz4xy","edge_endpoint":"62.238.111.21:51820","edge_allowed_ips":"10.10.0.0/24"}}"#,
+            r#"{"forwards":[{"listen_addr":"0.0.0.0:80","dest_addr":"{tunnel_ip}:80","proto":"tcp"}],"invite":{"invite_url":"https://proletariat.tech/i/polluted-move-cheetah-apple"}}"#,
         )
         .unwrap();
         let invite = cfg.invite.expect("invite present");
@@ -420,9 +576,122 @@ mod tests {
         assert_eq!(invite.listen_port, 0);
         let (base, code) = invite.parse().unwrap();
         assert_eq!(base, "https://proletariat.tech");
-        assert_eq!(code, "kowiqmz4xy");
+        assert_eq!(code, "polluted-move-cheetah-apple");
         // A placeholder forward is legal in the file; validation that a
         // tunnel state exists happens at boot.
         assert!(cfg.forwards[0].dest_addr.contains("{tunnel_ip}"));
+    }
+
+    fn concrete_forward(dest: &str) -> Forward {
+        use fortress_core::forwarder::Proto;
+        Forward {
+            listen_addr: "0.0.0.0:80".to_string(),
+            proto: Proto::Tcp,
+            dest_addr: dest.to_string(),
+        }
+    }
+
+    fn resolved_tunnel() -> TunnelConfig {
+        TunnelConfig {
+            iface: "wg0".to_string(),
+            ip: "10.10.0.7".to_string(),
+            prefix: 24,
+            edge_pubkey: "k".to_string(),
+            edge_endpoint: "e:51820".to_string(),
+            edge_allowed_ips: "10.10.0.0/24".to_string(),
+            listen_port: 0,
+        }
+    }
+
+    /// The reported dead end: a fresh box whose forwards need a tunnel
+    /// used to exit before its dashboard served. It must boot claimable.
+    /// The need can sit in EITHER address field — the self-enrolled
+    /// shape listens ON the tunnel IP.
+    #[test]
+    fn boot_mode_is_claimable_only_without_a_tunnel_when_forwards_need_one() {
+        use fortress_core::forwarder::Proto;
+        let tunneled = concrete_forward("{tunnel_ip}:80");
+        let concrete = concrete_forward("127.0.0.1:8080");
+        let tunneled_listen = Forward {
+            listen_addr: "{tunnel_ip}:443".to_string(),
+            proto: Proto::Tcp,
+            dest_addr: "127.0.0.1:443".to_string(),
+        };
+        let tunnel = resolved_tunnel();
+        assert_eq!(boot_mode(None, &[tunneled.clone()]), BootMode::Claimable);
+        assert_eq!(boot_mode(None, &[tunneled_listen]), BootMode::Claimable);
+        assert_eq!(boot_mode(Some(&tunnel), &[tunneled]), BootMode::Full);
+        assert_eq!(boot_mode(None, &[concrete]), BootMode::Full);
+        assert_eq!(boot_mode(None, &[]), BootMode::Full);
+    }
+
+    struct RecordingRestarter {
+        restarted: std::sync::Mutex<bool>,
+    }
+
+    impl Restarter for RecordingRestarter {
+        fn restart(&self) {
+            *self.restarted.lock().unwrap() = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_enrolls_persists_and_restarts_into_full_mode() {
+        use crate::pairing::mocks::{approved, mock_edge_info, waiting, MockEdge};
+        let mut edge = MockEdge::new(mock_edge_info());
+        edge.script(vec![waiting(), approved()]);
+        let restarter = RecordingRestarter {
+            restarted: std::sync::Mutex::new(false),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("tunnel.json");
+        claim(
+            &edge,
+            "https://proletariat.tech/i/polluted-move-cheetah-apple",
+            &dir.path().join("wg-private.key"),
+            &state_path,
+            &dir.path().join("device-token"),
+            &restarter,
+        )
+        .await
+        .expect("claim");
+        assert!(
+            *restarter.restarted.lock().unwrap(),
+            "a successful claim re-execs so the boot path brings wg0 up"
+        );
+        assert!(
+            state_path.exists(),
+            "the enrollment state persisted BEFORE the restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_denied_leaves_the_box_claimable() {
+        use crate::pairing::mocks::{mock_edge_info, waiting, MockEdge};
+        let mut edge = MockEdge::new(mock_edge_info());
+        edge.script(vec![waiting(), crate::pairing::PollOutcome {
+            status: "denied".to_string(),
+            wg_ip: None,
+            hostname: None,
+            device_token: None,
+        }]);
+        let restarter = RecordingRestarter {
+            restarted: std::sync::Mutex::new(false),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let result = claim(
+            &edge,
+            "https://proletariat.tech/i/polluted-move-cheetah-apple",
+            &dir.path().join("wg-private.key"),
+            &dir.path().join("tunnel.json"),
+            &dir.path().join("device-token"),
+            &restarter,
+        )
+        .await;
+        assert!(matches!(result, Err(EnrollError::Denied)));
+        assert!(
+            !*restarter.restarted.lock().unwrap(),
+            "a denied claim must not restart"
+        );
     }
 }

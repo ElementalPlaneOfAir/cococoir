@@ -61,6 +61,84 @@ pub struct EditorPageProps {
     pub config_error: Option<String>,
     pub saved: bool,
     pub save_error: Option<String>,
+    pub remote: ClaimView,
+}
+
+/// What the Remote access card shows: the claim lifecycle as the box
+/// sees it.
+pub enum ClaimView {
+    /// An enrollment is persisted — remote access is on.
+    Claimed { hostname: String },
+    /// A claim is dialing the edge / waiting for the owner's approval.
+    Awaiting,
+    /// The last claim failed; the form comes back with the message.
+    Failed { message: String },
+    /// Nothing yet — the form is the way in.
+    Unclaimed,
+}
+
+fn claim_form() -> Node {
+    rsx!(
+        <form method="post" action="/claim" class="flex flex-col gap-2">
+            <label class="block">
+                <div class="tag dim mb-1">"Invite link"</div>
+                <input type="text" name="invite_url" required placeholder="https://proletariat.tech/i/..." class="zine-input"/>
+            </label>
+            {zine_submit("Claim this machine", "")}
+        </form>
+    )
+}
+
+fn remote_access_card(view: &ClaimView) -> Node {
+    let (stamp, body) = match view {
+        ClaimView::Claimed { hostname } => {
+            let url = format!("https://{hostname}");
+            (
+                fortress_web_ui::stamp_small("claimed"),
+                rsx!(
+                    <>
+                        <p class="text-sm dim">"Remote access is on. Sign in at your domain:"</p>
+                        <p><code class="font-black">{url}</code></p>
+                    </>
+                ),
+            )
+        }
+        ClaimView::Awaiting => (
+            fortress_web_ui::stamp_small("waiting"),
+            rsx!(
+                <p class="text-sm dim">"Waiting for the owner's approval on the machines page — then this box restarts into remote access."</p>
+            ),
+        ),
+        ClaimView::Failed { message } => (
+            fortress_web_ui::stamp_small("failed"),
+            rsx!(
+                <>
+                    <div role="alert" class="alert-zine">{message.clone()}</div>
+                    {claim_form()}
+                </>
+            ),
+        ),
+        ClaimView::Unclaimed => (
+            fortress_web_ui::stamp_small("not claimed"),
+            rsx!(
+                <>
+                    <p class="text-sm dim">"Generate an invite link on your machines page and paste it here to give this box remote access."</p>
+                    {claim_form()}
+                </>
+            ),
+        ),
+    };
+    rsx!(
+        {card("", rsx!(
+            <>
+                <div class="flex items-center gap-2">
+                    <h2 class="font-black uppercase">"Remote access"</h2>
+                    {stamp}
+                </div>
+                {body}
+            </>
+        ))}
+    )
 }
 
 fn checked_attr(enabled: bool) -> Option<bool> {
@@ -170,6 +248,7 @@ pub fn EditorPage(props: &EditorPageProps) -> Node {
                     {error_banner}
                     {saved_banner}
                     {save_error_banner}
+                    {remote_access_card(&props.remote)}
                     <form method="post" action="/" class="flex flex-col gap-6">
                         {card("", rsx!(
                             <>

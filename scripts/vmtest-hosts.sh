@@ -23,10 +23,14 @@ set -euo pipefail
 
 # Services that exist in the vmtest VM. Add to this list as new
 # service modules come online (nextcloud, gitea, ...).
-KNOWN_SERVICES=(jellyfin)
+KNOWN_SERVICES=(apex jellyfin radarr sonarr cryptpad seerr git auth qbittorrent)
+# "apex" is the shared path-routing origin itself (vmtest.local) —
+# every service is at /<name> there (ADR-034).
 SUFFIX="vmtest.local"
 HOSTS=/etc/hosts
 MARKER="# vmtest"
+
+entry_for() { if [ "$1" = apex ]; then echo "$SUFFIX"; else echo "$1.$SUFFIX"; fi; }
 
 is_nixos() {
   [[ -f /etc/os-release ]] && grep -qE '^ID=nixos$' /etc/os-release
@@ -38,7 +42,7 @@ This is a NixOS host — /etc/hosts is read-only. Add the entries
 to your NixOS configuration instead:
 
   networking.hosts."127.0.0.1" = [
-$(printf '    "%s.%s"\n' "$@" "$SUFFIX" | sed 's/^/    /' | sed 's/$/"/')
+$(for s in "$@"; do if [ "$s" = apex ]; then echo "    \"$SUFFIX\""; else echo "    \"$s.$SUFFIX\""; fi; done)
   ];
 
 Then nixos-rebuild switch.
@@ -50,7 +54,7 @@ shift || true
 
 case "$cmd" in
   list)
-    printf '%s.%s\n' "${KNOWN_SERVICES[@]}" "$SUFFIX"
+    for s in "${KNOWN_SERVICES[@]}"; do entry_for "$s"; done
     ;;
   rm|remove|undo)
     services=("$@")
@@ -63,7 +67,7 @@ case "$cmd" in
     fi
     removed=()
     for s in "${services[@]}"; do
-      entry="$s.$SUFFIX"
+      entry="$(entry_for "$s")"
       if grep -qF "$MARKER $entry" "$HOSTS"; then
         sudo sed -i "/$MARKER $entry/d" "$HOSTS"
         removed+=("$entry")
@@ -86,7 +90,7 @@ case "$cmd" in
     fi
     added=()
     for s in "${services[@]}"; do
-      entry="$s.$SUFFIX"
+      entry="$(entry_for "$s")"
       if grep -qE "[[:space:]]${entry//./\\.}([[:space:]]|$)" "$HOSTS"; then
         echo "$entry already in $HOSTS"
       else

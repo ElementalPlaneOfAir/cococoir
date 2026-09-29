@@ -6,7 +6,8 @@
 //!
 //!     cargo run -p fortress-client --example dashboard_preview -- /tmp/dash
 use fortress_client::dashboard::components::{
-    EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, LoginPage, LoginPageProps,
+    ClaimView, EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, LoginPage,
+    LoginPageProps,
 };
 use momenta::prelude::*;
 
@@ -50,6 +51,7 @@ fn main() {
                 config_error: None,
                 saved: false,
                 save_error: None,
+                remote: ClaimView::Unclaimed,
             })
             .to_html(),
         ),
