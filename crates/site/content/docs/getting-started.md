@@ -16,17 +16,18 @@ depend on anyone's cloud account.
 
 ## If you installed on your own hardware
 
-- **Container tier** (macOS or regular Linux, demo stack): set up
-  with `curl https://proletariat.tech/install.sh | bash`, then
-  visit `https://jellyfin.vmtest.local:8443`. The script adds the
-  `*.vmtest.local` hosts entries. Demo login is
-  `admin@example.com` / `password` — the same demo stack as the
-  boxes ship with, before your account is attached.
-- **NixOS module** (native path): see [the NixOS guide](/docs/nixos).
-- **Container tier on NixOS?** The script does not manage a NixOS
-  box — add `virtualisation.docker.enable = true` and use the
-  same one-liner.
+- **Linux native** (any distro): `system-manager` applies the fortress
+  services to the host's systemd (in place). Install with
+  `curl https://proletariat.tech/install.sh | bash`.
+- **macOS / Windows** (Linux VM): a single Linux VM runs the stack
+  (system-manager inside); the host is just hardware. Provision with
+  `curl https://proletariat.tech/install.sh | bash`.
 - **Full guide**: [the install script page](/docs/install-script).
+
+> **Note (ADR-035):** the automated provisioners for these two methods
+> are being rebuilt now that the Docker container tier is removed;
+> `install.sh` currently reports the method but installs nothing yet.
+> The demo stack (login `admin@example.com` / `password`) is unchanged.
 
 ## What you get
 

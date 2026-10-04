@@ -731,7 +731,8 @@ revisited.
     ~€400/yr); it is the reference if customer data ever demands it.
 
 - **ADR-030: The container tier is a full-OS NixOS image, not a
-  degraded product.** To let collaborators/tinkerers run fortress on
+  degraded product (SUPERSEDED by ADR-035 — Docker eliminated).**
+  To let collaborators/tinkerers run fortress on
   an ordinary Linux box, the vmtest demo stack ships as one
   `docker import`-able NixOS rootfs tarball
   (`nixosConfigurations/fortress-container.nix`, built on nixpkgs'
@@ -816,6 +817,50 @@ revisited.
   prefixes (silent-failure seam, banned); 301 redirects (not
   reversible); a second customer-facing routing option (the routing
   mode is derived per service, never configured).
+
+- **ADR-035: The apply model — fortress-owned `config.nix` + a
+  system-manager-uniform applier; Linux native + one Mac/Windows
+  VM, Docker eliminated (supersedes ADR-030).**
+  The config surface is fortress-owned: the customer's whole
+  fortress config lives in one `config.nix` (the `/etc/fortress`
+  magic-folder git repo with `secrets/` + `flake.lock`) and the
+  dashboard UI edits it with full authority. Fortress is NOT a
+  NixOS module (`services.fortress.*`) — that caps the UI at the
+  module's option tree and entangles it with the customer's
+  machine config; the UI must own the entire config surface. The
+  applier is **system-manager** (the process-manager layer): it
+  applies fortress service closures — built from the fortress
+  repo's own pinned nixpkgs, self-contained and version-independent
+  of the OS — to the target's systemd. Root-system/kernel updates
+  (`nixos-rebuild` for a NixOS base, `dnf`/apt for a distro) are a
+  SEPARATE, independent concern the applier never touches. Two
+  install methods ship: (1) **Linux native** — system-manager
+  applies to the host's native systemd in place (the low-downtime
+  "custom box" tier); (2) **macOS/Windows** — a single Linux **VM**
+  (systemd) runs the stack and system-manager applies inside it,
+  the same applier (Nix has no native Windows; macOS is launchd —
+  a Linux VM is the uniform vehicle; the host is just hardware).
+  Docker is **eliminated**: no `docker import`, no ADR-030
+  NixOS-rootfs-in-a-container, no Docker Desktop cgroup/licensing
+  warts. Atomic rollback is `git revert` + re-apply — `config.nix`,
+  `secrets/`, `flake.lock` share one git history, so a revert rolls
+  config AND secrets back together and the applier re-reads the
+  reverted config and re-decrypts the reverted secrets. The
+  collaborator demo path IS the install path (no separate
+  `docker run` quick-start). **Consequences**: on a NixOS host,
+  fortress is system-manager-managed, OUTSIDE the `nixos-rebuild`
+  closure → two lifecycles (base via nixos-rebuild, fortress via
+  the applier) — accepted for uniformity + nixpkgs decoupling. The
+  Mac/Windows VM vehicle (a shipped disk image the customer runs in
+  Lima/UTM/Hyper-V, vs. a runner CLI we own that provisions it) is
+  an OPEN delivery decision, settled when that install path is
+  built. **Rejected**: `nixos-rebuild switch` as the applier
+  (couples to the machine flake's `#machine_name` + its nixpkgs,
+  forks the NixOS-vs-Fedora path, forces NixOS-coupled config);
+  fortress-as-a-NixOS-module config surface (caps the UI at the
+  option tree); a Docker container tier (ADR-030's cgroup +
+  licensing warts, and a "rebuild the artifact" apply that forks
+  the very path this unifies).
 
 ## Implementation backlog
 

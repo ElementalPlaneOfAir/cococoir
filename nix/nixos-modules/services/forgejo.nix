@@ -29,7 +29,7 @@
 #     Dex OIDC auto-registration (per-source, independent of this
 #     switch), never via a public sign-up form.
 #   - auto-declares the `forgejo-data` btrfs subvolume so repos +
-#     DB land on the pool (btrfs tier) or /data (container tier)
+#     DB land on the pool (btrfs tier) or /data (plain-dirs tier)
 #
 # The health path /api/healthz is Forgejo's unauthenticated
 # liveness endpoint (the same one its helm chart probes).

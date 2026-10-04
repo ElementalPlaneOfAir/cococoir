@@ -1,21 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# fortress/storage/plain-dirs — the container-tier storage backend.
+# fortress/storage/plain-dirs — the non-btrfs storage backend.
 #
-# The container tier (nixosConfigurations/fortress-container.nix)
-# runs the same fortress modules with `fortress.storage.backend =
-# "plain-dirs"`: there is no btrfs inside a container, so the
-# service modules' auto-declared subvolumes
-# (fortress.storage.btrfs.subvolumes — the same tree the btrfs
-# backend consumes) are applied as plain directories under
+# A target without btrfs (e.g. the Mac/Windows VM, or a plain host
+# volume) runs the same fortress modules with `fortress.storage.
+# backend = "plain-dirs"`: the service modules' auto-declared
+# subvolumes (fortress.storage.btrfs.subvolumes — the same tree the
+# btrfs backend consumes) are applied as plain directories under
 # `fortress.storage.dataRoot` with the same owner/mode semantics
 # (systemd-tmpfiles re-applies owner/mode on every boot, matching
 # the btrfs backend's converge-on-boot behavior). Persistence
 # comes from the host bind-mounting a volume at dataRoot.
 #
 # Quotas: a btrfs concept. The service modules auto-declare them
-# (mkDefault) for the customer tier; this backend ignores them by
-# design — size enforcement in the container tier is the host
+# (mkDefault) for the customer (btrfs) tier; this backend ignores
+# them by design — size enforcement on a plain volume is the host
 # volume's job, not a per-service qgroup.
 {
   config,

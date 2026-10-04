@@ -1108,4 +1108,77 @@ in {
             .expect("groups survive");
         assert_eq!(located.value, groups);
     }
+
+    /// The UI edits the on-box split concern modules (`services.nix` for
+    /// toggles, `remote_access.nix` for exposure fields), not a combined
+    /// config. This is the safety boundary behind "the editor cannot emit
+    /// free-hand Nix": a write must change only its target and leave every
+    /// sibling field semantically identical.
+    #[test]
+    fn ui_edits_round_trip_on_split_concern_modules() {
+        let services_nix = r#"{ ... }: {
+  fortress.services = {
+    jellyfin.enable = true;
+    cryptpad.enable = true;
+    media.enable = false;
+  };
+}
+"#;
+        let remote_access_nix = r#"{ ... }: {
+  networking.hostName = "vmtest";
+  fortress.baseDomain = "vmtest.local";
+}
+"#;
+        let services = NixConfigFile::parse(services_nix.to_string()).expect("services.nix parses");
+        assert_eq!(services.to_source(), services_nix, "services.nix round-trips");
+        let remote =
+            NixConfigFile::parse(remote_access_nix.to_string()).expect("remote_access.nix parses");
+        assert_eq!(
+            remote.to_source(),
+            remote_access_nix,
+            "remote_access.nix round-trips"
+        );
+
+        let mut services = NixConfigFile::parse(services_nix.to_string()).unwrap();
+        services
+            .set_attrpath(&["fortress", "services", "jellyfin", "enable"], "false")
+            .expect("toggle applies");
+        let after = services.to_source();
+        assert!(after.contains("jellyfin.enable = false;"), "toggle: {after}");
+        assert!(after.contains("cryptpad.enable = true;"), "sibling: {after}");
+        assert!(after.contains("media.enable = false;"), "sibling: {after}");
+        let reparse = NixConfigFile::parse(after.to_string()).expect("stays valid nix");
+        assert_eq!(
+            reparse
+                .find_attrpath(&["fortress", "services", "jellyfin", "enable"])
+                .unwrap()
+                .value,
+            NixValue::Bool(false)
+        );
+        assert_eq!(
+            reparse
+                .find_attrpath(&["fortress", "services", "cryptpad", "enable"])
+                .unwrap()
+                .value,
+            NixValue::Bool(true),
+            "untouched sibling is semantically identical"
+        );
+
+        let mut remote = NixConfigFile::parse(remote_access_nix.to_string()).unwrap();
+        remote
+            .set_attrpath(&["networking", "hostName"], "\"other\"")
+            .expect("hostname applies");
+        let after = remote.to_source();
+        assert!(after.contains("hostName = \"other\""), "hostname: {after}");
+        assert!(
+            after.contains("baseDomain = \"vmtest.local\""),
+            "domain untouched: {after}"
+        );
+        let reparse = NixConfigFile::parse(after.to_string()).expect("stays valid nix");
+        assert_eq!(
+            reparse.find_attrpath(&["fortress", "baseDomain"]).unwrap().value,
+            NixValue::Str("vmtest.local".to_string()),
+            "untouched domain is semantically identical"
+        );
+    }
 }

@@ -4,11 +4,13 @@ The native path: a Fortress machine is a NixOS machine. Each
 machine is one file in your flake — storage, TLS, and DNS follow
 the `baseDomain` automatically.
 
-> **Note on the install script.** `install.sh` is for macOS and
-> regular Linux, where it builds the demo container tier. On
-> NixOS it stops with a pointer here and does not try to rebuild
-> your system — NixOS belongs in `configuration.nix`, not in a
-> piped shell script.
+> **Note on the install script.** `install.sh` reports the ADR-035
+> install method (Linux native, or the macOS/Windows VM). Per ADR-035
+> fortress is NOT a NixOS module — it applies via `system-manager` to
+> the host's systemd, decoupled from `nixos-rebuild`. This NixOS guide
+> covers the host machine's own config; fortress itself installs the
+> same as on any Linux. (The old NixOS-module framing below predates
+> ADR-035.)
 
 ## Walk-through
 

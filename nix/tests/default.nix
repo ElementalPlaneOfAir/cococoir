@@ -45,6 +45,34 @@ let
         exit 1
       ''}
     '';
+  # ── L1: the sops admin template renders the VALUE, not a PATH ─────
+  # The silent-failure seam: the admin env template must interpolate
+  # `config.sops.placeholder.<name>` (a token sops swaps for the decrypted
+  # bcrypt hash at activation). Using `config.sops.secrets.<name>.path`
+  # instead renders a /run/secrets/… file PATH into the env file — the
+  # client reads a path as the hash and every dashboard login fails with
+  # no eval error. This asserts the correct construct is present and the
+  # path-construct is gone.
+  sopsAdminTemplate = let
+    src = builtins.readFile (../.. + "/nix/nixos-modules/sops-wire.nix");
+  in
+    pkgs.runCommand "fortress-sops-admin-template" {} ''
+      cat > $out <<EOF
+      fortress sops-admin-template (L1): PASS
+        admin env template interpolates config.sops.placeholder (the secret VALUE)
+        does not render config.sops.secrets.<name>.path (a file path) into the env
+      EOF
+      ${lib.optionalString (!(lib.hasInfix "config.sops.placeholder" src)) ''
+        echo "sops-wire.nix admin template lost config.sops.placeholder —" >&2
+        echo "it would render a secret PATH into the env file (auth breaks silently)." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (lib.hasInfix "adminSecretName}.path" src) ''
+        echo "sops-wire.nix admin template uses the secret PATH (adminSecretName}.path)" >&2
+        echo "instead of the value placeholder — the env file would carry a path." >&2
+        exit 1
+      ''}
+    '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
   # crane's `cargoArtifacts` from the package build are shared by every
@@ -86,4 +114,4 @@ in {
   # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
   # cofortress-client (box) -> 127.0.0.1:80 (python http server, Caddy
   # stand-in). See nix/tests/edge/default.nix for the full design.
-} // edgeTests // { inherit edgeStoreWiring; } // contractConformanceTests // docRefsTests
+} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate; } // contractConformanceTests // docRefsTests

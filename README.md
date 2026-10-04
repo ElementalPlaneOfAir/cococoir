@@ -16,27 +16,24 @@ tools exist, but the setup friction excludes 95% of people. Fortress
 removes the friction by shipping pre-configured hardware with
 deterministic, reproducible NixOS builds.
 
-## Install (container tier)
+## Install
 
-macOS and regular Linux get one script — it detects the OS, installs
-docker (a no-op with a warning if it's already there) plus gum TUI,
-asks for a config folder, writes a small deployment flake into it,
-builds the full-OS container image, and boots the stack:
+Per ADR-035, fortress installs two ways and does **not** use Docker:
+
+- **Linux (any distro):** native install — `system-manager` applies the
+  fortress services to the host's systemd (in place).
+- **macOS / Windows:** a single Linux VM runs the stack (system-manager
+  inside); the host is just hardware.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ElementalPlaneOfAir/cococoir/main/scripts/install.sh | bash
 ```
 
-Then visit `https://jellyfin.vmtest.local:8443` (the script adds the
-`*.vmtest.local` /etc/hosts entries; self-signed demo cert; login
-`admin@example.com` / `password`).
-
-NixOS: the script skips the config-folder step (a NixOS install *is*
-the config), checks for docker, and otherwise prints the
-`virtualisation.docker.enable` snippet to add to `configuration.nix`.
-Honest boundary: the macOS path is untested — see
-`nixosConfigurations/fortress-container.nix` and the landmines in
-`docs/STATUS.md`.
+The installer detects the host and names the method. The automated
+provisioners for the two methods are being rebuilt now that the Docker
+container tier is gone (ADR-035); until they land, `install.sh` is an
+honest scaffold that installs nothing yet. See `PLAN.md` ADR-035 and the
+docs for the current state.
 
 
 ## Current status

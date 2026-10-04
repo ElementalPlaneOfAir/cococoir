@@ -1,5 +1,5 @@
 - We have a bare metal machine, either a used x86 machine, or an ARM SBC
-- It will compile to a linux based docker container to run on macos.
+- It runs in a Linux VM on macOS/Windows (ADR-035; the earlier docker-container idea is retired).
 - If you already have a nixos machine, all you need to do is add the cococoir flake input, and enable cococoir server. 
 
 

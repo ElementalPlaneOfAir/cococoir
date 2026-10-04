@@ -520,18 +520,17 @@ pub fn landing_body(props: &LandingProps) -> Node {
             <section id="install" class="px-6 py-14 scroll-mt-16">
                 <div class="mx-auto max-w-3xl">
                     <h2 class="text-center text-3xl font-black uppercase mb-2">"Install on your own machines"</h2>
-                    <p class="text-center dim mb-10">"macOS or regular Linux: the container tier in one command. NixOS: each machine is one file in your flake."</p>
+                    <p class="text-center dim mb-10">"Two ways to run fortress (ADR-035) — no Docker. Linux runs natively; macOS/Windows run a Linux VM."</p>
 
                     <div class="flex flex-col gap-8">
                         {card("", rsx!(
                             <>
                                 <div class="flex items-center gap-3">
                                     <span class="stepnum">"1"</span>
-                                    <h3 class="font-black uppercase">"macOS or Linux — no Nix yet"</h3>
+                                    <h3 class="font-black uppercase">"Linux — native"</h3>
                                 </div>
-                                <p class="text-sm dim mb-2">"Detects your OS, installs Docker (a warning + no-op if it's already there), writes a small deployment flake into a config folder you choose, builds the image, and boots the demo stack."</p>
+                                <p class="text-sm dim mb-2">"system-manager applies the fortress services to your host's systemd (in place). OS/kernel updates stay yours."</p>
                                 {code_block("curl https://proletariat.tech/install.sh | bash")}
-                                <p class="text-sm dim">"Then visit " <code class="text-red">"https://jellyfin.vmtest.local:8443"</code> " (the script adds the hosts entries; self-signed demo cert). Runs the demo tier in Docker — the full NixOS module below is the native path."</p>
                             </>
                         ))}
 
@@ -539,14 +538,10 @@ pub fn landing_body(props: &LandingProps) -> Node {
                             <>
                                 <div class="flex items-center gap-3">
                                     <span class="stepnum">"2"</span>
-                                    <h3 class="font-black uppercase">"Add the flake input"</h3>
+                                    <h3 class="font-black uppercase">"macOS / Windows — a Linux VM"</h3>
                                 </div>
-                                {code_block(r#"{
-  inputs = {
-    fortress.url = "github:ElementalPlaneOfAir/cococoir";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
-}"#)}
+                                <p class="text-sm dim mb-2">"One Linux VM runs the fortress stack (system-manager inside); your Mac/PC is just hardware. Nix/systemd don't run on those hosts."</p>
+                                {code_block("curl https://proletariat.tech/install.sh | bash")}
                             </>
                         ))}
 
@@ -554,62 +549,9 @@ pub fn landing_body(props: &LandingProps) -> Node {
                             <>
                                 <div class="flex items-center gap-3">
                                     <span class="stepnum">"3"</span>
-                                    <h3 class="font-black uppercase">"Import the module"</h3>
+                                    <h3 class="font-black uppercase">"One config folder"</h3>
                                 </div>
-                                {code_block(r#"{
-  imports = [ inputs.fortress.nixosModules.default ];
-}"#)}
-                            </>
-                        ))}
-
-                        {card("", rsx!(
-                            <>
-                                <div class="flex items-center gap-3">
-                                    <span class="stepnum">"4"</span>
-                                    <h3 class="font-black uppercase">"Enable services and rebuild"</h3>
-                                </div>
-                                {code_block(r#"fortress.services.jellyfin = { enable = true; public = true; };
-fortress.services.dex      = { enable = true; public = true; };
-
-sudo nixos-rebuild switch --flake .#mybox"#)}
-                                <p class="text-sm dim">"Each service gets its own Caddy vhost with automatic TLS. Enable a service next to Dex and every user signs in with one account."</p>
-                            </>
-                        ))}
-
-                        {card("", rsx!(
-                            <>
-                                <div class="flex items-center gap-3">
-                                    <span class="stepnum">"5"</span>
-                                    <h3 class="font-black uppercase">"Repeat per machine"</h3>
-                                </div>
-                                <p class="text-sm dim">"One flake, many machines. Each machine is its own " <code class="text-red">"nixosConfiguration"</code> " importing the same module — give it a hostname, a " <code class="text-red">"fortress.baseDomain"</code> ", and enable the services it should run. Storage, TLS and DNS follow automatically."</p>
-                                {code_block(r#"# flake.nix — one module, N machines
-outputs = { self, nixpkgs, fortress, ... }: {
-  nixosConfigurations = {
-    living-room = nixpkgs.lib.nixosSystem {
-      modules = [
-        fortress.nixosModules.default
-        ({ pkgs, ... }: {
-          networking.hostName = "living-room";
-          fortress.baseDomain = "alice.example.com";
-          fortress.services.jellyfin.enable = true;
-          fortress.services.dex.enable = true;
-        })
-      ];
-    };
-    garage = nixpkgs.lib.nixosSystem {
-      modules = [
-        fortress.nixosModules.default
-        ({ pkgs, ... }: {
-          networking.hostName = "garage";
-          fortress.baseDomain = "alice.example.com";
-          fortress.services.cryptpad.enable = true;
-        })
-      ];
-    };
-  };
-}"#)}
-                                <p class="text-sm dim">"Each machine gets its own Caddy vhosts under your domain. Claim them all under one account for a single set of remote-access routes."</p>
+                                <p class="text-sm dim mb-2">"Fortress lives in " <code class="text-red">"/etc/fortress/config"</code> " — a git-versioned " <code class="text-red">"config.nix"</code> " + sealed secrets. The dashboard edits it; applying re-reads it; " <code class="text-red">"git revert"</code> " rolls config AND secrets back together."</p>
                             </>
                         ))}
                     </div>

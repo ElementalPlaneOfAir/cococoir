@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Shared demo-tier config, imported by both demo platforms:
+# Shared demo-tier config, imported by the demo platform:
 #
 #   - nixosConfigurations/vmtest.nix        (QEMU dev VM)
-#   - nixosConfigurations/fortress-container.nix (full-OS container)
 #
 # This file owns everything *platform-independent* about the demo:
 # build-time secrets, the self-signed `*.vmtest.local` cert, the

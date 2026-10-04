@@ -31,7 +31,7 @@ your network and habits.
 - Use a password manager and a hardware second factor wherever a
   service supports it (`sudo`/`su` boxes rarely support it
   because they don't phone home).
-- Email: your Fortress container tier runs no mail service — the
+- Email: your Fortress install runs no mail service — the
   SMTP seams (`MAIL_FROM`, submission relay) belong to the
   operator tier, so a lost email provider never means losing your
   self-hosted data.

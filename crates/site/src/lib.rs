@@ -93,8 +93,8 @@ impl std::fmt::Debug for DocError {
 pub const DOC_PAGES: &[(&str, &str, &str, &str)] = &[
     (
         "install-script",
-        "The install script (macOS / Linux)",
-        "One command sets up the demo container tier.",
+        "The install script",
+        "Detects the host and reports the ADR-035 install method (Linux native / macOS-Windows VM).",
         include_str!("../content/docs/install-script.md"),
     ),
     (

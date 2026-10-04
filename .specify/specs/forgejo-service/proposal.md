@@ -42,7 +42,7 @@ Standard `mkFortressService` call on the contract factory:
   health endpoint), `storageNeeded = true`.
 - `stateDir = ${fortress.storage.dataRoot}/forgejo` so repos + DB
   land on the auto-declared subvolume (btrfs tier) or under `/data`
-  (plain-dirs / container tier — survives container recreate, same
+  (plain-dirs / non-btrfs tier — survives recreate, same
   as jellyfin/cryptpad).
 - `services.forgejo.settings.server`: `HTTP_ADDR = "127.0.0.1"`
   (Caddy is the ingress; the forwarder owns the tunnel IP),
@@ -55,8 +55,8 @@ Standard `mkFortressService` call on the contract factory:
 - `session.COOKIE_SECURE = true`.
 - btrfs subvolume `forgejo-data` (owner forgejo:forgejo, generous
   quota) + gated `after/requires` on `fortress-btrfs-subvolumes`
-  + `RequiresMountsFor` exactly like jellyfin (container-wiring /
-  contract-conformance enforce the gate).
+  + `RequiresMountsFor` exactly like jellyfin (contract-conformance
+  enforces the gate; container-wiring retired with the container tier).
 
 ### OIDC integration (`integrations/forgejo-oidc.nix`)
 
@@ -100,7 +100,7 @@ specific needed for SSO to traverse Caddy.
    client with both callback URIs; the bootstrap oneshot is boot-
    activated and orders after forgejo + dex; forgejo's vhost carries
    the dex issuer Location rewrite.
-4. `container-wiring` passes (forgejo subvolume renders as a `/data`
+4. `container-wiring` (retired with the container tier) passed (forgejo subvolume renders as a `/data`
    tmpfiles dir, no btrfs refs leak).
 5. No new customer-facing option beyond the standard enable.
 

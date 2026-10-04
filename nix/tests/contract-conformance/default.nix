@@ -90,20 +90,20 @@ let
 
   readService = name: builtins.readFile (../../nixos-modules/services + "/${name}.nix");
 
-  # Storage-backend tripwire (storage/plain-dirs.nix, the container
+  # Storage-backend tripwire (storage/plain-dirs.nix, the non-btrfs
   # tier). Service modules must derive paths from
   # fortress.storage.dataRoot and gate any
   # fortress-btrfs-subvolumes.service unit reference behind the
   # btrfsStorage gate. A hard-wired pool.mountpoint or an ungated
   # subvolume-unit reference renders fine on the customer (btrfs)
-  # tier and breaks the container tier at boot — pure eval cannot
+  # tier and breaks the non-btrfs tier at boot — pure eval cannot
   # catch it, this source grep can.
   storageTripwire = name:
     let src = readService name; in
     assert lib.assertMsg (!(lib.hasInfix "btrfs.pool.mountpoint" src))
       "contract-conformance: ${name}.nix hard-wires fortress.storage.btrfs.pool.mountpoint — derive from fortress.storage.dataRoot instead (storage backend split)";
     assert lib.assertMsg (!(lib.hasInfix "fortress-btrfs-subvolumes" src) || lib.hasInfix "btrfsStorage" src)
-      "contract-conformance: ${name}.nix references fortress-btrfs-subvolumes.service without the btrfsStorage gate — ungated, the reference kills the service on the plain-dirs (container) tier";
+      "contract-conformance: ${name}.nix references fortress-btrfs-subvolumes.service without the btrfsStorage gate — ungated, the reference kills the service on the plain-dirs (non-btrfs) tier";
     "ok";
 
   check = name: needle:

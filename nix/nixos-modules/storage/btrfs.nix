@@ -135,8 +135,9 @@ in
       description = ''
         Storage backend. `btrfs` is the customer tier (ADR-023:
         pool + subvolumes on real disks). `plain-dirs` is the
-        container tier (`nixosConfigurations/fortress-container.nix`):
-        the same auto-declared subvolume tree is applied as plain
+        non-btrfs tier (e.g. the Mac/Windows VM; see
+        storage/plain-dirs.nix): the same auto-declared subvolume
+        tree is applied as plain
         directories under `dataRoot` (systemd-tmpfiles), inside a
         bind-mounted volume. Not customer-facing — a tier setting,
         set once by the platform config that needs it.
@@ -149,7 +150,7 @@ in
       description = ''
         Directory tree services write under (media libraries,
         service data). Defaults to the btrfs pool mountpoint so
-        the customer tier needs no extra option; the container
+        the customer (btrfs) tier needs no extra option; a non-btrfs
         tier overrides it to the volume bind-mount point.
       '';
     };
