@@ -52,18 +52,20 @@
     };
   };
 
-  outputs = inputs: let
+  outputs = {self, ...}@inputs: let
     # nixpkgs with the crane flake injected as an attribute, so any
     # `pkgs.callPackage ./nix/packages/fortress {}` (in the NixOS
     # modules, the tests, the edge systemConfig) resolves the `crane`
     # arg it now needs, without threading the flake input through every
     # call site.
-    withCrane = system: let
-      base = import inputs.nixpkgs {
-        inherit system;
-        config.allowUnfree = true;
-      };
-      withCraneAttrs = base.extend (final: prev: {
+    # The overlay list every fortress build shares — `crane` (so any
+    # `pkgs.callPackage ./nix/packages/fortress {}` resolves its crane
+    # arg), the jellarr fetchPnpmDeps hash substitution, and the
+    # nix-index-database overlay. Used by BOTH `mkPkgs` (NixOS
+    # consumers) and the system-manager configs (via `nixpkgs.overlays`)
+    # so there is exactly one pkgs-shaping definition.
+    fortressOverlays = [
+      (final: prev: {
         crane = inputs.crane;
         # jellarr (rev 317f7be, PR #79's Jellyfin-12 auth fix) hardwires
         # a fetchPnpmDeps hash computed against an older nixpkgs
@@ -78,15 +80,21 @@
           then args // {
             hash = "sha256-qNVnhHjTFPhJxJ8oZPBSfJs2OjNSlbmS31okZuSGWMU=";
           } else args);
-      });
+      })
       # nix-index-database overlay: adds `comma-with-db` (comma + the
       # small nix-index database wired via NIX_INDEX_DATABASE) to pkgs,
       # so every machine built with these pkgs gets a comma that can
       # actually resolve `, foo` -> attrpath. Without this, the raw
       # `comma` binary is a dead end (it has no database to look names
       # up in).
-    in
-      withCraneAttrs.extend inputs.nix-index-database.overlays.nix-index;
+      inputs.nix-index-database.overlays.nix-index
+    ];
+    withCrane = system:
+      import inputs.nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+        overlays = fortressOverlays;
+      };
     vmtestPkgs = withCrane "x86_64-linux";
     vmtest = inputs.nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
@@ -111,6 +119,78 @@
         ./nix/nixos-modules
       ];
     };
+
+    # The fortress applier's input (ADR-035): turn a customer `config.nix`
+    # (the magic folder's flat config module) into the system-manager config
+    # the applier builds. This is the one entrypoint a magic-folder flake
+    # calls — `cococoir.lib.mkFortressSystemConfig` — so the customer flake
+    # stays a few lines. Mirrors `nixosModules.default`, but evaluated by
+    # `makeSystemConfig` so fortress lands on the target's systemd OUTSIDE
+    # `nixos-rebuild` (uniform NixOS / non-NixOS). Applied by
+    # `fortress-apply`, not by `system-manager switch` (see
+    # nix/system-manager/apply.sh for why).
+    #
+    # The overlays MUST flow through this function argument, not
+    # `nixpkgs.overlays` (a module option). `nixpkgs.overlays` has type
+    # `listOf anything`, and `types.anything` merges FUNCTION values
+    # pointwise — that forces each overlay's output attrs while the pkgs
+    # fixed point is still being built, so `final.callPackage` re-enters
+    # (infinite recursion at nix-index-database's `comma-with-db`). The
+    # function arg is concatenated raw (`overlays ++ cfg.overlays`),
+    # preserving fixed-point laziness.
+    mkFortressSystemConfig = config: let
+      systemConfig = inputs.system-manager.lib.makeSystemConfig {
+        overlays = fortressOverlays;
+        modules = [
+          config
+          ./nix/system-manager/fortress.nix
+        ];
+        specialArgs = {inherit inputs;};
+      };
+    in
+      systemConfig
+      // {
+        # The rendered systemd unit tree alone (units + their
+        # .wants/.requires enablement). `fortress-apply` installs just this,
+        # so building it never builds system-manager's own activator or its
+        # Rust binaries — which the applier deliberately does not run.
+        unitsDir = systemConfig.config.build.etc.staticEnv;
+      };
+
+    # Current vertical slice: dex (always-on OIDC infra) on loopback.
+    # Used by `nix run .#system-manager -- switch --flake .#fortress`;
+    # the runtime VM builds from the magic-folder fixture instead, to
+    # prove the applier is decoupled from the OS closure.
+    fortressSystemConfig = mkFortressSystemConfig ({...}: {
+      nixpkgs.hostPlatform = "x86_64-linux";
+      fortress.baseDomain = "example.com";
+      # plain-dirs isolates the applier from btrfs's host-OS bits
+      # (services.btrfs.autoScrub / boot.supportedFilesystems are
+      # NixOS-only; a separate port concern).
+      fortress.storage.backend = "plain-dirs";
+      fortress.services.dex = {
+        enable = true;
+        # Loopback-only for this slice: `public = true` requires
+        # Caddy to be wired (planes.nix), the next slice.
+        public = false;
+      };
+    });
+
+    # ADR-035 runtime-proof VM: NixOS owns the machine (boot + ssh), and a
+    # boot trampoline runs `fortress-apply` against a magic-folder fixture on
+    # disk — exactly amon-sul's two-lifecycle topology. The OS closure holds
+    # only the applier + the fixture source, NEVER the fortress service
+    # closure: `cococoirSource` is the repo *source* (text), which the VM
+    # builds from at run time.
+    smtest = inputs.nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      pkgs = withCrane "x86_64-linux";
+      specialArgs = {
+        inherit inputs;
+        cococoirSource = self.outPath;
+      };
+      modules = [./nixosConfigurations/smtest.nix];
+    };
   in
     inputs.flake-parts.lib.mkFlake {inherit inputs;} {
       systems = [
@@ -130,6 +210,12 @@
       # flake's internals.
       flake.lib.mkPkgs = withCrane;
 
+      # The entrypoint a magic-folder `flake.nix` calls to turn the customer's
+      # `config.nix` into the system-manager config the applier builds. Keeps
+      # the customer flake to a few lines and the pkgs/overlay wiring in one
+      # place.
+      flake.lib.mkFortressSystemConfig = mkFortressSystemConfig;
+
       # The edge box is managed by system-manager on a stock Debian
       # image (not NixOS). systemConfigs.edge is the system-manager
       # config; the merged fortress-edge binary is injected via
@@ -147,6 +233,8 @@
         };
       };
 
+      flake.systemConfigs.fortress = fortressSystemConfig;
+
       # Manual v2 dev VM: every fortress service under test, each
       # behind its own Caddy vhost in the `vmtest.local`
       # cookie-jar. Today that includes Jellyfin and Dex;
@@ -156,6 +244,11 @@
       #   # or headless: nix run .#vmtest -- -nographic
       # See nixosConfigurations/vmtest.nix for full docs.
       flake.nixosConfigurations.vmtest = vmtest;
+
+      # ADR-035 runtime proof: NixOS + system-manager (amon-sul's topology).
+      #   nix run .#smtest -- -nographic
+      # then: curl http://127.0.0.1:5557/dex/.well-known/openid-configuration
+      flake.nixosConfigurations.smtest = smtest;
 
       perSystem = {pkgs, self', system, ...}: let
         # Real nixpkgs for dev tooling. flake-parts' perSystem `pkgs`

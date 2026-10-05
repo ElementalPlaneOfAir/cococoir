@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# fortress-apply — the ADR-035 applier.
+#
+# Builds the fortress system-manager closure from a *runtime* flake ref (the
+# magic folder) and installs its systemd units into /run/systemd/system, then
+# starts fortress's own target. It deliberately does NOT run system-manager's
+# activator: that manages /etc files, users, and mounts /run/wrappers — all of
+# which the host OS (NixOS or Debian) already owns. Running it on NixOS fights
+# the OS (read-only /etc, a tmpfs over NixOS's setuid-wrappers dir, userborn
+# rewriting /etc/passwd). Fortress only needs to add service units on top of
+# the OS's systemd — that is all this does.
+#
+# Because the closure is built and applied at run time from the flake on disk,
+# updating fortress never requires `nixos-rebuild switch`: the OS closure is
+# untouched; only /run/systemd/system changes.
+#
+# Units are grouped under `fortress.target` (declared by the fortress module),
+# so starting that one target brings up exactly fortress's services — never
+# system-manager's infrastructure units.
+set -euo pipefail
+
+flake="${1:-/etc/fortress/config}"
+attr="${2:-systemConfigs.fortress.unitsDir}"
+systemd_dir="/run/systemd/system"
+
+# `unitsDir` is the rendered systemd unit tree — building it alone avoids
+# system-manager's own activator and Rust binaries, which this applier does
+# not run.
+units="$(
+  nix build \
+    --extra-experimental-features 'nix-command flakes' \
+    --no-link --print-out-paths "${flake}#${attr}"
+)"
+
+units_dir="$(readlink -f "${units}/systemd/system")"
+if [ ! -d "${units_dir}" ]; then
+  echo "fortress-apply: no systemd units in ${units} (${units_dir} missing)" >&2
+  exit 1
+fi
+
+install -d -m 0755 "${systemd_dir}"
+# Mirror the freshly rendered unit tree (unit files plus the .wants/.requires
+# enablement) into systemd's runtime unit directory. NixOS clears /run each
+# boot, so the boot trampoline re-runs this; on Debian the same path works
+# unchanged. Units dropped from the config are left installed but unreferenced
+# — inactive, and swept by the next reboot.
+cp -a --no-dereference --remove-destination "${units_dir}/." "${systemd_dir}/"
+
+systemctl daemon-reload
+
+# Bring up exactly fortress's services. `fortress.target` lists them in its
+# own `Wants=` (it is deliberately separate from `system-manager.target`,
+# whose infra units would fight the host OS). Restart each so a changed
+# config (new ExecStart/config file) takes effect; system-manager diffs unit
+# store paths to restart only what moved, but fortress boxes are
+# single-tenant and restarting the set is simpler and always correct.
+target_unit="${systemd_dir}/fortress.target"
+if [ -f "${target_unit}" ]; then
+  systemctl start fortress.target
+  wants=""
+  while IFS= read -r line; do
+    case "${line}" in
+      Wants=*) wants="${line#Wants=}" ;;
+    esac
+  done <"${target_unit}"
+  for unit in ${wants}; do
+    systemctl restart "${unit}"
+  done
+fi
+
+echo "fortress-apply: applied ${units} (${flake}#${attr})"

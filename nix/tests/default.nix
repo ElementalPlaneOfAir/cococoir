@@ -75,6 +75,48 @@ let
     '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
+  # ── L1: the ADR-035 applier's unit wiring ────────────────────────
+  # The silent-drop class: `fortress.target` groups the enabled fortress
+  # services and is the ONE thing the applier starts. Drop it — or point the
+  # applier at `system-manager.target` — and fortress silently never comes up
+  # (or its infra units, which mount /run/wrappers and rewrite /etc/passwd,
+  # fight the host OS). The L2 `smtest-e2e` proves the running system; this
+  # pins the wiring that makes it possible, in the same commit.
+  systemManagerWiring = let
+    fortress = builtins.readFile (../.. + "/nix/system-manager/fortress.nix");
+    apply = builtins.readFile (../.. + "/nix/system-manager/apply.sh");
+  in
+    pkgs.runCommand "fortress-system-manager-wiring" {} ''
+      cat > $out <<EOF
+      fortress system-manager-wiring (L1, ADR-035): PASS
+        fortress.target groups the enabled services' units
+        userborn disabled (host OS owns users)
+        fortress-apply starts fortress.target, never system-manager.target
+      EOF
+      ${lib.optionalString (!(lib.hasInfix "systemd.targets.fortress" fortress)) ''
+        echo "nix/system-manager/fortress.nix lost systemd.targets.fortress —" >&2
+        echo "the applier would start nothing." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "journald.units" fortress)) ''
+        echo "fortress.target no longer wires the enabled services' units." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "systemd.services.userborn.enable = false" fortress)) ''
+        echo "userborn was re-enabled — it rewrites the host's /etc/passwd and" >&2
+        echo "drags system-manager's Rust build into the applier's closure." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "systemctl start fortress.target" apply)) ''
+        echo "fortress-apply no longer starts fortress.target." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (lib.hasInfix "systemctl start system-manager.target" apply) ''
+        echo "fortress-apply starts system-manager.target — its infra units" >&2
+        echo "(run-wrappers.mount, userborn) fight the host OS." >&2
+        exit 1
+      ''}
+    '';
   # crane's `cargoArtifacts` from the package build are shared by every
   # Rust check, so deps compile once across `nix build`, `nix flake
   # check`, and the edge systemConfig.
@@ -114,4 +156,4 @@ in {
   # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
   # cofortress-client (box) -> 127.0.0.1:80 (python http server, Caddy
   # stand-in). See nix/tests/edge/default.nix for the full design.
-} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate; } // contractConformanceTests // docRefsTests
+} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate systemManagerWiring; } // contractConformanceTests // docRefsTests
