@@ -26,11 +26,21 @@ systemd_dir="/run/systemd/system"
 # `unitsDir` is the rendered systemd unit tree — building it alone avoids
 # system-manager's own activator and Rust binaries, which this applier does
 # not run.
-units="$(
-  nix build \
-    --extra-experimental-features 'nix-command flakes' \
-    --no-link --print-out-paths "${flake}#${attr}"
-)"
+# Root the build under a persistent gcroots link. `--no-link` would leave
+# the unit tree unrooted, so a `nix-collect-garbage` between apply and the
+# next boot would delete it and the box would need the network (and a
+# working flake.lock) to come back up. The gcroots dir survives GC and
+# reboot, so an offline reboot re-installs the same store path.
+gcroots="/nix/var/nix/gcroots"
+install -d -m 0755 "${gcroots}"
+nix build \
+  --extra-experimental-features 'nix-command flakes' \
+  --out-link "${gcroots}/fortress-apply" "${flake}#${attr}"
+units="$(readlink -f "${gcroots}/fortress-apply")"
+case "${units}" in
+  /nix/store/*) ;;
+  *) echo "fortress-apply: build did not yield a store path (${units})" >&2; exit 1 ;;
+esac
 
 units_dir="$(readlink -f "${units}/systemd/system")"
 if [ ! -d "${units_dir}" ]; then

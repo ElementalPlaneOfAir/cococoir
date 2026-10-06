@@ -238,9 +238,8 @@ in
     }
     // (args.extraOptions or {});
 
-  config = lib.mkMerge [
-    (lib.mkIf cfg.enable (
-      lib.mkMerge [
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
       {
         assertions = [
           {
@@ -275,6 +274,5 @@ in
       }
       ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; options = options; })
     ]
-  ))
-  ];
+  );
 }

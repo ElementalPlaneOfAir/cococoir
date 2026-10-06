@@ -21,6 +21,7 @@
   ...
 }: let
   fortressApply = import ../nix/system-manager/apply.nix {inherit pkgs;};
+  fortressBootstrap = import ../nix/system-manager/bootstrap.nix {inherit pkgs;};
 
   # The magic folder's flake: a thin consumer of cococoir. It points at the
   # repo *source* by store path (the VM's store is shared with the host) and
@@ -29,10 +30,18 @@
   # fortress-apply is the decoupled update path: no nixos-rebuild.
   fortressConfig = pkgs.runCommand "fortress-magic-folder" {} ''
     mkdir -p $out
+    # Carry a full copy of the source inside the folder rather than pointing
+    # at it by store path: a store path is an unrooted build input, and a GC
+    # between apply and the next boot deletes it (seen 2026-10-06), leaving
+    # the reboot's apply with nothing to build. A relative `path:` input lives
+    # in the folder on the guest disk and survives — which is also what a
+    # self-contained magic folder needs.
+    cp -r ${cococoirSource} $out/cococoir-source
+    chmod -R u+w $out/cococoir-source
     cat > $out/flake.nix <<'FLAKE'
     {
       description = "fortress magic folder (smtest fixture)";
-      inputs.cococoir.url = "path:${cococoirSource}";
+      inputs.cococoir.url = "path:./cococoir-source";
       outputs = {cococoir, ...}: {
         systemConfigs.fortress =
           cococoir.lib.mkFortressSystemConfig (import ./config.nix);
@@ -55,24 +64,11 @@
     CONFIG
   '';
 
-  # Seed the magic folder once (first boot), then apply it. A later boot keeps
-  # any runtime edits — the folder is a real directory on the root fs, and
-  # NixOS only clears /run. This mirrors the onbox flow where the folder is
-  # the durable, user-edited app config.
-  seedAndApply = pkgs.writeShellApplication {
-    name = "fortress-seed-and-apply";
-    runtimeInputs = [pkgs.coreutils];
-    text = ''
-      if [ ! -e /etc/fortress/config/flake.nix ]; then
-        mkdir -p /etc/fortress/config
-        cp -r ${fortressConfig}/. /etc/fortress/config/
-        chmod -R u+w /etc/fortress/config
-      fi
-      exec ${fortressApply}/bin/fortress-apply /etc/fortress/config
-    '';
-  };
 in {
-  imports = ["${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"];
+  imports = [
+    "${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+    ../nix/nixos-modules/applier.nix
+  ];
 
   system.stateVersion = "25.05";
   networking.hostName = "smtest";
@@ -88,7 +84,7 @@ in {
   users.users.root.password = "password";
   # fortress-apply is on PATH so the e2e can re-apply after editing config.nix;
   # dig is there so the e2e can query the LAN DNS plane from inside the box.
-  environment.systemPackages = [pkgs.curl pkgs.dnsutils fortressApply];
+  environment.systemPackages = [pkgs.curl pkgs.dnsutils fortressApply fortressBootstrap];
 
   # The applier shells out to `nix build`. The VM store is an overlay over the
   # host store, so the magic folder's inputs (nixpkgs, system-manager, ...)
@@ -102,6 +98,15 @@ in {
   # written. Without store sharing the VM would download and rebuild
   # system-manager's Rust pieces from source on every boot.
   virtualisation.mountHostNixStore = true;
+  # The guest's writable store must be on the VM disk, not tmpfs. qemu-vm
+  # defaults it to tmpfs, which silently discards everything built in-guest on
+  # reboot and forces every boot to lean on paths the *host* built and rooted.
+  # That is why the reboot step failed: the host's nix-gc.timer collected the
+  # folder's unrooted store copy, and the guest — whose store had been wiped —
+  # had nothing to fall back on. A real box has a persistent store; make the
+  # test match reality.
+  virtualisation.writableStoreUseTmpfs = false;
+  virtualisation.diskSize = 4096;
   virtualisation.forwardPorts = [
     {
       from = "host";
@@ -110,19 +115,22 @@ in {
     }
   ];
 
-  # The ADR-035 half: fortress is built + applied by `fortress-apply` from the
-  # magic folder at run time, OUTSIDE the nixos-rebuild closure — exactly
-  # amon-sul's two-lifecycle shape. The trampoline seeds the folder once, then
-  # applies; a reboot re-applies (NixOS clears /run/systemd/system).
-  systemd.services.fortress-apply = {
-    description = "ADR-035: apply fortress from the magic folder";
-    wantedBy = ["multi-user.target"];
-    wants = ["network-online.target"];
-    after = ["network-online.target"];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = "${seedAndApply}/bin/fortress-seed-and-apply";
-    };
-  };
+  # The ADR-035 half, dogfooded through `nixosModules.applier` (ADR-037):
+  # fortress is built + applied from the magic folder at run time, OUTSIDE the
+  # nixos-rebuild closure — exactly amon-sul's two-lifecycle shape. The module
+  # installs the boot trampoline; a reboot re-applies because NixOS clears
+  # /run/systemd/system.
+  fortress.applier.enable = true;
+
+  # Seed the fixture once. Activation runs before systemd, so the folder
+  # exists by the time the applier's units are up, and the module's first-boot
+  # generator is skipped (ConditionPathExists). This VM proves reboot
+  # survival; the generator's own first-boot half is proven separately.
+  system.activationScripts.fortressFixture = ''
+    if [ ! -e /etc/fortress/config/flake.nix ]; then
+      mkdir -p /etc/fortress/config
+      cp -r ${fortressConfig}/. /etc/fortress/config/
+      chmod -R u+w /etc/fortress/config
+    fi
+  '';
 }

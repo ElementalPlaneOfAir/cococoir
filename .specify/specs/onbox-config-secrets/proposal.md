@@ -69,10 +69,14 @@ always owns its fortress app config (services, remote access, secrets) at
 with zero configuration. The **machine/hardware** config (kernel, disk, users)
 is a *separate layer* that lives wherever the machine's flake is (limonene's
 `amon-sul.nix`, `configuration.nix`, the container image) — never in this
-folder. On the Mac/Windows VM `config/flake.nix` is a *complete* system
-config; on a NixOS box the machine flake composes this app layer with its own
-hardware. The folder is always the app config; only the rebuild command differs
-(that composition is T4/T8). The device key + this mutable git repo both live
+folder. **The folder is an app layer on every target, including the VM** — its
+Linux comes from a disk image, not the folder — so there is exactly one folder
+shape (the "complete system config" variant this draft once assumed is dead).
+The machine flake does **not** import the folder: it imports only
+`nixosModules.applier`, and the applier reads the folder at run time (ADR-035
+decoupled the lifecycles; the boundary is **ADR-037**, and the trampoline that
+implements it is `.specify/specs/nixos-applier-trampoline/`). The device key +
+this mutable git repo both live
 under `/etc/fortress/` (accepting mutable state in `/etc` for a discoverable,
 uniform "magic folder" UX).
 
@@ -182,16 +186,17 @@ Refines four ADRs; two new ADRs needed:
   config flake; JSON renderings remain app-facing outputs.
 - **ADR-027 (`dashboard.nix` as the editable surface) → superseded in shape:**
   the editable surface becomes the on-device git repo `/etc/fortress/config/`.
-- **New ADR — uniform app-config surface (decided 2026-10-02):** the fortress
-  *app* config (services, remote access, secrets) lives at `/etc/fortress/config`
-  on **every** target — Linux native, the VM, and when fortress is a module inside an
-  existing NixOS machine config. The **machine/hardware** layer (kernel, disk,
-  users) is separate and lives in the machine's own flake. `/etc/fortress/config`
-  is the app layer on all targets; the appliance case makes it a complete system
-  config, the NixOS case composes it with the machine's hardware. The config git
-  repo + device key both live under `/etc/fortress/` (mutable state in `/etc` is
-  accepted for a uniform, discoverable surface). This is the app-vs-hardware
-  boundary T8 encodes.
+- **ADR-037 — app-vs-hardware boundary (decided 2026-10-02, written
+  2026-10-06):** the fortress *app* config (services, remote access, secrets)
+  lives at `/etc/fortress/config` on **every** target — Linux native, the VM,
+  and when fortress is a module inside an existing NixOS machine config. The
+  **machine/hardware** layer (kernel, disk, users) is separate and lives in the
+  machine's own flake. The folder is an app layer on all targets — there is NO
+  "complete system config" case, the VM's OS is a disk image; a machine flake's
+  only fortress surface is `nixosModules.applier` + `fortress.applier.enable`, a
+  boot trampoline, never the service stack. The config git repo + device key
+  both live under `/etc/fortress/` (mutable state in `/etc` is accepted for a
+  uniform, discoverable surface). See PLAN.md ADR-037.
 - **New ADR:** the magic-folder layout + device-key seal + **atomic
   rollback** as the core invariant.
 - **ADR-035 (decides the applier):** system-manager uniformly (the
@@ -226,12 +231,13 @@ assert both reflect the prior state (service config + app-read secret). Named
 tripwire.
 **Files:** a test/script, `nix/tests/` probe
 
-### T4: Non-NixOS applier (spike → decide)
+### T4: Non-NixOS applier — **DECIDED (ADR-035)**
 **Depends on:** T1
-**Verification:** spike report + proof the config flake applies + rolls back on a
-non-NixOS target via system-manager (or a Nix-based runner). The "works" claim is
-the decision + its proof.
-**Files:** spike (scratch until it lands); decision recorded in this ADR section
+**Status:** decided — the applier is system-manager, uniformly, built at run
+time from the folder's own flake. Implemented at `nix/system-manager/apply.sh`;
+proven by `scripts/smtest-e2e.sh`. What remains is the non-NixOS *install
+target*, not the applier mechanism (T5).
+**Files:** n/a (decision recorded in ADR-035)
 
 ### T5: Install flows — Linux native + Mac/Windows VM (ADR-035)
 **Depends on:** T2, T4
@@ -255,17 +261,14 @@ generated service set.
 **Files:** `nix/nixos-modules/fortress.nix`,
 `nix/nixos-modules/services/_contract.nix`, `nix/nixos-modules/services/{radarr,sonarr}.nix`
 
-### T8: app-vs-hardware boundary (decided) + hardware-config shape (deferred)
+### T8: app-vs-hardware boundary — **DECIDED + encoded (ADR-037)**
 **Depends on:** T2
-**Verification:** the boundary rule is encoded and holds: a fortress process or a
-config a fortress process reads → `/etc/fortress/config` (the app layer, uniform
-on every target); kernel/disk/boot/users → the machine's own flake (limonene's
-`amon-sul.nix`, `configuration.nix`, the container image), never in
-`/etc/fortress/config`. Whether the machine layer is additionally mirrored to a
-`/etc/fortress/hardware-config/` folder is a shape question that **stays manual
-for initial deployments**. The app layer is `/etc/fortress/config` everywhere;
-only where the hardware lives is per-machine.
-**Files:** `PLAN.md` (ADR)
+**Status:** decided and written as **PLAN.md ADR-037**; encoded by
+`nixosModules.applier` (the only fortress module a machine flake imports) and
+proven by the trampoline spec, `.specify/specs/nixos-applier-trampoline/`. A
+machine flake names no fortress service; the boundary is mechanical, not prose.
+The `/etc/fortress/hardware-config/` mirror stays manual (deferred, unchanged).
+**Files:** PLAN.md (ADR-037)
 
 ## Strongest objection
 

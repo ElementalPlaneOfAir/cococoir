@@ -75,6 +75,58 @@ let
     '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
+  # ── L1: the machine-side applier trampoline (ADR-037) ────────────
+  # The silent-drop class: `nixosModules.applier` is the ONLY fortress
+  # module a machine flake imports, and it must expose the trampoline
+  # WITHOUT pulling in the service stack. Importing `./fortress.nix` there
+  # would drag the app closure back into the OS `nixos-rebuild` closure
+  # (the coupling ADR-035 rejects); and if the apply unit lost its
+  # `wantedBy`, fortress would not survive a reboot, because
+  # `fortress-apply` installs into tmpfs /run/systemd/system.
+  applierTrampoline = let
+    applier = builtins.readFile (../.. + "/nix/nixos-modules/applier.nix");
+    apply = builtins.readFile (../.. + "/nix/system-manager/apply.sh");
+  in
+    pkgs.runCommand "fortress-applier-trampoline" {} ''
+      cat > $out <<EOF
+      fortress applier-trampoline (L1, ADR-037): PASS
+        nixosModules.applier is standalone (no service-stack import)
+        fortress-bootstrap runs first-boot only, before apply
+        fortress-apply is wanted by multi-user.target (runs every boot)
+        fortress-apply roots its store build under a persistent gcroots link
+      EOF
+      ${lib.optionalString (!(lib.hasInfix "systemd.services.fortress-bootstrap" applier)) ''
+        echo "applier.nix lost the fortress-bootstrap unit — nothing would" >&2
+        echo "generate the magic folder on first boot." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "systemd.services.fortress-apply" applier)) ''
+        echo "applier.nix lost the fortress-apply unit — fortress would never" >&2
+        echo "be applied on a NixOS host." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "ConditionPathExists" applier)) ''
+        echo "applier.nix lost the bootstrap ConditionPathExists — the" >&2
+        echo "generator would run (and could mutate) on every boot." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "multi-user.target" applier)) ''
+        echo "applier.nix no longer wires fortress-apply to multi-user.target" >&2
+        echo "— fortress would not come back after a reboot." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (lib.hasInfix "./fortress.nix" applier || lib.hasInfix "mkFortressSystemConfig" applier || lib.hasInfix "nixos-modules/default" applier) ''
+        echo "nixosModules.applier now imports the service stack — that" >&2
+        echo "re-couples the app closure to nixos-rebuild (ADR-035)." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "gcroots" apply)) ''
+        echo "apply.sh no longer roots its build — a nix-collect-garbage" >&2
+        echo "would delete the unit tree and an offline reboot would fail." >&2
+        exit 1
+      ''}
+    '';
+
   # ── L1: the ADR-035 applier's unit wiring ────────────────────────
   # The silent-drop class: `fortress.target` groups the enabled fortress
   # services and is the ONE thing the applier starts. Drop it — or point the
@@ -208,4 +260,4 @@ in {
   # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
   # cofortress-client (box) -> 127.0.0.1:80 (python http server, Caddy
   # stand-in). See nix/tests/edge/default.nix for the full design.
-} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate systemManagerWiring; } // contractConformanceTests // docRefsTests
+} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate systemManagerWiring applierTrampoline; } // contractConformanceTests // docRefsTests

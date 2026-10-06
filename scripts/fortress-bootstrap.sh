@@ -222,4 +222,12 @@ if [ "$generated_secrets" = 1 ]; then
   echo "  ────────────────────────────────────────────────────────────"
   echo ""
   echo "  Recoverable later with: sops -d $SECRETS"
+
+  # A boot-time oneshot's stdout lands in the journal, not on an operator's
+  # terminal (nixos-rebuild switch does not stream it), so broadcast once.
+  # `wall` needs a tty and warns if none exists — that is not an error here.
+  if command -v wall >/dev/null 2>&1; then
+    printf '\nFORTRESS: admin password (shown once, save it now): %s\n' "$admin_pw" |
+      wall 2>/dev/null || true
+  fi
 fi

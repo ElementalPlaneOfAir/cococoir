@@ -5,7 +5,7 @@
 #
 # Boots `nixosConfigurations.smtest`: NixOS owns the machine (boot + ssh), and
 # a boot trampoline runs `fortress-apply` against a magic folder on disk —
-# amon-sul's exact two-lifecycle topology. It then proves four things:
+# amon-sul's exact two-lifecycle topology. It then proves six things:
 #
 #   1. fortress comes up (Dex serves OIDC discovery);
 #   2. the OS closure does NOT contain the fortress service closure — the
@@ -13,7 +13,11 @@
 #   3. the LAN DNS plane answers from the applied closure (fortress-dns
 #      resolves the service tree + baseDomain, NXDOMAINs the DoH canary);
 #   4. a runtime `config.nix` edit + `fortress-apply` changes the running
-#      service (Dex moves to the new port) with NO nixos-rebuild.
+#      service (Dex moves to the new port) with NO nixos-rebuild;
+#   5. the packaged `fortress-bootstrap` generates the magic folder on-box and
+#      is idempotent (the first-boot half, exercised in a scratch dir);
+#   6. fortress SURVIVES A REBOOT with no manual apply — the trampoline
+#      re-applies because the applier installs into tmpfs /run/systemd/system.
 #
 # Eval checks prove the config is well-formed; only a fresh boot proves the
 # applier works. Run it before claiming any change under `nix/system-manager/`
@@ -53,7 +57,18 @@ echo "==> Pre-building the magic-folder closure on the host"
 rm -rf /tmp/smtest-fixture
 cp -r "$fixture" /tmp/smtest-fixture
 chmod -R u+w /tmp/smtest-fixture
-nix build --no-link /tmp/smtest-fixture#systemConfigs.fortress.unitsDir
+# Root the build result AND the folder's own store copy. The host runs
+# nix-gc.timer, and `/tmp/smvm` is not a registered root, so both were
+# collectible: the guest store is only an overlay over the host store, so when
+# the host collected the folder's copy the rebooted guest lost it too (seen
+# 2026-10-06). A registered gcroot under ~/.local/state/nix/gcroots survives GC.
+gcroots="${XDG_STATE_HOME:-$HOME/.local/state}/nix/gcroots"
+mkdir -p "$gcroots"
+nix build --out-link "$gcroots/smtest-fixture" /tmp/smtest-fixture#systemConfigs.fortress.unitsDir
+fixture_src="$(nix flake metadata /tmp/smtest-fixture 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Path:[[:space:]]*//p' | head -1)"
+if [ -n "$fixture_src" ]; then
+  ln -sfn "$fixture_src" "$gcroots/smtest-fixture-src"
+fi
 
 echo "==> Booting VM (headless, KVM)"
 /tmp/smvm/bin/run-smtest-vm -nographic > /tmp/smvm.log 2>&1 &
@@ -91,7 +106,7 @@ wait_discovery() {
   return 1
 }
 
-echo "==> [1/4] Waiting for Dex OIDC discovery on :5556 (max ${DEX_TIMEOUT}s)"
+echo "==> [1/6] Waiting for Dex OIDC discovery on :5556 (max ${DEX_TIMEOUT}s)"
 if ! discovery=$(wait_discovery 5556); then
   echo "FAIL: Dex discovery did not respond on :5556" >&2
   $SSH 'systemctl status fortress-apply dex --no-pager -n 60' >&2 || true
@@ -99,7 +114,7 @@ if ! discovery=$(wait_discovery 5556); then
 fi
 echo "    issuer: $(echo "$discovery" | tr ',' '\n' | sed -n 's/.*"issuer"[^"]*"\([^"]*\)".*/\1/p' | head -1)"
 
-echo "==> [2/4] Asserting the OS closure does NOT contain the fortress closure"
+echo "==> [2/6] Asserting the OS closure does NOT contain the fortress closure"
 dex_unit=$($SSH 'readlink -f /run/systemd/system/dex.service')
 if [ -z "$dex_unit" ]; then
   echo "FAIL: /run/systemd/system/dex.service does not resolve" >&2
@@ -112,7 +127,7 @@ if $SSH "nix-store -qR /run/current-system | grep -qxF '${dex_unit}'"; then
 fi
 echo "    not in /run/current-system — decoupled from nixos-rebuild"
 
-echo "==> [3/4] LAN DNS: fortress-dns answers the service tree from the applied closure"
+echo "==> [3/6] LAN DNS: fortress-dns answers the service tree from the applied closure"
 lan="10.0.2.15"
 $SSH 'systemctl show fortress-dns -p User -p DynamicUser -p MainPID --value' | sed 's/^/    /' || true
 dns_answer() {
@@ -155,7 +170,7 @@ if [ "$uid" = "0" ] || [ -z "$uid" ]; then
   exit 1
 fi
 
-echo "==> [4/4] Runtime update: move Dex to :5557 and re-apply (no nixos-rebuild)"
+echo "==> [4/6] Runtime update: move Dex to :5557 and re-apply (no nixos-rebuild)"
 $SSH 'cat > /etc/fortress/config/config.nix <<"EOF"
 {...}: {
   nixpkgs.hostPlatform = "x86_64-linux";
@@ -180,6 +195,69 @@ if ! updated=$(wait_discovery 5557); then
   exit 1
 fi
 echo "    Dex now on :5557 — updated without nixos-rebuild"
+
+echo "==> [5/6] fortress-bootstrap generates the magic folder on-box (idempotent)"
+$SSH 'rm -rf /tmp/bootstrap-check && fortress-bootstrap --root /tmp/bootstrap-check' >/dev/null 2>&1 || {
+  echo "FAIL: packaged fortress-bootstrap failed on-box" >&2
+  $SSH 'fortress-bootstrap --root /tmp/bootstrap-check' >&2 || true
+  exit 1
+}
+if ! $SSH 'test -s /tmp/bootstrap-check/system_age_keys.txt &&
+  test -f /tmp/bootstrap-check/config/flake.nix &&
+  test -f /tmp/bootstrap-check/config/config.nix &&
+  test -f /tmp/bootstrap-check/config/secrets/secrets.enc.yaml &&
+  grep -q "ENC\[" /tmp/bootstrap-check/config/secrets/secrets.enc.yaml'; then
+  echo "FAIL: fortress-bootstrap did not produce the expected magic-folder layout" >&2
+  $SSH 'find /tmp/bootstrap-check -maxdepth 3 -type f' >&2 || true
+  exit 1
+fi
+key_before=$($SSH 'cat /tmp/bootstrap-check/system_age_keys.txt')
+seal_before=$($SSH 'sha256sum /tmp/bootstrap-check/config/secrets/secrets.enc.yaml')
+$SSH 'fortress-bootstrap --root /tmp/bootstrap-check' >/dev/null 2>&1 || true
+if [ "$($SSH 'cat /tmp/bootstrap-check/system_age_keys.txt')" != "$key_before" ] ||
+  [ "$($SSH 'sha256sum /tmp/bootstrap-check/config/secrets/secrets.enc.yaml')" != "$seal_before" ]; then
+  echo "FAIL: a second fortress-bootstrap run changed the device key or secrets" >&2
+  echo "      — it is not idempotent (it would destroy the folder on reboot)." >&2
+  exit 1
+fi
+echo "    folder generated (device key + config + sealed secrets); re-run left both unchanged"
+
+echo "==> [6/6] Reboot survival: fortress returns with no manual apply"
+$SSH 'systemctl reboot' >/dev/null 2>&1 || true
+sleep 5
+ssh_dropped=""
+for _ in $(seq 1 30); do
+  if ! $SSH 'true' 2>/dev/null; then
+    ssh_dropped=1
+    break
+  fi
+  sleep 2
+done
+if [ -z "$ssh_dropped" ]; then
+  echo "FAIL: ssh never dropped after the reboot command" >&2
+  exit 1
+fi
+ssh_back=""
+for _ in $(seq 1 $((BOOT_TIMEOUT / 2))); do
+  if $SSH 'true' 2>/dev/null; then
+    ssh_back=1
+    break
+  fi
+  sleep 2
+done
+if [ -z "$ssh_back" ]; then
+  echo "FAIL: ssh did not return after reboot" >&2
+  tail -30 /tmp/smvm.log >&2 || true
+  exit 1
+fi
+if ! wait_discovery 5557 >/dev/null; then
+  echo "FAIL: after reboot fortress did NOT come back — the trampoline is broken" >&2
+  echo "      (ADR-037: the applier installs into tmpfs, so it MUST re-apply on boot)." >&2
+  $SSH 'systemctl status fortress-apply fortress-bootstrap dex --no-pager -n 60' >&2 || true
+  $SSH 'journalctl -u fortress-apply -b -o cat --no-pager | tail -30' >&2 || true
+  exit 1
+fi
+echo "    fortress re-applied on boot; Dex on :5557 again with no manual apply"
 
 stamp="Last smtest e2e: PASS — $(date +%F) — $(git rev-parse --short HEAD)"
 echo "==> SMTEST E2E PASS (${stamp})"

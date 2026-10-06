@@ -1,6 +1,12 @@
 # amon-sul migration — first real customer box on the v2 stack
 
-Status: proposal (not yet implemented).
+Status: proposal (not yet implemented). **Deploy mechanics SUPERSEDED
+2026-10-06.** This spec predates ADR-035: its T10 deploys with
+`nixos-rebuild` on the box, which ADR-035 replaced with the run-time applier.
+The box's ground-truth survey below still holds; the deployment half (T10 and
+the "machine config is the fortress config" shape) is now
+`.specify/specs/nixos-applier-trampoline/` + ADR-037 — the machine flake keeps
+hardware, the app config moves into `/etc/fortress/config`.
 
 Session 2026-08-23: survey + interview. Ground truth established over SSH
 (192.168.0.7, hostname `amon-sul`). Decisions:

@@ -200,6 +200,13 @@
 
       flake.nixosModules.default = nixosModulesWithJellarr;
 
+      # The trampoline a *machine* flake imports (ADR-037): the ONLY fortress
+      # surface on a NixOS host's own config. It deliberately does NOT import
+      # the service stack — the applier builds that from the magic folder at
+      # run time, outside the `nixos-rebuild` closure (ADR-035). Importing
+      # `default` here instead is the coupling this exists to prevent.
+      flake.nixosModules.applier = ./nix/nixos-modules/applier.nix;
+
       # The pkgs factory every consumer of `nixosModules.default`
       # must pass as `nixpkgs.pkgs`. The modules callPackage the
       # Rust client (which needs `crane`) and build jellarr's pnpm

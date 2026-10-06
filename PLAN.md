@@ -912,6 +912,40 @@ revisited.
   by the OS config (couples the machine flake to the service list,
   breaking the "fortress is not a NixOS module" seam).
 
+- **ADR-037: App vs. hardware boundary — the machine flake never
+  imports the folder (fills the gap ADR-035 left; the "uniform
+  app-config surface" ADR `onbox-config-secrets` promised but never
+  wrote).** Two layers, only two. **App layer** =
+  `/etc/fortress/config`: every fortress process, and every config a
+  fortress process reads. It is uniform on every target — Linux
+  native, the NixOS box, the macOS/Windows VM — and the applier builds
+  it at run time. **Hardware layer** = the machine's own flake
+  (limonene's `amon-sul.nix`, `configuration.nix`, the VM disk image):
+  kernel, disk/boot/filesystems, host networking, OS users. The seam:
+  **a machine flake's only fortress surface is `nixosModules.applier` +
+  `fortress.applier.enable`** — a boot trampoline (generate the folder
+  if absent, then `fortress-apply` on every boot, because the applier
+  installs into tmpfs `/run/systemd/system`), NOT a config surface.
+  The machine flake must NOT import `nixosModules.default`: that drags
+  the service closure into the `nixos-rebuild` closure — the
+  two-lifecycle coupling ADR-035 rejects. Consequence: the folder's
+  `flake.nix` is an **app layer on every target, including the VM**
+  (whose Linux comes from a disk image, not the folder), so there is
+  exactly ONE folder shape — the "complete system config" variant an
+  earlier draft assumed is dead.   The trampoline's build is GC-rooted
+  (`/nix/var/nix/gcroots/fortress-apply`), so the unit tree survives a
+  `nix-collect-garbage`. That root keeps only the *output*: the folder's
+  flake source and its inputs are not rooted, so on a default box
+  (`nix.gc.automatic = false`, the NixOS default) nothing collects them
+  and an offline reboot works, but after a GC a later offline reboot
+  cannot re-evaluate the folder and fortress stays down until the
+  network returns. Accepted deliberately: rooting the inputs would cost
+  `keep-derivations` or `nix flake archive` weight for the narrow case
+  of boxes that opted into auto-GC (first boot needs the network anyway). **Rejected**: `imports = [ /etc/fortress/config ]` in the
+  machine flake (a pure eval reading a mutable path, and it re-couples
+  the two shapes); re-exposing the service stack on the machine flake
+  (the rejected NixOS-module world).
+
 ## Implementation backlog
 
 Build order. No dates. Each item: what it produces, what test
