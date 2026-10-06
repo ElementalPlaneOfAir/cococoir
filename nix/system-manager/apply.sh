@@ -38,6 +38,24 @@ if [ ! -d "${units_dir}" ]; then
   exit 1
 fi
 
+# fortress-dns forwards unknown names through the host's own resolver, so the
+# host must never resolve through fortress-dns — that is a loop. The module
+# asserts this against `networking.nameservers`, which this layer cannot see;
+# re-check the live resolver instead of trusting a vacuous assertion.
+lan_address="$(
+  nix eval --extra-experimental-features 'nix-command flakes' --raw \
+    "${flake}#systemConfigs.fortress.config.fortress.network.lanAddress" 2>/dev/null || true
+)"
+if [ -n "${lan_address}" ] && [ -r /etc/resolv.conf ]; then
+  while read -r kind value _; do
+    if [ "${kind}" = "nameserver" ] && [ "${value}" = "${lan_address}" ]; then
+      echo "fortress-apply: WARNING /etc/resolv.conf resolves through ${lan_address}," >&2
+      echo "fortress-apply: WARNING which is fortress-dns itself — a resolver loop." >&2
+      echo "fortress-apply: WARNING every non-service name will hang on this box." >&2
+    fi
+  done </etc/resolv.conf
+fi
+
 install -d -m 0755 "${systemd_dir}"
 # Mirror the freshly rendered unit tree (unit files plus the .wants/.requires
 # enablement) into systemd's runtime unit directory. NixOS clears /run each
@@ -60,7 +78,7 @@ if [ -f "${target_unit}" ]; then
   wants=""
   while IFS= read -r line; do
     case "${line}" in
-      Wants=*) wants="${line#Wants=}" ;;
+      Wants=*) wants="${wants} ${line#Wants=}" ;;
     esac
   done <"${target_unit}"
   for unit in ${wants}; do

@@ -85,6 +85,8 @@ let
   systemManagerWiring = let
     fortress = builtins.readFile (../.. + "/nix/system-manager/fortress.nix");
     apply = builtins.readFile (../.. + "/nix/system-manager/apply.sh");
+    network = builtins.readFile (../.. + "/nix/nixos-modules/network.nix");
+    hostShim = builtins.readFile (../.. + "/nix/system-manager/host-shim.nix");
   in
     pkgs.runCommand "fortress-system-manager-wiring" {} ''
       cat > $out <<EOF
@@ -92,6 +94,7 @@ let
         fortress.target groups the enabled services' units
         userborn disabled (host OS owns users)
         fortress-apply starts fortress.target, never system-manager.target
+        fortress-dns is fortress-owned, store-backed and DynamicUser
       EOF
       ${lib.optionalString (!(lib.hasInfix "systemd.targets.fortress" fortress)) ''
         echo "nix/system-manager/fortress.nix lost systemd.targets.fortress —" >&2
@@ -114,6 +117,55 @@ let
       ${lib.optionalString (lib.hasInfix "systemctl start system-manager.target" apply) ''
         echo "fortress-apply starts system-manager.target — its infra units" >&2
         echo "(run-wrappers.mount, userborn) fight the host OS." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "systemd.services.fortress-dns" network)) ''
+        echo "nix/nixos-modules/network.nix lost the fortress-dns unit —" >&2
+        echo "the LAN DNS plane would generate nothing." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (lib.hasInfix "services.dnsmasq" network) ''
+        echo "network.nix went back to nixpkgs' dnsmasq module — that module" >&2
+        echo "writes /etc and declares an OS user, neither of which the ADR-035" >&2
+        echo "applier can honor on a host whose /etc is read-only." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "DynamicUser = true" network)) ''
+        echo "fortress-dns dropped DynamicUser — it would need an OS account" >&2
+        echo "the applier cannot create, so the unit dies on any host whose" >&2
+        echo "/etc/passwd the OS owns." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (lib.hasInfix "services.dnsmasq" hostShim) ''
+        echo "host-shim still stubs dnsmasq — fortress-dns is fortress-owned" >&2
+        echo "now, so that stub is dead weight and a silent no-op." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "RuntimeDirectory" network)) ''
+        echo "fortress-dns lost RuntimeDirectory — dnsmasq insists on a pidfile" >&2
+        echo "and dies (exit 3) when it cannot write one under a read-only /run." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "RestartSec" network)) ''
+        echo "fortress-dns lost RestartSec — a bind that loses the race to DHCP" >&2
+        echo "exhausts the start limit in a second and the plane dies permanently." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "fortress-dns.service" fortress)) ''
+        echo "fortress.target no longer wants fortress-dns.service — the LAN" >&2
+        echo "DNS plane would never start under the applier." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "\"caddy.service\"" fortress)) ''
+        echo "fortress.target no longer wants caddy.service — Caddy is not a" >&2
+        echo "catalog service so nothing else pulls it in, and the applier" >&2
+        echo "never starts system-manager.target. Every public service would" >&2
+        echo "be unreachable." >&2
+        exit 1
+      ''}
+      ${lib.optionalString (!(lib.hasInfix "nameserver" apply)) ''
+        echo "fortress-apply lost its resolver-loop check — the module's" >&2
+        echo "networking.nameservers assertion is vacuous on this path." >&2
         exit 1
       ''}
     '';

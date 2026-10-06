@@ -20,7 +20,7 @@
 #     infra) contract; built via services/_contract.nix
 #   - services.fortress-client — v0 L4 tunnel client systemd
 #     unit (no-op on a v2 single-machine with no WireGuard peer)
-{lib, pkgs, ...}: {
+{config, lib, pkgs, ...}: {
   imports = [
     ./tls.nix
     ./base-domain.nix
@@ -55,4 +55,12 @@
   # worth an option.
   environment.systemPackages = [pkgs.comma-with-db];
   nix.settings.experimental-features = lib.mkDefault ["nix-command" "flakes"];
+
+  # A public service is one the Caddy vhost fronts, so Caddy is implied by
+  # that choice rather than stated alongside it — the contract asserts
+  # `public -> caddy.enable`, and deriving it satisfies that by
+  # construction instead of making the customer repeat it. mkDefault so a
+  # config can still turn Caddy off (and then the assertion, correctly,
+  # fires).
+  services.caddy.enable = lib.mkDefault (lib.any (svc: (svc.enable or false) && (svc.public or false)) (lib.attrValues config.fortress.services));
 }

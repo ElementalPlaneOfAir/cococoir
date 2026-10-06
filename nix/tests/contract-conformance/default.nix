@@ -83,7 +83,7 @@ let
       "name = \"forgejo\";"
       "defaultPort = 3001;"
       "defaultHealthPath = "
-      "storageNeeded = true;"
+      "storageNeeded = false;"
       "stripPath = true;"
     ];
   };

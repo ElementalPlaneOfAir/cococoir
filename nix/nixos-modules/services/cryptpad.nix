@@ -54,13 +54,6 @@ mkFortressService {
     dataRoot = config.fortress.storage.dataRoot;
     cryptpadDataPath = "${dataRoot}/cryptpad/data";
   in {
-    users.users.fortress-cryptpad = {
-      isSystemUser = true;
-      group = "fortress-cryptpad";
-      description = "CryptPad service user";
-    };
-    users.groups.fortress-cryptpad = {};
-
     services.cryptpad = {
       enable = true;
       package = cryptpad-with-sso;
@@ -83,12 +76,9 @@ mkFortressService {
       unitConfig.RequiresMountsFor = cryptpadDataPath;
       confinement.enable = lib.mkForce false;
       serviceConfig = {
-        # The subvolume is chowned to fortress-cryptpad by the btrfs
-        # module, so the service needs a stable user rather than the
-        # DynamicUser the nixpkgs module defaults to.
         DynamicUser = lib.mkForce false;
-        User = "fortress-cryptpad";
-        Group = "fortress-cryptpad";
+        User = "root";
+        Group = "root";
         ReadWritePaths = [cryptpadDataPath];
       };
       # cryptpad first-boot bug: on an empty decree file, api.js
@@ -118,7 +108,7 @@ mkFortressService {
       mountpoint = lib.mkDefault cryptpadDataPath;
       quota = "100G";
       owner = {
-        user = "fortress-cryptpad";
+        user = "root";
         mode = "700";
       };
     };

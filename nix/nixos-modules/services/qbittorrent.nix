@@ -16,11 +16,12 @@
 #     the qbt API — categories live in categories.json, which is not
 #     conf-declarable). Strays (un-categorized torrents) land in the
 #     profile dir, never inside the media tree.
-#   - PrivateUsers is forced off: the nixpkgs unit's default maps
-#     supplementary groups to nobody in the user namespace, which
-#     would revoke qbittorrent's access to the jellyfin-group media
-#     subvolumes (0770) — the group-sharing design would silently
-#     fail. Tripwired in vmtest-wiring.
+#   - Runs as root (ADR-036): the applier cannot create the
+#     qbittorrent account this unit used to name, so it takes the
+#     portable stable identity instead.
+#   - PrivateUsers is forced off (tripwired in vmtest-wiring): the
+#     nixpkgs unit's default user namespace revokes access to the
+#     0770 media subvolumes.
 {
   config,
   lib,
@@ -48,8 +49,8 @@ mkFortressService {
     services.qbittorrent = {
       enable = true;
       openFirewall = false;
-      user = "qbittorrent";
-      group = "jellyfin";
+      user = "root";
+      group = "root";
       torrentingPort = torrentPort;
       serverConfig = {
         LegalNotice.Accepted = true;

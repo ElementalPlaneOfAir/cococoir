@@ -11,11 +11,11 @@
 #   - API key: RADARR__SERVER__APIKEY env var (environmentFiles ←
 #     fortress-media-api-keys oneshot; jellarr pattern). Env vars
 #     override config.xml; the key never enters the Nix store.
-#   - Runs in the `jellyfin` group: imports hardlink from the
-#     media-movies `downloads/` dir into `library/` (both 0770
-#     root-shared).
-#   - PrivateUsers forced off (supplementary-group mapping breaks
-#     under the nixpkgs unit's default; tripwired in vmtest-wiring).
+#   - Runs as root (ADR-036): imports hardlink from the media-movies
+#     `downloads/` dir into `library/` (both 0770), so it needs write
+#     access to the whole media tree.
+#   - PrivateUsers forced off (the nixpkgs unit's default revokes
+#     access to those subvolumes; tripwired in vmtest-wiring).
 #   - Orders after the btrfs subvolume service + the key oneshot.
 {
   config,
@@ -56,7 +56,7 @@ mkFortressService {
       set -euo pipefail
       key=$(cat /var/lib/fortress-media/radarr-api-key)
       dir=/var/lib/radarr/.config/Radarr
-      install -d -m 0750 -o radarr -g jellyfin "$dir"
+      install -d -m 0750 -o root -g root "$dir"
       if [ -f "$dir/config.xml" ]; then
         ${pkgs.gnused}/bin/sed -i \
           -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
@@ -75,13 +75,14 @@ mkFortressService {
   </Config>
 EOF
       fi
-      chown radarr:jellyfin "$dir/config.xml"
+      chown root:root "$dir/config.xml"
     '';
   in {
     services.radarr = {
       enable = true;
       openFirewall = false;
-      group = "jellyfin";
+      user = "root";
+      group = "root";
       environmentFiles = lib.mkAfter ["/var/lib/fortress-media/radarr.env"];
       settings = {
         server.bindAddress = "127.0.0.1";

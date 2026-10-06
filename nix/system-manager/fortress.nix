@@ -46,11 +46,20 @@
   # fortress and nothing else.
   systemd.targets.fortress = {
     wantedBy = ["multi-user.target"];
-    wants = lib.concatMap (
-      name: config.fortress.services.${name}.journald.units
-    ) (
-      lib.filter (name: config.fortress.services.${name}.enable)
-      (builtins.attrNames config.fortress.services)
-    );
+    # The LAN DNS plane is network infrastructure, not a catalog service,
+    # so it is not reachable through `fortress.services.*` — name it here.
+    # Caddy likewise: it is not a fortress service (it is the ingress every
+    # public one is fronted by), and the applier never starts
+    # `system-manager.target`, which is where its own unit would otherwise
+    # hang. Without this a public service is unreachable.
+    wants =
+      lib.optional config.fortress.network.dns.enable "fortress-dns.service"
+      ++ lib.optional config.services.caddy.enable "caddy.service"
+      ++ lib.concatMap (
+        name: config.fortress.services.${name}.journald.units
+      ) (
+        lib.filter (name: config.fortress.services.${name}.enable)
+        (builtins.attrNames config.fortress.services)
+      );
   };
 }

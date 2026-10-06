@@ -92,7 +92,9 @@ let
   # checks. Assert BOTH sides render, from the real composition.
   lanAddress = vmtestConfig.fortress.network.lanAddress;
   lanDnsEnabled = vmtestConfig.fortress.network.dns.enable;
-  dnsmasqAddresses = vmtestConfig.services.dnsmasq.settings.address or [];
+  dnsmasqAddresses = vmtestConfig.fortress.network.dns.addresses;
+  dnsUnit = vmtestConfig.systemd.services.fortress-dns;
+  dnsExec = dnsUnit.serviceConfig.ExecStart or "";
   enabledServiceCfgs = lib.filterAttrs (_: s: (s.enable or false) && (s ? domain))
     vmtestConfig.fortress.services;
   enabledDomains = lib.mapAttrsToList (_: s: s.domain) enabledServiceCfgs;
@@ -193,9 +195,15 @@ assert lib.assertMsg (qbittorrentFortressCfg.public == false)
   "vmtest-wiring: qbittorrent's Caddy vhost is public — the web UI must stay the internal admin surface (seerr is the front door)";
 assert lib.assertMsg (vmtestConfig.systemd.services.qbittorrent.serviceConfig.PrivateUsers or null == false)
   "vmtest-wiring: qbittorrent.service still has PrivateUsers=true — supplementary-group mapping to nobody would silently revoke access to the 0770 media subvolumes";
-assert lib.assertMsg (qbittorrentCfg.group == "jellyfin")
-  "vmtest-wiring: qbittorrent does not run in the jellyfin group — it could not write the media subvolume downloads dirs";
+assert lib.assertMsg (qbittorrentCfg.user == "root" && qbittorrentCfg.group == "root")
+  "vmtest-wiring: qbittorrent no longer runs as root — per ADR-036 it must, because the applier cannot create the qbittorrent/jellyfin accounts its unit would name";
 # ── jellyfin assertions ────────────────────────────────────────
+assert lib.assertMsg (vmtestConfig.services.jellyfin.user == "root" && vmtestConfig.services.jellyfin.group == "root")
+  "vmtest-wiring: jellyfin no longer runs as root — per ADR-036 it must, because the applier cannot create the jellyfin account its unit would name";
+assert lib.assertMsg ((vmtestConfig.systemd.services.jellyfin.serviceConfig.PrivateUsers or null) != true)
+  "vmtest-wiring: jellyfin.service sets PrivateUsers=true — it breaks root outright (jellyfin#7897), so the unit cannot start";
+assert lib.assertMsg ((vmtestConfig.systemd.services.jellyfin.serviceConfig.NoNewPrivileges or null) != true)
+  "vmtest-wiring: jellyfin.service sets NoNewPrivileges=true — it silently kills hardware acceleration (jellyfin#7887), so transcoding degrades with no error surfaced";
 assert lib.assertMsg (jellarrCfg.enable)
   "vmtest-wiring: services.jellarr is not enabled — the jellyfin service module must activate it";
 assert lib.assertMsg (plugins != null)
@@ -210,6 +218,12 @@ assert lib.assertMsg (builtins.elem "multi-user.target" vmtestConfig.systemd.ser
   "vmtest-wiring: jellarr.service has no boot activation — declarative config would never apply on first boot";
 
 # ── forgejo assertions ────────────────────────────────────────
+assert lib.assertMsg ((vmtestConfig.systemd.services.forgejo.serviceConfig.DynamicUser or false) == true)
+  "vmtest-wiring: forgejo no longer uses DynamicUser — ADR-036 needs it, because the applier cannot create the forgejo account and Forgejo refuses root";
+assert lib.assertMsg ((vmtestConfig.systemd.services.forgejo.serviceConfig.StateDirectory or "") == "forgejo")
+  "vmtest-wiring: forgejo dropped StateDirectory — without systemd re-owning its state on start, DynamicUser's recycled UIDs could hand forgejo's repos to another unit (systemd.exec(5))";
+assert lib.assertMsg (vmtestConfig.services.forgejo.settings.DEFAULT.RUN_USER == "forgejo")
+  "vmtest-wiring: forgejo RUN_USER does not name the dynamic user — Forgejo refuses to start when RUN_USER != its uid's name";
 assert lib.assertMsg forgejoCfg.enable
   "vmtest-wiring: forgejo is not enabled — the dashboard.nix extraction dropped the forgejo toggle";
 assert lib.assertMsg (forgejoSettings.ROOT_URL or "" == "https://${baseDomain}${forgejoCfg.path}/" && forgejoSettings.HTTP_ADDR or "" == "127.0.0.1" && forgejoSettings.DISABLE_SSH or false)
@@ -304,8 +318,10 @@ assert lib.assertMsg (builtins.elem "/${baseDomain}/${lanAddress}" dnsmasqAddres
   "vmtest-wiring: dnsmasq does not answer ${baseDomain} with the LAN address — the shared path-routing origin would not resolve on the LAN";
 assert lib.assertMsg canaryAnswered
   "vmtest-wiring: dnsmasq does not NXDOMAIN the Firefox DoH canary (use-application-dns.net) — secure-DNS browsers bypass the split-horizon";
-assert lib.assertMsg (vmtestConfig.services.dnsmasq.resolveLocalQueries == false)
-  "vmtest-wiring: dnsmasq resolveLocalQueries is on — the box's own resolver would be hijacked by its LAN DNS layer";
+assert lib.assertMsg (lib.hasInfix "--conf-file=/nix/store/" dnsExec && !(lib.hasInfix "/etc/" dnsExec))
+  "vmtest-wiring: fortress-dns does not take its config from the store — the ADR-035 applier cannot write /etc on NixOS, so the LAN DNS layer would silently never start";
+assert lib.assertMsg (dnsUnit.serviceConfig.DynamicUser == true)
+  "vmtest-wiring: fortress-dns does not run under DynamicUser — it would need an OS account the applier cannot create, so the unit dies on any host whose /etc/passwd the OS owns";
 assert lib.assertMsg everyVhostBindsLan
   "vmtest-wiring: an enabled vhost does not bind the LAN address — dnsmasq answers with a closed port (correct DNS, dead ingress)";
 assert lib.assertMsg (lanDashboardVhost != null)

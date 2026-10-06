@@ -44,6 +44,9 @@
       nixpkgs.hostPlatform = "x86_64-linux";
       fortress.baseDomain = "example.com";
       fortress.storage.backend = "plain-dirs";
+      # qemu's user-networking hands the guest 10.0.2.15 — the address the
+      # LAN DNS plane answers with and every vhost binds (ADR-028).
+      fortress.network.lanAddress = "10.0.2.15";
       fortress.services.dex = {
         enable = true;
         public = false;
@@ -83,8 +86,9 @@ in {
     };
   };
   users.users.root.password = "password";
-  # fortress-apply is on PATH so the e2e can re-apply after editing config.nix.
-  environment.systemPackages = [pkgs.curl fortressApply];
+  # fortress-apply is on PATH so the e2e can re-apply after editing config.nix;
+  # dig is there so the e2e can query the LAN DNS plane from inside the box.
+  environment.systemPackages = [pkgs.curl pkgs.dnsutils fortressApply];
 
   # The applier shells out to `nix build`. The VM store is an overlay over the
   # host store, so the magic folder's inputs (nixpkgs, system-manager, ...)

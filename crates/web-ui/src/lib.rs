@@ -508,7 +508,7 @@ pub fn landing_body(props: &LandingProps) -> Node {
                             <>
                                 <div class="w-fit">{stamp_small("Bring your own hardware")}</div>
                                 <h3 class="text-2xl font-black uppercase">"Install on your machine"</h3>
-                                <p class="text-sm dim">"Fortress is a NixOS module. Point your flake at it, enable the services you want, rebuild. No setup wizard, no app store."</p>
+                                <p class="text-sm dim">"Fortress is a service stack, not a package. One config.nix, one apply. No setup wizard, no app store."</p>
                                 {tick_list(&["Free forever, AGPL-3.0", "Run as many machines as you like", "Same remote access as a box"])}
                                 <div class="mt-auto pt-3">{zine_button("#install", "See the install guide", "")}</div>
                             </>

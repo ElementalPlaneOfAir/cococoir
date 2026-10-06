@@ -31,8 +31,8 @@
   let
   inventory = {
     "jellarr-api-key" = {
-      owner = "jellarr";
-      group = "jellarr";
+      owner = "root";
+      group = "root";
       mode = "0400";
       description = ''
         Jellyfin API key for jellarr. On first boot, the
@@ -44,8 +44,8 @@
       '';
     };
     "jellyfin-admin-password" = {
-      owner = "jellarr";
-      group = "jellarr";
+      owner = "root";
+      group = "root";
       mode = "0400";
       description = ''
         Password for the Jellyfin admin user that jellarr

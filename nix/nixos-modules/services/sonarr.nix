@@ -5,7 +5,7 @@
 # 3-option contract (metadata-only service, no bucket).
 #
 # Media-stack wiring: same pattern as radarr.nix (API key env file,
-# jellyfin group, media-shows downloads/library mounts, PrivateUsers
+# root identity, media-shows downloads/library mounts, PrivateUsers
 # forced off) — see radarr.nix + .specify/specs/media-automation-stack/.
 {
   config,
@@ -40,7 +40,7 @@ mkFortressService {
       set -euo pipefail
       key=$(cat /var/lib/fortress-media/sonarr-api-key)
       dir=/var/lib/sonarr/.config/NzbDrone
-      install -d -m 0750 -o sonarr -g jellyfin "$dir"
+      install -d -m 0750 -o root -g root "$dir"
       if [ -f "$dir/config.xml" ]; then
         ${pkgs.gnused}/bin/sed -i \
           -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
@@ -59,13 +59,14 @@ mkFortressService {
   </Config>
 EOF
       fi
-      chown sonarr:jellyfin "$dir/config.xml"
+      chown root:root "$dir/config.xml"
     '';
   in {
     services.sonarr = {
       enable = true;
       openFirewall = false;
-      group = "jellyfin";
+      user = "root";
+      group = "root";
       environmentFiles = lib.mkAfter ["/var/lib/fortress-media/sonarr.env"];
       settings = {
         server.bindAddress = "127.0.0.1";

@@ -1593,24 +1593,24 @@ mod tests {
             html.contains("macOS"), "macOS install path documented"
         );
         assert!(
-            html.contains("github:ElementalPlaneOfAir/cococoir"),
-            "flake input documented"
+            html.contains("/etc/fortress/config"),
+            "ADR-035 config folder documented"
         );
         assert!(
-            html.contains("fortress.services.jellyfin"),
-            "service enable documented"
+            html.contains("config.nix"),
+            "fortress-owned config file documented"
         );
         assert!(
-            html.contains("nixos-rebuild switch"),
-            "rebuild command documented"
+            html.contains("system-manager"),
+            "ADR-035 applier documented"
         );
         assert!(
-            html.contains("living-room"),
-            "multi-machine example documented"
+            !html.contains("nixos-rebuild switch"),
+            "ADR-035 rejected nixos-rebuild as the applier — the landing must not advertise it"
         );
         assert!(
-            html.contains("nixosConfigurations"),
-            "flake structure documented"
+            !html.contains("NixOS module"),
+            "ADR-035 made fortress a config + applier, not a NixOS module — the landing must not say otherwise"
         );
     }
 

@@ -224,10 +224,10 @@ done
 echo ""
 echo "─── LAN DNS (dnsmasq @ 10.0.2.15) ───"
 LAN=10.0.2.15
-dnsmasq_state=$(systemctl is-active dnsmasq.service 2>/dev/null || true)
+dnsmasq_state=$(systemctl is-active fortress-dns.service 2>/dev/null || true)
 case "$dnsmasq_state" in
-  active) pass "dnsmasq" "active" ;;
-  *) fail "dnsmasq" "${dnsmasq_state:-missing}" ;;
+  active) pass "fortress-dns" "active" ;;
+  *) fail "fortress-dns" "${dnsmasq_state:-missing}" ;;
 esac
 
 for d in auth jellyfin cryptpad radarr sonarr qbittorrent seerr; do
@@ -383,16 +383,19 @@ fi
 
 echo ""
 echo "─── Storage writability (service owns its subvolume) ───"
-# Subvolumes created root:root 0755 are read-only to the service's
-# runtime user; any service that persists data breaks (cryptpad SSO
-# hung on mkdir EACCES; jellyfin could not init metadata). The btrfs
-# module chowns subvolumes to the declaring service's owner.
-for pair in "fortress-cryptpad:/data/cryptpad/data" "jellyfin:/data/jellyfin/metadata"; do
-  user="${pair%%:*}"; path="${pair#*:}"
+# A subvolume the service's runtime user cannot write breaks it at
+# first boot (cryptpad SSO hung on mkdir EACCES; jellyfin could not
+# init metadata). Read the user off the unit rather than hardcoding
+# names — hardcoding is what let this check rot into a false failure
+# the moment ADR-036 moved these services to root.
+for pair in "cryptpad:/data/cryptpad/data" "jellyfin:/data/jellyfin/metadata"; do
+  unit="${pair%%:*}"; path="${pair#*:}"
+  user="$(systemctl show -p User --value "$unit.service")"
+  user="${user:-root}"
   if runuser -u "$user" -- sh -c "touch '$path/.fortress-write-test' && rm '$path/.fortress-write-test'" 2>/dev/null; then
-    pass "$user -> $path" "writable"
+    pass "$unit -> $path" "writable as $user"
   else
-    fail "$user -> $path" "EACCES"
+    fail "$unit -> $path" "EACCES as $user"
   fi
 done
 

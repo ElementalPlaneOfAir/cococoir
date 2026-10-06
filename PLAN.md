@@ -862,6 +862,56 @@ revisited.
   licensing warts, and a "rebuild the artifact" apply that forks
   the very path this unifies).
 
+- **ADR-036: Service identity under the applier is `DynamicUser` or
+  root — never a named OS user.** The ADR-035 applier installs units
+  onto a host whose `/etc/passwd` the OS owns (NixOS regenerates it;
+  userborn is deliberately disabled), so `users.users.<name>` is inert
+  there — the unit's `User=` resolves to no account and the service
+  fails to start. Exactly two identities are portable and both always
+  exist: `DynamicUser=yes` (nothing to create) and root (stable UID
+  0). **Rule: prefer `DynamicUser` — it is systemd's designed answer
+  and it keeps the service unprivileged. Fall back to root only where
+  `DynamicUser` cannot express the workload**, and say why. The
+  dividing line is the *filesystem*, not the app: `DynamicUser` is
+  safe exactly when state lives under `StateDirectory`/`CacheDirectory`
+  /`LogsDirectory`, which systemd re-owns on every start and so is
+  immune to dynamic-UID recycling. It is unsafe when the service
+  writes a shared tree outside those, and it is a poor fit for
+  multi-writer shared storage. Note also that `DynamicUser` implies
+  `NoNewPrivileges=true` and `ProtectSystem=strict`, and the man page
+  states these "cannot be disabled" — so an app that needs privilege
+  (jellyfin's `restart.sh` shells out to sudo) cannot use it at all.
+  Checked against upstream docs 2026-10-05: Jellyfin's container
+  default *is* root (you opt out with `user:`), and the ArchWiki
+  documents the `jellyfin` user as the *cause* of media permission
+  failures; qBittorrent's official entrypoint starts as root and
+  drops via `doas -u`; Seerr ran as root until its non-root
+  migration. **Forgejo → `DynamicUser`** (done): it hard-refuses root
+  (`log.Fatal("Gitea is not supposed to be run as root")`, bypassable
+  only through the purposefully-undocumented
+  `I_AM_BEING_UNSAFE_RUNNING_AS_ROOT`), and build jobs and git hooks
+  execute untrusted repo content as the run user, so root is an RCE
+  amplifier there. So it takes `DynamicUser` + `StateDirectory` and
+  state moves to `/var/lib/forgejo`. Cost accepted: repos leave the
+  btrfs pool, so no quota or snapshots on them — worth revisiting if
+  restic lands and the pool becomes the backup boundary.
+  **Jellyfin, qbittorrent, radarr, sonarr → root**: they share the
+  media tree, which is genuinely multi-writer (qbittorrent writes
+  `downloads/`, radarr/sonarr hardlink into `library/`, jellyfin
+  reads). Per-unit dynamic UIDs cannot express shared mutable
+  ownership; a shared static group needs an OS account the applier
+  cannot create. Jellyfin additionally cannot use `DynamicUser` at
+  all: it implies `NoNewPrivileges`, which breaks its `restart.sh`
+  (jellyfin#7887), and the man page says that cannot be disabled.
+  Its "root weirdness" reputation is our own hardening, not root
+  (jellyfin#7897: `PrivateUsers=true` breaks root outright) — its
+  unit sets neither. Proof `scripts/vmtest-e2e.sh` E2E PASS, which
+  gates these modules and never eval. **Rejected**: creating accounts
+  at apply time (`systemd-sysusers` writes `/etc/passwd`, which NixOS
+  activation rewrites — the userborn problem again); accounts declared
+  by the OS config (couples the machine flake to the service list,
+  breaking the "fortress is not a NixOS module" seam).
+
 ## Implementation backlog
 
 Build order. No dates. Each item: what it produces, what test

@@ -11,10 +11,12 @@
 # Everything else derives:
 #
 #   - fortress.network.dns.enable defaults to true when lanAddress is
-#     set — setting the address IS the intent signal. No second toggle.
-#   - dnsmasq (DNS only; the router keeps DHCP) answers every enabled
-#     service's `domain` — and `fortress.baseDomain`, the shared
-#     path-routing origin (ADR-034) — with lanAddress, enumerated
+#     set — setting the address IS the intent signal. No second toggle
+#     to reach the happy path; `dns.enable = false` still turns the
+#     plane off on a box that has an address but no LAN service.
+#   - fortress-dns (dnsmasq, DNS only; the router keeps DHCP) answers
+#     every enabled service's `domain` — and `fortress.baseDomain`, the
+#     shared path-routing origin (ADR-034) — with lanAddress, enumerated
 #     from fortress.services — new catalog services are covered with
 #     zero config. Other queries forward upstream via the box's own
 #     resolver config (resolv.conf), so no loop is possible as long as
@@ -30,6 +32,14 @@
 #     would still collide with it (EADDRINUSE), hence the explicit
 #     address list instead of 0.0.0.0.
 #
+# The unit is fortress-owned rather than nixpkgs' dnsmasq module:
+# that module writes /etc, declares `users.users.dnsmasq`, and registers
+# on dbus (Type = "dbus"), none of which the ADR-035 applier can honor —
+# it installs units into /run/systemd/system on a host whose /etc is
+# read-only (NixOS) and whose users the OS owns. One definition serves
+# `nixosModules.default` and `systemConfigs.*` alike: the config file is
+# a store path, so the unit never touches the host's /etc.
+#
 # Split-horizon safety (ADR-028): the global answer (edge /128 →
 # tunnel) keeps working, so the local override is an optimization
 # with a working fallback, not a lie. DoH bypass degrades to the
@@ -40,8 +50,12 @@
 # DHCP address there is nothing to bind. Runtime config rewriting is
 # the fragile version of the same feature. A home server wants a DHCP
 # reservation anyway.
-{lib, config, ...}:
-let
+{
+  lib,
+  pkgs,
+  config,
+  ...
+}: let
   inherit (lib) mkOption types;
   cfg = config.fortress.network;
   baseDomain = config.fortress.baseDomain;
@@ -52,10 +66,36 @@ let
   # only factory services have a domain.
   enabledDomains =
     lib.unique
-      (lib.mapAttrsToList (_: s: s.domain)
-        (lib.filterAttrs (_: s: (s.enable or false) && (s ? domain)) config.fortress.services));
-in
-{
+    (lib.mapAttrsToList (_: s: s.domain)
+      (lib.filterAttrs (_: s: (s.enable or false) && (s ? domain)) config.fortress.services));
+
+  # The split-horizon answers. Unknown names keep forwarding upstream
+  # through dnsmasq's default resolv.conf handling: LAN clients use this
+  # as their ONLY resolver, so it has to resolve the whole internet, not
+  # just the service tree.
+  dnsAddresses =
+    lib.optionals (cfg.dns.enable && cfg.lanAddress != null) (
+      # Firefox DoH canary: NXDOMAIN makes Firefox drop
+      # "Secure DNS" on this network (RFC 8764-ish precedent).
+      ["/use-application-dns.net/"]
+      # baseDomain first: it is the shared path-routing origin
+      # (ADR-034) every `/<path>` URL hangs off, so the LAN
+      # must resolve it like any service hostname.
+      ++ lib.optional (baseDomain != null) "/${baseDomain}/${cfg.lanAddress}"
+      ++ map (d: "/${d}/${cfg.lanAddress}") enabledDomains
+    );
+
+  dnsConfigFile = pkgs.writeText "fortress-dnsmasq.conf" (
+    lib.concatStringsSep "\n" (
+      [
+        "listen-address=${toString cfg.lanAddress}"
+        "bind-interfaces"
+        "no-hosts"
+      ]
+      ++ map (a: "address=${a}") dnsAddresses
+    )
+  );
+in {
   options.fortress.network = {
     lanAddress = mkOption {
       type = types.nullOr types.str;
@@ -75,9 +115,21 @@ in
       type = types.bool;
       default = false;
       description = ''
-        Run the LAN DNS layer (dnsmasq) serving every enabled
+        Run the LAN DNS layer (fortress-dns) serving every enabled
         service's domain with `lanAddress`. Defaults to true when
         `fortress.network.lanAddress` is set.
+      '';
+    };
+
+    dns.addresses = mkOption {
+      type = types.listOf types.str;
+      internal = true;
+      default = dnsAddresses;
+      description = ''
+        The `address=` answers fortress-dns serves, derived from
+        `lanAddress` + the enabled service tree. Internal: the wiring
+        tests assert on this so a dropped service surfaces as a
+        missing answer rather than a silent LAN outage.
       '';
     };
 
@@ -97,7 +149,7 @@ in
   config = lib.mkMerge [
     # Auto-activation outside the mkIf — the gate itself must not be
     # defined inside its own gate.
-    { fortress.network.dns.enable = lib.mkDefault (cfg.lanAddress != null); }
+    {fortress.network.dns.enable = lib.mkDefault (cfg.lanAddress != null);}
 
     (lib.mkIf cfg.dns.enable {
       assertions = [
@@ -112,44 +164,52 @@ in
           assertion = !builtins.elem cfg.lanAddress config.networking.nameservers;
           message = ''
             fortress.network: `networking.nameservers` contains
-            ${cfg.lanAddress} — the box would forward upstream queries
-            to its own dnsmasq (resolver loop).
+            ${toString cfg.lanAddress} — the box would forward upstream
+            queries to its own fortress-dns (resolver loop), and every
+            non-service name would hang.
           '';
         }
       ];
 
-      services.dnsmasq = {
-        enable = true;
-        # DNS server for the LAN only. The box keeps resolving via its
-        # own resolver config; the router keeps DHCP.
-        resolveLocalQueries = false;
-        settings = {
-          listen-address = [cfg.lanAddress];
-          bind-interfaces = true;
-          # Never serve the box's /etc/hosts to the LAN (it maps the
-          # service domains to 127.0.0.1 for the box's own use).
-          no-hosts = true;
-          address =
-            # Firefox DoH canary: NXDOMAIN makes Firefox drop
-            # "Secure DNS" on this network (RFC 8764-ish precedent).
-            ["/use-application-dns.net/"]
-            # baseDomain first: it is the shared path-routing origin
-            # (ADR-034) every `/<path>` URL hangs off, so the LAN
-            # must resolve it like any service hostname.
-            ++ lib.optional (baseDomain != null) "/${baseDomain}/${cfg.lanAddress}"
-            ++ map (d: "/${d}/${cfg.lanAddress}") enabledDomains;
-        };
-      };
-
       networking.firewall.allowedTCPPorts = [53];
       networking.firewall.allowedUDPPorts = [53];
 
-      # Both units bind concrete addresses that DHCP may deliver late;
-      # a start-before-address race shows up as a failed bind.
-      systemd.services.dnsmasq = {
+      systemd.services.fortress-dns = {
+        description = "fortress LAN DNS — split-horizon answers for the service tree";
+        # Both this and Caddy bind concrete addresses DHCP may deliver
+        # late; a start-before-address race shows up as a failed bind.
         after = ["network-online.target"];
         wants = ["network-online.target"];
+        wantedBy = ["multi-user.target"];
+        serviceConfig = {
+          # No persistent files, so no stable UID is required: DynamicUser
+          # means the host never has to create an account — which the
+          # applier cannot do anyway (the OS owns /etc/passwd). dnsmasq
+          # skips its own privilege drop unless started as root, so the
+          # dynamic identity holds for the life of the process.
+          DynamicUser = true;
+          AmbientCapabilities = ["CAP_NET_BIND_SERVICE"];
+          CapabilityBoundingSet = ["CAP_NET_BIND_SERVICE"];
+          # dnsmasq insists on a pidfile when it believes it is root, and dies
+          # (exit 3) if it cannot write one. A writable dir here keeps the unit
+          # correct whether or not the dynamic identity actually applied.
+          RuntimeDirectory = "fortress-dns";
+          ExecStart = "${pkgs.dnsmasq}/bin/dnsmasq --keep-in-foreground --log-facility=- --pid-file=/run/fortress-dns/dnsmasq.pid --conf-file=${dnsConfigFile}";
+          Restart = "on-failure";
+          # A bind can lose the race to DHCP handing the address out; retry on a
+          # human timescale instead of exhausting the start limit in a second.
+          RestartSec = 5;
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          PrivateTmp = true;
+          PrivateDevices = true;
+          ProtectKernelTunables = true;
+          ProtectControlGroups = true;
+          RestrictAddressFamilies = ["AF_INET" "AF_INET6" "AF_NETLINK"];
+        };
       };
+
       systemd.services.caddy = lib.mkIf config.services.caddy.enable {
         after = ["network-online.target"];
         wants = ["network-online.target"];

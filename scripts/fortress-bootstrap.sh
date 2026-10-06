@@ -20,6 +20,27 @@
 #     secrets/secrets.enc.yaml   sops-encrypted secrets (ciphertext committed)
 set -euo pipefail
 
+# The generator needs age-keygen, sops, git, openssl, mkpasswd and
+# xkcdpass. Provisioning those per-distro would be a support matrix, and
+# every target already has nix (ADR-035 assumes it), so pull the missing
+# ones from there and re-exec. Only fires when something is absent — a
+# host that already carries them stays dependency-free.
+REQUIRED_TOOLS=(age-keygen sops git openssl mkpasswd xkcdpass)
+missing=()
+for tool in "${REQUIRED_TOOLS[@]}"; do
+  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  command -v nix >/dev/null 2>&1 || {
+    echo "fortress-bootstrap: missing ${missing[*]} and no nix to supply them" >&2
+    exit 1
+  }
+  echo "fortress-bootstrap: supplying ${missing[*]} via nix" >&2
+  exec nix shell --extra-experimental-features 'nix-command flakes' \
+    nixpkgs#age nixpkgs#sops nixpkgs#git nixpkgs#openssl nixpkgs#mkpasswd nixpkgs#xkcdpass \
+    --command bash "$0" "$@"
+fi
+
 ROOT="/etc/fortress"
 OWNER_KEYS=()
 
@@ -30,13 +51,6 @@ while [ $# -gt 0 ]; do
     *) echo "fortress-bootstrap: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
-
-need() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "fortress-bootstrap: required tool missing: $1" >&2; exit 1
-  }
-}
-for tool in age-keygen sops git openssl mkpasswd; do need "$tool"; done
 
 CONFIG="$ROOT/config"
 KEYFILE="$ROOT/system_age_keys.txt"
@@ -69,34 +83,23 @@ if [ ! -f "$CONFIG/flake.nix" ]; then
   cat > "$CONFIG/flake.nix" <<'FLAKE'
 # Fortress configuration — the single editable surface. `config.nix` is
 # the flat, editor-managed app config (services + remote-access + users);
-# secrets/secrets.enc.yaml carries sealed secrets. `git revert` + rebuild
-# rolls config AND secrets back together. The device key at
-# ../system_age_keys.txt decrypts the secrets and is never in this repo.
+# secrets/secrets.enc.yaml carries sealed secrets. `git revert` +
+# `fortress-apply` rolls config AND secrets back together. The device key
+# at ../system_age_keys.txt decrypts the secrets and is never in this repo.
 {
   description = "Fortress configuration";
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
-    fortress.url = "github:ElementalPlaneOfAir/cococoir/main";
-  };
-  outputs = {
-    self,
-    nixpkgs,
-    fortress,
-    ...
-  }: {
-    nixosConfigurations.fortress = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        fortress.nixosModules.default
-        ./config.nix
-        {
-          # sops-wire (inside fortress.nixosModules.default) does the rest:
-          # device key at /etc/fortress/system_age_keys.txt, admin env, etc.
-          fortress.secrets.sopsFile = ./secrets/secrets.enc.yaml;
-          system.stateVersion = "25.05";
-        }
-      ];
-    };
+  inputs.cococoir.url = "github:ElementalPlaneOfAir/cococoir/main";
+  outputs = {cococoir, ...}: {
+    # `systemConfigs.fortress` is what `fortress-apply` builds and installs
+    # onto the host's systemd. Nothing here goes through nixos-rebuild:
+    # updating fortress is edit + `fortress-apply`, never a system rebuild.
+    systemConfigs.fortress = cococoir.lib.mkFortressSystemConfig ({...}: {
+      imports = [ ./config.nix ];
+      nixpkgs.hostPlatform = "x86_64-linux";
+      # sops-wire does the rest: device key at
+      # /etc/fortress/system_age_keys.txt, the admin env template, etc.
+      fortress.secrets.sopsFile = ./secrets/secrets.enc.yaml;
+    });
   };
 }
 FLAKE
@@ -104,22 +107,32 @@ FLAKE
 # The flat, editor-managed app config — one file. The fortress dashboard
 # edits exactly these fields (services + remote-access + users); anything
 # it does not touch survives a save untouched. Edit here or in the UI,
-# then rebuild; `git revert` to undo. Secrets live in secrets/.
+# then `fortress-apply`; `git revert` to undo. Secrets live in secrets/.
 {
   ...
 }: {
-  # Exposure (remote-access): the box's name and the platform domain.
-  networking.hostName = "fortress";
+  # Exposure (remote-access): the platform domain your box serves under.
+  # (The OS keeps the hostname — this layer never touches it.)
   fortress.baseDomain = "example.com";
 
-  # Which fortress services run. The dashboard toggles these.
+  # Storage: the HOST owns btrfs (pools, quotas, scrub). Fortress just
+  # writes under `dataRoot`, so point that at wherever your storage is
+  # mounted. `plain-dirs` is the backend that assumes exactly this.
+  fortress.storage = {
+    backend = "plain-dirs";
+    dataRoot = "/data";
+  };
+
+  # Which fortress services run. The dashboard toggles these. `dex` is the
+  # always-on OIDC provider everything else signs in through, so it stays
+  # on. Enabling a service that is not yet on the applier fails loudly
+  # rather than building a unit that cannot start.
   fortress.services = {
-    jellyfin.enable = true;
-    jellarr.enable = true;
     dex.enable = true;
-    cryptpad.enable = true;
-    forgejo.enable = true;
-    seerr.enable = true;
+    # jellyfin.enable = true;
+    # cryptpad.enable = true;
+    # forgejo.enable = true;
+    # seerr.enable = true;
   };
 
   # Box login users (optional). The dashboard edits groups / password hashes.
@@ -137,11 +150,20 @@ if [ ! -f "$CONFIG/flake.lock" ] && command -v nix >/dev/null 2>&1; then
 fi
 
 # ── 4. sealed secrets (idempotent — only when missing) ───────────────
+generated_secrets=0
 if [ ! -f "$SECRETS" ]; then
-  admin_pw="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"
+  # correct-horse-battery-staple: an operator reads this off the terminal
+  # and types it at the login prompt, so it has to be speakable. Five words
+  # from xkcdpass's list is ~64 bits — stronger than the 24-char token it
+  # replaces, and far easier to handle at first boot.
+  admin_pw="$(xkcdpass -n 5 -d - -c 1)"
+  case "$admin_pw" in
+    *-*-*-*) ;;
+    *) echo "fortress-bootstrap: passphrase malformed: $admin_pw" >&2; exit 1 ;;
+  esac
   admin_hash="$(printf '%s' "$admin_pw" | mkpasswd -m bcrypt -R 10 -s)"
   jellarr_key="$(openssl rand -hex 32)"
-  jellyfin_pw="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"
+  jellyfin_pw="$(xkcdpass -n 5 -d - -c 1)"
   case "$admin_hash" in
     \$*) ;;
     *) echo "fortress-bootstrap: bcrypt hash malformed: $admin_hash" >&2; exit 1 ;;
@@ -167,6 +189,7 @@ if [ ! -f "$SECRETS" ]; then
     "$plaintext" > "$SECRETS"
   rm -f "$plaintext"
   trap - EXIT
+  generated_secrets=1
 fi
 [ -f "$SECRETS" ] || { echo "fortress-bootstrap: sealed secrets missing at $SECRETS" >&2; exit 1; }
 grep -q 'ENC\[' "$SECRETS" || { echo "fortress-bootstrap: $SECRETS is not sops-encrypted" >&2; exit 1; }
@@ -181,4 +204,22 @@ fi
 
 echo "fortress magic folder ready at $ROOT"
 echo "  device key: $KEYFILE (outside the repo — back this up)"
-echo "  config:     $CONFIG (git repo — edit, commit, or 'git revert' + rebuild)"
+echo "  config:     $CONFIG (git repo — edit, commit, or 'git revert' + apply)"
+
+# Shown exactly once, at the moment the operator is looking at the terminal
+# and can move it into a password manager. Repeats keep the secrets sealed;
+# recovering later means `sops -d $SECRETS`.
+if [ "$generated_secrets" = 1 ]; then
+  echo ""
+  echo "  ────────────────────────────────────────────────────────────"
+  echo "  ADMIN PASSWORD — shown once, save it now:"
+  echo ""
+  echo "      $admin_pw"
+  echo ""
+  echo "  Jellyfin admin password (also once):"
+  echo ""
+  echo "      $jellyfin_pw"
+  echo "  ────────────────────────────────────────────────────────────"
+  echo ""
+  echo "  Recoverable later with: sops -d $SECRETS"
+fi

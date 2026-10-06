@@ -91,23 +91,23 @@ in
       };
       mediaDirs = {
         "${mediaPaths.movies}/downloads" = {
-          user = "jellyfin";
-          group = "jellyfin";
+          user = "root";
+          group = "root";
           mode = "770";
         };
         "${mediaPaths.movies}/library" = {
-          user = "jellyfin";
-          group = "jellyfin";
+          user = "root";
+          group = "root";
           mode = "770";
         };
         "${mediaPaths.shows}/downloads" = {
-          user = "jellyfin";
-          group = "jellyfin";
+          user = "root";
+          group = "root";
           mode = "770";
         };
         "${mediaPaths.shows}/library" = {
-          user = "jellyfin";
-          group = "jellyfin";
+          user = "root";
+          group = "root";
           mode = "770";
         };
       };
@@ -117,13 +117,8 @@ in
           # For local access only I am going to enable this for the time being, just because the dns access is failing for the roku tv app for some reason.
           # openFirewall = false;
           openFirewall = true;
-          user = "jellyfin";
-        };
-
-        users.users.jellyfin = {
-          isSystemUser = true;
-          description = "Jellyfin System User";
-          extraGroups = ["render" "video"];
+          user = "root";
+          group = "root";
         };
 
         fortress.storage.btrfs.subvolumes = {
@@ -131,8 +126,8 @@ in
             mountpoint = lib.mkDefault mediaPaths.movies;
             quota = "2T";
             owner = {
-              user = "jellyfin";
-              group = "jellyfin";
+              user = "root";
+              group = "root";
               mode = "770";
             };
             dirs = lib.mkDefault (lib.filterAttrs (p: _: lib.hasPrefix "${mediaPaths.movies}/" p) mediaDirs);
@@ -141,8 +136,8 @@ in
             mountpoint = lib.mkDefault mediaPaths.shows;
             quota = "2T";
             owner = {
-              user = "jellyfin";
-              group = "jellyfin";
+              user = "root";
+              group = "root";
               mode = "770";
             };
             dirs = lib.mkDefault (lib.filterAttrs (p: _: lib.hasPrefix "${mediaPaths.shows}/" p) mediaDirs);
@@ -151,8 +146,8 @@ in
             mountpoint = lib.mkDefault mediaPaths.music;
             quota = "1T";
             owner = {
-              user = "jellyfin";
-              group = "jellyfin";
+              user = "root";
+              group = "root";
               mode = "770";
             };
           };
@@ -160,8 +155,8 @@ in
             mountpoint = lib.mkDefault mediaPaths.metadata;
             quota = "50G";
             owner = {
-              user = "jellyfin";
-              group = "jellyfin";
+              user = "root";
+              group = "root";
               mode = "770";
             };
           };
@@ -171,6 +166,8 @@ in
           after = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
           requires = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
           serviceConfig.TimeoutStopSec = 30;
+          serviceConfig.PrivateUsers = lib.mkForce false;
+          serviceConfig.NoNewPrivileges = lib.mkForce false;
           unitConfig.RequiresMountsFor = [
             mediaPaths.movies
             mediaPaths.shows
@@ -226,8 +223,8 @@ in
 
         services.jellarr = {
           enable = true;
-          user = "jellyfin";
-          group = "jellyfin";
+          user = "root";
+          group = "root";
           bootstrap = {
             enable = true;
             apiKeyFile = "/var/lib/jellarr/api-key";

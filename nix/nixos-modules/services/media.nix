@@ -47,7 +47,7 @@ let
   keyFileScript = pkgs.writeShellScript "fortress-media-api-keys" ''
     set -euo pipefail
     umask 077
-    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g jellyfin ${mediaRoot}
+    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root ${mediaRoot}
     ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: envVar: ''
       if [ ! -f ${keyFor name} ]; then
         ${pkgs.openssl}/bin/openssl rand -hex 32 > ${keyFor name}
@@ -58,9 +58,6 @@ let
     if [ ! -f ${mediaRoot}/seerr-admin-password ]; then
       ${pkgs.openssl}/bin/openssl rand -hex 32 > ${mediaRoot}/seerr-admin-password
     fi
-    ${pkgs.coreutils}/bin/chown root:jellyfin \
-      ${keyFor "radarr"} ${keyFor "sonarr"} ${mediaRoot}/seerr-admin-password \
-      ${envFor "radarr"} ${envFor "sonarr"}
     ${pkgs.coreutils}/bin/chmod 0640 \
       ${keyFor "radarr"} ${keyFor "sonarr"} ${mediaRoot}/seerr-admin-password \
       ${envFor "radarr"} ${envFor "sonarr"}

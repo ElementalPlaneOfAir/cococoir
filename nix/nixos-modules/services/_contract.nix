@@ -15,7 +15,6 @@
 #
 # What the service adds (via `extraOptions` and `extraConfig`):
 #   - per-service nixpkgs module activation (e.g. services.jellyfin)
-#   - per-service system user / group
 #   - per-service systemd unit
 #   - per-service storage (auto-declare btrfs subvolumes)
 #
@@ -239,8 +238,9 @@ in
     }
     // (args.extraOptions or {});
 
-  config = lib.mkIf cfg.enable (
-    lib.mkMerge [
+  config = lib.mkMerge [
+    (lib.mkIf cfg.enable (
+      lib.mkMerge [
       {
         assertions = [
           {
@@ -275,5 +275,6 @@ in
       }
       ((args.extraConfig or (cfg: {}) ) { inherit cfg; lib = lib; config = config; pkgs = pkgs; options = options; })
     ]
-  );
+  ))
+  ];
 }

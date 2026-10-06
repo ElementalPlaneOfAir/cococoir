@@ -5,12 +5,14 @@
 #
 # Boots `nixosConfigurations.smtest`: NixOS owns the machine (boot + ssh), and
 # a boot trampoline runs `fortress-apply` against a magic folder on disk —
-# amon-sul's exact two-lifecycle topology. It then proves three things:
+# amon-sul's exact two-lifecycle topology. It then proves four things:
 #
 #   1. fortress comes up (Dex serves OIDC discovery);
 #   2. the OS closure does NOT contain the fortress service closure — the
 #      applied Dex unit is not in `nix-store -qR /run/current-system`;
-#   3. a runtime `config.nix` edit + `fortress-apply` changes the running
+#   3. the LAN DNS plane answers from the applied closure (fortress-dns
+#      resolves the service tree + baseDomain, NXDOMAINs the DoH canary);
+#   4. a runtime `config.nix` edit + `fortress-apply` changes the running
 #      service (Dex moves to the new port) with NO nixos-rebuild.
 #
 # Eval checks prove the config is well-formed; only a fresh boot proves the
@@ -89,7 +91,7 @@ wait_discovery() {
   return 1
 }
 
-echo "==> [1/3] Waiting for Dex OIDC discovery on :5556 (max ${DEX_TIMEOUT}s)"
+echo "==> [1/4] Waiting for Dex OIDC discovery on :5556 (max ${DEX_TIMEOUT}s)"
 if ! discovery=$(wait_discovery 5556); then
   echo "FAIL: Dex discovery did not respond on :5556" >&2
   $SSH 'systemctl status fortress-apply dex --no-pager -n 60' >&2 || true
@@ -97,7 +99,7 @@ if ! discovery=$(wait_discovery 5556); then
 fi
 echo "    issuer: $(echo "$discovery" | tr ',' '\n' | sed -n 's/.*"issuer"[^"]*"\([^"]*\)".*/\1/p' | head -1)"
 
-echo "==> [2/3] Asserting the OS closure does NOT contain the fortress closure"
+echo "==> [2/4] Asserting the OS closure does NOT contain the fortress closure"
 dex_unit=$($SSH 'readlink -f /run/systemd/system/dex.service')
 if [ -z "$dex_unit" ]; then
   echo "FAIL: /run/systemd/system/dex.service does not resolve" >&2
@@ -110,12 +112,56 @@ if $SSH "nix-store -qR /run/current-system | grep -qxF '${dex_unit}'"; then
 fi
 echo "    not in /run/current-system — decoupled from nixos-rebuild"
 
-echo "==> [3/3] Runtime update: move Dex to :5557 and re-apply (no nixos-rebuild)"
+echo "==> [3/4] LAN DNS: fortress-dns answers the service tree from the applied closure"
+lan="10.0.2.15"
+$SSH 'systemctl show fortress-dns -p User -p DynamicUser -p MainPID --value' | sed 's/^/    /' || true
+dns_answer() {
+  $SSH "dig +short @${lan} $1 2>/dev/null" | tr -d '\n' || true
+}
+resolved=""
+for _ in $(seq 1 15); do
+  resolved=$(dns_answer dex.example.com)
+  [ "$resolved" = "$lan" ] && break
+  sleep 2
+done
+if [ "$resolved" != "$lan" ]; then
+  echo "FAIL: dex.example.com did not resolve to ${lan} via fortress-dns" >&2
+  $SSH 'journalctl -u fortress-dns -b -o cat --no-pager | tail -20' >&2 || true
+  $SSH 'systemctl status fortress-dns --no-pager -n 15' >&2 || true
+  exit 1
+fi
+echo "    dex.example.com -> ${lan}"
+if [ "$(dns_answer example.com)" != "$lan" ]; then
+  echo "FAIL: example.com (the shared path-routing origin) did not resolve to ${lan}" >&2
+  exit 1
+fi
+echo "    example.com -> ${lan}"
+if [ -n "$(dns_answer use-application-dns.net)" ]; then
+  echo "FAIL: the Firefox DoH canary answered — it must NXDOMAIN or Secure-DNS" >&2
+  echo "      browsers bypass the split-horizon entirely" >&2
+  exit 1
+fi
+echo "    use-application-dns.net -> NXDOMAIN (DoH canary)"
+
+proc_status=$($SSH 'cat /proc/$(systemctl show -p MainPID --value fortress-dns)/status 2>/dev/null' || true)
+uid=""
+if [[ "$proc_status" =~ Uid:[[:space:]]*([0-9]+) ]]; then uid="${BASH_REMATCH[1]}"; fi
+echo "    fortress-dns runs as uid=${uid:-unknown}"
+if [ "$uid" = "0" ] || [ -z "$uid" ]; then
+  echo "FAIL: fortress-dns runs as root — DynamicUser did not take effect." >&2
+  echo "      A named OS user is not portable (the applier cannot create one), so" >&2
+  echo "      root and DynamicUser are the only portable identities — and this" >&2
+  echo "      service is stateless, so it must get the dynamic one." >&2
+  exit 1
+fi
+
+echo "==> [4/4] Runtime update: move Dex to :5557 and re-apply (no nixos-rebuild)"
 $SSH 'cat > /etc/fortress/config/config.nix <<"EOF"
 {...}: {
   nixpkgs.hostPlatform = "x86_64-linux";
   fortress.baseDomain = "example.com";
   fortress.storage.backend = "plain-dirs";
+  fortress.network.lanAddress = "10.0.2.15";
   fortress.services.dex = {
     enable = true;
     public = false;

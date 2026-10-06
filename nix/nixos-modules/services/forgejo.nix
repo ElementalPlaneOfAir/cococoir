@@ -28,8 +28,13 @@
 #   - DISABLE_REGISTRATION: a private forge — users come in via
 #     Dex OIDC auto-registration (per-source, independent of this
 #     switch), never via a public sign-up form.
-#   - auto-declares the `forgejo-data` btrfs subvolume so repos +
-#     DB land on the pool (btrfs tier) or /data (plain-dirs tier)
+#   - Identity is DynamicUser + StateDirectory (ADR-036): Forgejo
+#     hard-refuses root, and the applier cannot create an account.
+#     State lives under /var/lib/forgejo, which systemd re-owns on
+#     every start — the only shape that is safe against dynamic-UID
+#     recycling (systemd.exec(5)). The cost is that repos sit on the
+#     root filesystem rather than the pool: no btrfs quota or
+#     snapshots. Accepted deliberately.
 #
 # The health path /api/healthz is Forgejo's unauthenticated
 # liveness endpoint (the same one its helm chart probes).
@@ -47,7 +52,7 @@ in
     description = "Forgejo git forge";
     defaultPort = 3001;
     defaultHealthPath = "/api/healthz";
-    storageNeeded = true;
+    storageNeeded = false;
     conventionalSubdomain = "git";
     # ROOT_URL is URL-generation only: Forgejo serves at its own
     # root, so the plane row strips /git before proxying (ADR-034).
@@ -58,15 +63,20 @@ in
       options,
       config,
       ...
-    }: let
-      btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
-      dataRoot = config.fortress.storage.dataRoot;
-      stateDir = "${dataRoot}/forgejo";
-    in {
+    }: {
       services.forgejo = {
         enable = true;
         database.type = "sqlite3";
-        stateDir = stateDir;
+        stateDir = "/var/lib/forgejo";
+        # `user`/`group` only feed nixpkgs' tmpfiles rules and its
+        # users.users declaration. Pointing them at root keeps those
+        # rules valid on a host the applier cannot add accounts to,
+        # and the mkIf (cfg.user == "forgejo") guard keeps it from
+        # declaring the account. The unit itself runs as the dynamic
+        # `forgejo` below; RUN_USER must name it or Forgejo refuses
+        # to start.
+        user = "root";
+        group = "root";
 
         settings = {
           server = {
@@ -76,28 +86,17 @@ in
             HTTP_PORT = cfg.port;
             DISABLE_SSH = true;
           };
+          DEFAULT.RUN_USER = "forgejo";
           service.DISABLE_REGISTRATION = true;
           session.COOKIE_SECURE = true;
         };
       };
 
-      # The forgejo user/group come from the nixpkgs services.forgejo
-      # module (home = stateDir). The subvolume owner references them.
-
-      fortress.storage.btrfs.subvolumes."forgejo-data" = {
-        mountpoint = lib.mkDefault stateDir;
-        quota = "20G";
-        owner = {
-          user = "forgejo";
-          group = "forgejo";
-          mode = "750";
-        };
-      };
-
-      systemd.services.forgejo = {
-        after = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
-        requires = lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
-        unitConfig.RequiresMountsFor = lib.optionals btrfsStorage [stateDir];
+      systemd.services.forgejo.serviceConfig = {
+        DynamicUser = true;
+        User = lib.mkForce "forgejo";
+        Group = lib.mkForce "forgejo";
+        StateDirectory = "forgejo";
       };
     };
   }
