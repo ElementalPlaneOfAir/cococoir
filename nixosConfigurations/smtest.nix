@@ -12,8 +12,9 @@
 # Boot:    nix run .#smtest -- -nographic
 # Assert:  ssh -p 2223 root@localhost \
 #            'curl -sf http://127.0.0.1:5556/dex/.well-known/openid-configuration'
-# (dex binds loopback — `public = false` in this slice — so the QEMU
-# port-forward can't reach it; assert over ssh, from inside.)
+# The fixture is `public = true`, so Caddy fronts Dex on :80; assert Dex
+# directly on loopback and through Caddy (Host: example.com /dex). The QEMU
+# port-forward can't reach loopback, so assert over ssh, from inside.
 {
   inputs,
   cococoirSource,
@@ -56,9 +57,13 @@
       # qemu's user-networking hands the guest 10.0.2.15 — the address the
       # LAN DNS plane answers with and every vhost binds (ADR-028).
       fortress.network.lanAddress = "10.0.2.15";
+      # public = true pulls in Caddy — the applier's ingress. This fixture
+      # deliberately exercises it: the dex-only (public = false) slice left
+      # Caddy's identity + /etc gaps invisible until the amon-sul cutover
+      # (2026-10-07). tls defaults to "off", so Caddy serves plain HTTP.
       fortress.services.dex = {
         enable = true;
-        public = false;
+        public = true;
       };
     }
     CONFIG

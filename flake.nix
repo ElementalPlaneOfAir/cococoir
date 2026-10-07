@@ -176,6 +176,20 @@
       };
     });
 
+    # L1 fixture for the applier-wiring check: the same applier config but
+    # with a *public* service, so Caddy (never enabled in the dex-only
+    # slice above) is exercised. See nix/tests/applier-wiring/.
+    applierPublicConfig = (mkFortressSystemConfig ({...}: {
+      nixpkgs.hostPlatform = "x86_64-linux";
+      fortress.baseDomain = "example.com";
+      fortress.storage.backend = "plain-dirs";
+      fortress.network.lanAddress = "10.0.2.15";
+      fortress.services.dex = {
+        enable = true;
+        public = true;
+      };
+    })).config;
+
     # ADR-035 runtime-proof VM: NixOS owns the machine (boot + ssh), and a
     # boot trampoline runs `fortress-apply` against a magic-folder fixture on
     # disk — exactly amon-sul's two-lifecycle topology. The OS closure holds
@@ -279,6 +293,10 @@
             inherit (withCrane system) pkgs;
             vmtestConfig = vmtest.config;
             vmtestSystem = vmtest;
+          }
+          // import ./nix/tests/applier-wiring {
+            inherit (withCrane system) pkgs;
+            applierConfig = applierPublicConfig;
           }
         );
         # The app's `program` field is just a string path. We avoid

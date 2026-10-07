@@ -8,6 +8,8 @@
 # amon-sul's exact two-lifecycle topology. It then proves six things:
 #
 #   1. fortress comes up (Dex serves OIDC discovery);
+#   1b. Caddy (the ingress) is active under the applier and fronts Dex — the
+#      applier creates no `caddy` account and writes no /etc config itself;
 #   2. the OS closure does NOT contain the fortress service closure — the
 #      applied Dex unit is not in `nix-store -qR /run/current-system`;
 #   3. the LAN DNS plane answers from the applied closure (fortress-dns
@@ -114,6 +116,29 @@ if ! discovery=$(wait_discovery 5556); then
 fi
 echo "    issuer: $(echo "$discovery" | tr ',' '\n' | sed -n 's/.*"issuer"[^"]*"\([^"]*\)".*/\1/p' | head -1)"
 
+echo "==> [1b/6] Caddy (ingress) is active under the applier and fronts Dex"
+# The fixture is public = true, so a public service must have pulled Caddy in.
+# This is the exact seam amon-sul died on (2026-10-07): the applier cannot
+# create the `caddy` account (userborn disabled) or write its /etc config, so
+# a regression here shows up as `caddy.service: status=217/USER`.
+if [ "$($SSH 'systemctl is-active caddy.service')" != "active" ]; then
+  echo "FAIL: caddy.service is not active under the applier" >&2
+  $SSH 'systemctl status caddy --no-pager -n 40' >&2 || true
+  $SSH 'journalctl -u caddy -b -o cat --no-pager | tail -30' >&2 || true
+  exit 1
+fi
+via_caddy=""
+for _ in $(seq 1 15); do
+  via_caddy=$($SSH "curl -sf http://10.0.2.15/dex/.well-known/openid-configuration" 2>/dev/null) && break
+  sleep 2
+done
+if [ -z "$via_caddy" ]; then
+  echo "FAIL: Dex is not reachable through Caddy on the LAN plane (http://10.0.2.15/dex)" >&2
+  $SSH 'journalctl -u caddy -b -o cat --no-pager | tail -30' >&2 || true
+  exit 1
+fi
+echo "    caddy active; Dex reachable through it (store config, no /etc)"
+
 echo "==> [2/6] Asserting the OS closure does NOT contain the fortress closure"
 dex_unit=$($SSH 'readlink -f /run/systemd/system/dex.service')
 if [ -z "$dex_unit" ]; then
@@ -179,7 +204,7 @@ $SSH 'cat > /etc/fortress/config/config.nix <<"EOF"
   fortress.network.lanAddress = "10.0.2.15";
   fortress.services.dex = {
     enable = true;
-    public = false;
+    public = true;
     port = 5557;
   };
 }
@@ -258,6 +283,13 @@ if ! wait_discovery 5557 >/dev/null; then
   exit 1
 fi
 echo "    fortress re-applied on boot; Dex on :5557 again with no manual apply"
+if [ "$($SSH 'systemctl is-active caddy.service')" != "active" ] ||
+  ! $SSH "curl -sf http://10.0.2.15/dex/.well-known/openid-configuration" >/dev/null 2>&1; then
+  echo "FAIL: Caddy did not come back after reboot — the public entry point is dead" >&2
+  $SSH 'systemctl status caddy fortress-apply --no-pager -n 40' >&2 || true
+  exit 1
+fi
+echo "    caddy back after reboot too"
 
 stamp="Last smtest e2e: PASS — $(date +%F) — $(git rev-parse --short HEAD)"
 echo "==> SMTEST E2E PASS (${stamp})"

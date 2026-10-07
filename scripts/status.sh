@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 status_file="docs/STATUS.md"
 begin_marker='AUTO-STATUS:BEGIN'
 end_marker='AUTO-STATUS:END'
-checks=(doc-refs contract-conformance vmtest-wiring systemManagerWiring applierTrampoline)
+checks=(doc-refs contract-conformance vmtest-wiring systemManagerWiring applierTrampoline applier-wiring)
 
 grep -q "$begin_marker" "$status_file" || { echo "status.sh: $begin_marker missing from $status_file" >&2; exit 1; }
 grep -q "$end_marker" "$status_file" || { echo "status.sh: $end_marker missing from $status_file" >&2; exit 1; }

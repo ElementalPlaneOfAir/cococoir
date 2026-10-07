@@ -37,6 +37,47 @@
   systemd.services.userborn.enable = false;
   systemd.services.userborn-import-legacy.enable = false;
 
+  # ── Caddy: adapt upstream's module to the applier ──────────────────
+  # Upstream's caddy module assumes nixos-rebuild owns the host: it
+  # declares a `caddy` account (default.nix:501) and reads its config from
+  # /etc/caddy/caddy_config (:525). The applier can do neither — userborn
+  # is disabled above, and NixOS owns /etc (ADR-035). Two adaptations:
+  #
+  #   Identity — run as root. ADR-036 permits root where a dynamic user is
+  #   impossible. The module sets `User = cfg.user` unconditionally and
+  #   `serviceConfig` has no `null` (its generator toStrings every value),
+  #   so User/Group cannot be cleared to let DynamicUser take over without
+  #   re-deriving the whole unit. Root matches every other applier service
+  #   that needs a stable identity (jellyfin, the *arr stack). The upstream
+  #   unit keeps NoNewPrivileges + ProtectSystem; the bounding set below
+  #   trims root to the only two capabilities Caddy uses.
+  #
+  #   Config — ExecStart/ExecReload read the store-rendered Caddyfile
+  #   (`configFile`) directly, not the /etc path the applier never writes.
+  services.caddy.user = "root";
+  services.caddy.group = "root";
+  systemd.services.caddy.serviceConfig = {
+    CapabilityBoundingSet = ["CAP_NET_ADMIN" "CAP_NET_BIND_SERVICE"];
+    # As a named user, systemd homes Caddy at its StateDirectory
+    # (/var/lib/caddy); as root it homes it at /root, which the upstream
+    # unit's ProtectHome hides — Caddy then cannot write its cert store
+    # (`/root/.local/share/caddy`) or config autosave (`/root/.config/caddy`)
+    # and dies on first use. Point HOME at the state dir explicitly.
+    Environment = ["HOME=${config.services.caddy.dataDir}"];
+    ExecStart = lib.mkForce [
+      ""
+      "${lib.getExe config.services.caddy.package} run --config ${
+        config.services.caddy.configFile
+      }${lib.optionalString (config.services.caddy.adapter != null) " --adapter ${config.services.caddy.adapter}"}"
+    ];
+    ExecReload = lib.mkForce [
+      ""
+      "${lib.getExe config.services.caddy.package} reload --config ${
+        config.services.caddy.configFile
+      }${lib.optionalString (config.services.caddy.adapter != null) " --adapter ${config.services.caddy.adapter}"} --force"
+    ];
+  };
+
   # The applier starts exactly this target — never `system-manager.target`.
   # system-manager's infra units (userborn, run-wrappers.mount, the setuid
   # wrappers) manage the host OS's users and /run/wrappers, which NixOS and
