@@ -285,11 +285,14 @@ in {
     assertions =
         [
           {
-            assertion = builtins.elem "127.0.0.1" config.fortress.network.caddyBindAddresses;
+            assertion = builtins.elem "0.0.0.0" config.fortress.network.caddyBindAddresses;
             message = ''
               fortress/planes: fortress.network.caddyBindAddresses must
-              contain 127.0.0.1 — the client forwarder owns the tunnel IP
-              as the external ingress and forwards to Caddy on localhost.
+              contain the wildcard 0.0.0.0 — a localhost+LAN list binds
+              only the interfaces it names, so a tailnet or tunnel
+              ingress hits a closed port (the amon-sul cutover failure,
+              2026-10-07). The firewall + per-plane `remote_ip` rules
+              are the boundary, not the bind list.
             '';
           }
         ]

@@ -86,10 +86,11 @@ let
 
   # ── LAN access plane (ADR-028) ───────────────────────────────
   # The silent seam: dnsmasq answers service domains with the LAN
-  # address, but if the factory's Caddy bind refactor regresses
-  # (hardcoded `bind 127.0.0.1 ::1` again), LAN traffic hits a
-  # closed port — correct DNS, dead ingress, invisible in DNS-only
-  # checks. Assert BOTH sides render, from the real composition.
+  # address, but if the factory's Caddy bind regresses to a
+  # localhost-only list (`bind 127.0.0.1 ::1`), LAN/tailnet traffic
+  # hits a closed port — correct DNS, dead ingress, invisible in
+  # DNS-only checks. Assert BOTH sides render, from the real
+  # composition.
   lanAddress = vmtestConfig.fortress.network.lanAddress;
   lanDnsEnabled = vmtestConfig.fortress.network.dns.enable;
   dnsmasqAddresses = vmtestConfig.fortress.network.dns.addresses;
@@ -102,8 +103,8 @@ let
     (d: builtins.elem "/${d}/${lanAddress}" dnsmasqAddresses)
     enabledDomains;
   canaryAnswered = builtins.elem "/use-application-dns.net/" dnsmasqAddresses;
-  everyVhostBindsLan = builtins.all (d:
-    lib.hasInfix "bind 127.0.0.1 ::1 ${lanAddress}"
+  everyVhostBindsWildcard = builtins.all (d:
+    lib.hasInfix "bind 0.0.0.0 ::"
       vmtestConfig.services.caddy.virtualHosts."${d}".extraConfig)
     enabledDomains;
   # The LAN IP is a DNS-free entry point to the embedded config
@@ -322,12 +323,12 @@ assert lib.assertMsg (lib.hasInfix "--conf-file=/nix/store/" dnsExec && !(lib.ha
   "vmtest-wiring: fortress-dns does not take its config from the store — the ADR-035 applier cannot write /etc on NixOS, so the LAN DNS layer would silently never start";
 assert lib.assertMsg (dnsUnit.serviceConfig.DynamicUser == true)
   "vmtest-wiring: fortress-dns does not run under DynamicUser — it would need an OS account the applier cannot create, so the unit dies on any host whose /etc/passwd the OS owns";
-assert lib.assertMsg everyVhostBindsLan
-  "vmtest-wiring: an enabled vhost does not bind the LAN address — dnsmasq answers with a closed port (correct DNS, dead ingress)";
+assert lib.assertMsg everyVhostBindsWildcard
+  "vmtest-wiring: an enabled vhost does not bind the wildcard — a tailnet or LAN ingress would hit a closed port (correct DNS, dead ingress)";
 assert lib.assertMsg (lanDashboardVhost != null)
   "vmtest-wiring: the LAN-IP dashboard vhost is missing — typing the box's LAN IP would 404 instead of serving the config homepage";
-assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "bind 127.0.0.1 ::1 ${lanAddress}" lanDashboardVhost.extraConfig)
-  "vmtest-wiring: the LAN-IP plane vhost does not bind the LAN address — the homepage and every /<path> row would be unreachable on the LAN";
+assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "bind 0.0.0.0 ::" lanDashboardVhost.extraConfig)
+  "vmtest-wiring: the LAN-IP plane vhost does not bind the wildcard — the homepage and every /<path> row would be unreachable on the LAN";
 
 # ── path-routing matrix assertions (ADR-034) ──────────────────
 # The uniform entry point contract: every enabled service answers at
@@ -385,7 +386,7 @@ assert lib.assertMsg claimableConfig
       ingress: caddy.service orders after fortress-client.service (ACME over the tunnel)
       path-routing matrix (ADR-034): one site per plane, every service at /<path> on each, failover307s both directions, cookie Path scoping, per-plane dex issuer rewrite + I2P callback swap, seerr LAN port-site (cryptpad originLocked)
       I2P seam: loopback dex issuer, .i2p callback registered
-      LAN DNS: dnsmasq answers every enabled service domain — and ${baseDomain} — with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the LAN address
+      LAN DNS: dnsmasq answers every enabled service domain — and ${baseDomain} — with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the wildcard
       LAN dashboard: http://${lanAddress} reverse-proxies ${dashboardAddr} (DNS-free config homepage)
       dashboard port: default bind collides with no enabled service port; the collision assertion fires on a forced collision
       claim flow: fortress-client enabled in the claimable shape ({tunnel_ip} forwards) — the box boots its dashboard to be claimed

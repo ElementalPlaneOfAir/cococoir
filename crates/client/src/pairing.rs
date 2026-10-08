@@ -445,10 +445,11 @@ pub async fn rotate(
 /// with the assigned tunnel IP. Enrollment assigns the IP at runtime;
 /// the config can only reference it as a placeholder.
 /// A forward that references the tunnel IP — in either address field:
-/// the self-enrolled shape is `{listen_addr: "{tunnel_ip}:443",
-/// dest_addr: "127.0.0.1:443"}` (the box listens ON its tunnel IP and
-/// forwards to local Caddy). Such a forward can only bind once
-/// enrollment has assigned the IP.
+/// the self-enrolled shape is `{listen_addr: "{tunnel_ip}:8443",
+/// dest_addr: "127.0.0.1:443"}` (the box listens ON its tunnel IP at
+/// the client port of the edge's `(public, client)` map, and forwards
+/// to local Caddy). Such a forward can only bind once enrollment has
+/// assigned the IP.
 pub fn forward_needs_tunnel(f: &fortress_core::forwarder::Forward) -> bool {
     f.dest_addr.contains("{tunnel_ip}") || f.listen_addr.contains("{tunnel_ip}")
 }

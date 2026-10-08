@@ -119,7 +119,7 @@
   environment.etc."fortress-client.json".text = builtins.toJSON {
     forwards = [
       {
-        listen_addr = "\${tunnel_ip}:80";
+        listen_addr = "\${tunnel_ip}:8080";
         proto = "tcp";
         dest_addr = "127.0.0.1:80";
       }

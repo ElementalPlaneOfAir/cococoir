@@ -164,9 +164,10 @@ in {
         ];
 
         # Open the WG-side TCP port. NixOS's default firewall rejects
-        # incoming TCP on wg0; the client forwarder binds 10.10.0.2:80 to
-        # receive forwarded traffic from the edge.
-        networking.firewall.allowedTCPPorts = [80];
+        # incoming TCP on wg0; the client forwarder binds 10.10.0.2:8080
+        # (the edge's public port 80 maps here) to receive forwarded
+        # traffic from the edge.
+        networking.firewall.allowedTCPPorts = [8080];
 
         # Client config: the tunnel section drives the client-owned wg0.
         # edge_pubkey is the shared identity's public key — deterministic
@@ -186,7 +187,7 @@ in {
           };
           forwards = [
             {
-              listen_addr = "10.10.0.2:80";
+              listen_addr = "10.10.0.2:8080";
               proto = "tcp";
               dest_addr = "127.0.0.1:80";
             }

@@ -86,6 +86,27 @@ const ALLOC_COUNTER: &str = "fortress:alloc:next";
 /// Redis key holding the list of machine names.
 const MACHINE_INDEX: &str = "fortress:machines";
 
+/// The edge's per-machine ingress map: `(public_port, client_port)`.
+/// The edge binds `public_port` on the customer's /128 (the address the
+/// internet reaches) and forwards to `client_port` on the client's
+/// tunnel IP, where the client forwarder listens. The two ports differ
+/// so the box's Caddy can bind :80/:443 on every interface (the
+/// wildcard) without colliding with the client forwarder on the tunnel
+/// IP (`EADDRINUSE`). The client's own forwards must listen on
+/// `client_port` and forward to `127.0.0.1:public_port`.
+const EDGE_FORWARDS: [(u16, u16); 2] = [(80, 8080), (443, 8443)];
+
+/// The edge-side forward for one machine at one `(public, client)` port
+/// pair: bind the public port on the customer's /128, deliver to the
+/// client's distinct listen port on its tunnel IP.
+fn machine_forward(ipv6: &str, wg_ip: &str, (public_port, client_port): (u16, u16)) -> Forward {
+    Forward {
+        listen_addr: format!("[{ipv6}]:{public_port}"),
+        proto: Proto::Tcp,
+        dest_addr: format!("{wg_ip}:{client_port}"),
+    }
+}
+
 /// The process's two singletons: the control plane (Redis-backed) and
 /// the live forwarder. Both are process-lifetime — built once at boot,
 /// never dropped — so they live as `'static` `OnceCell`s, not injected
@@ -497,8 +518,10 @@ impl ControlPlane {
     }
 
     /// Allocate the next `/128` + WG tunnel address, create a machine,
-    /// add the edge's forwards for the machine's `:80` and `:443`, and
-    /// provision the machine's DNS AAAA records — all live, without
+    /// add the edge's forwards (public `:80`/`:443` on the customer /128
+    /// → the client's distinct `:8080`/`:8443` on the tunnel IP, per
+    /// [`EDGE_FORWARDS`]), and provision the machine's DNS AAAA records —
+    /// all live, without
     /// touching existing forwards. Returns the signup response. The
     /// ONE allocation core (DRY): the owner-less operator path
     /// (`/api/wireguard/new`) and the invite-approval path (T6) both
@@ -602,12 +625,8 @@ impl ControlPlane {
             self.rollback_allocation(forwarder, name, &machine).await;
             return Err(ControlPlaneError::Wg(err));
         }
-        for port in [80u16, 443] {
-            let fwd = Forward {
-                listen_addr: format!("[{ipv6}]:{port}"),
-                proto: Proto::Tcp,
-                dest_addr: format!("{wg_ip}:{port}"),
-            };
+        for ports in EDGE_FORWARDS {
+            let fwd = machine_forward(&ipv6, &wg_ip, ports);
             if let Err(err) = forwarder.add_forward(&fwd).await {
                 self.rollback_allocation(forwarder, name, &machine).await;
                 let addr = &fwd.listen_addr;
@@ -684,12 +703,8 @@ impl ControlPlane {
             if let Err(err) = self.wg.add_peer(&machine.wg_ip, &machine.wg_public_key) {
                 tracing::error!(name = %machine.name, wg_ip = %machine.wg_ip, err = %err, "rehydrate wg add failed");
             }
-            for port in [80u16, 443] {
-                let fwd = Forward {
-                    listen_addr: format!("[{}]:{port}", machine.ipv6),
-                    proto: Proto::Tcp,
-                    dest_addr: format!("{}:{port}", machine.wg_ip),
-                };
+            for ports in EDGE_FORWARDS {
+                let fwd = machine_forward(&machine.ipv6, &machine.wg_ip, ports);
                 if let Err(err) = forwarder.add_forward(&fwd).await {
                     tracing::error!(name = %machine.name, addr = %fwd.listen_addr, err = %err, "rehydrate bind failed");
                 }
@@ -733,13 +748,8 @@ impl ControlPlane {
         if let Err(err) = self.wg.remove_peer(&machine.wg_public_key) {
             tracing::error!(name = %name, err = %err, "delete: wg peer removal failed; stale peer may remain");
         }
-        for port in [80u16, 443] {
-            let fwd = Forward {
-                listen_addr: format!("[{}]:{port}", machine.ipv6),
-                proto: Proto::Tcp,
-                dest_addr: format!("{}:{port}", machine.wg_ip),
-            };
-            forwarder.remove_forward(&fwd);
+        for ports in EDGE_FORWARDS {
+            forwarder.remove_forward(&machine_forward(&machine.ipv6, &machine.wg_ip, ports));
         }
         // DNS removal is best-effort: the machine is already gone from
         // the tunnel; a provider outage leaves a stale record that the
@@ -783,12 +793,8 @@ impl ControlPlane {
         if let Err(err) = self.wg.remove_peer(&machine.wg_public_key) {
             tracing::error!(name = %name, err = %err, "allocate rollback: wg peer removal failed");
         }
-        for port in [80u16, 443] {
-            forwarder.remove_forward(&Forward {
-                listen_addr: format!("[{}]:{port}", machine.ipv6),
-                proto: Proto::Tcp,
-                dest_addr: format!("{}:{port}", machine.wg_ip),
-            });
+        for ports in EDGE_FORWARDS {
+            forwarder.remove_forward(&machine_forward(&machine.ipv6, &machine.wg_ip, ports));
         }
     }
 
@@ -1602,6 +1608,31 @@ mod tests {
         assert_eq!(subnet.host_string(1), "2a01:4f8:c17:1::1");
         assert_eq!(subnet.host_string(2), "2a01:4f8:c17:1::2");
         assert_eq!(subnet.host_string(65536), "2a01:4f8:c17:1::1:0");
+    }
+
+    /// The edge binds the PUBLIC port on the customer's /128 and forwards
+    /// to a DISTINCT client port on the tunnel IP. Regressing to the same
+    /// port reintroduces the collision between the box's wildcard Caddy
+    /// bind and the client forwarder on the tunnel IP (`EADDRINUSE`) —
+    /// the whole reason the ports were decoupled (2026-10-07).
+    #[test]
+    fn edge_forwards_decouple_public_and_client_ports() {
+        assert_eq!(EDGE_FORWARDS.len(), 2);
+        for (public_port, client_port) in EDGE_FORWARDS {
+            assert_ne!(
+                public_port, client_port,
+                "client port {client_port} equals the public port — the box's wildcard Caddy bind would collide with the client forwarder"
+            );
+        }
+        let fwd = machine_forward("2001:db8::2", "10.10.0.2", (443, 8443));
+        assert_eq!(
+            fwd.listen_addr, "[2001:db8::2]:443",
+            "edge binds the public port on the customer's /128"
+        );
+        assert_eq!(
+            fwd.dest_addr, "10.10.0.2:8443",
+            "edge forwards to the client's distinct listen port on the tunnel IP"
+        );
     }
 
     /// The share-URL domain must come from the constructed plan, not a

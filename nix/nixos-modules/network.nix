@@ -24,13 +24,13 @@
 #   - NXDOMAIN for use-application-dns.net: the Firefox DoH canary.
 #     Browsers with "Secure DNS" enabled would bypass split-horizon
 #     entirely; this auto-disables it on Firefox. Default-on, no option.
-#   - `fortress.network.caddyBindAddresses` (localhost + lanAddress
-#     when set) is the bind list the routing layer (`planes.nix`)
-#     renders every fortress Caddy vhost with, so LAN traffic
-#     terminates TLS on the box directly. The forwarder's tunnel IP
-#     (10.10.0.<n>:443) stays the remote ingress; a wildcard bind
-#     would still collide with it (EADDRINUSE), hence the explicit
-#     address list instead of 0.0.0.0.
+#   - `fortress.network.caddyBindAddresses` (the wildcard) is the
+#     bind list the routing layer (`planes.nix`) renders every
+#     fortress Caddy vhost with, so Caddy terminates on every
+#     interface (LAN, tailnet, tunnel) with no per-interface config.
+#     The tunnel forwarder no longer contends for :80/:443 on the
+#     tunnel IP — it listens on a distinct client port (the control
+#     plane's port map), so the wildcard is collision-free.
 #
 # The unit is fortress-owned rather than nixpkgs' dnsmasq module:
 # that module writes /etc, declares `users.users.dnsmasq`, and registers
@@ -136,12 +136,20 @@ in {
     caddyBindAddresses = mkOption {
       type = types.listOf types.str;
       internal = true;
-      default = ["127.0.0.1" "::1"] ++ lib.optional (cfg.lanAddress != null) cfg.lanAddress;
+      default = ["0.0.0.0" "::"];
       description = ''
-        Addresses every fortress Caddy vhost binds. Localhost (the
-        forwarder's ingress target) plus the LAN address when set.
-        Never 0.0.0.0 — the forwarder owns the tunnel IP and a
-        wildcard bind would collide (EADDRINUSE).
+        Addresses every fortress Caddy vhost binds. Wildcard: Caddy
+        listens on every interface (LAN, tailnet, tunnel), so a new
+        interface needs no config edit — the explicit localhost+LAN
+        list silently bound localhost only when `lanAddress` was
+        unset, which is the amon-sul cutover failure (2026-10-07).
+        The bind list was never the security boundary: the firewall
+        gates 80/443 and per-plane `remote_ip` allowlists add policy.
+        A bare wildcard is deliberate short-term debt — the allowlist
+        lands in the next few releases (see the ADR-034 amendment).
+        The tunnel forwarder no longer collides because it listens on
+        a distinct client port (the control plane's port map), not
+        :80/:443 on the tunnel IP.
       '';
     };
   };

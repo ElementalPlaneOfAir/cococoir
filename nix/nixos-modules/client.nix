@@ -21,9 +21,14 @@
 #
 # Config schema (JSON):
 #   { "forwards": [
-#       { "listen_addr": "10.10.0.2:443", "proto": "tcp", "dest_addr": "127.0.0.1:443" },
-#       { "listen_addr": "10.10.0.2:443", "proto": "udp", "dest_addr": "127.0.0.1:443" }
+#       { "listen_addr": "{tunnel_ip}:8080", "proto": "tcp", "dest_addr": "127.0.0.1:80" },
+#       { "listen_addr": "{tunnel_ip}:8443", "proto": "tcp", "dest_addr": "127.0.0.1:443" }
 #   ] }
+# The client listens on the tunnel IP at the second port of the edge's
+# `(public, client)` map (crates/controlplane `EDGE_FORWARDS`): the edge
+# binds :80/:443 on the customer's /128 and forwards to :8080/:8443 on
+# the tunnel IP. The ports differ so the box's Caddy can bind :80/:443
+# wildcard without colliding with this forwarder (EADDRINUSE).
 {
   config,
   lib,
@@ -100,11 +105,12 @@ in {
       defaultText = lib.literalExpression "127.0.0.1:3210";
       description = ''
         Address the embedded config dashboard binds. Loopback by
-        default: the LAN plane's Caddy (bound to
-        `fortress.network.lanAddress`) is the intended ingress, and the
-        tunnel forwarder owns the tunnel IP, so the dashboard must not
-        listen on every interface. `network.nix` reverse-proxies the
-        LAN-IP vhost here. The port is outside the service catalog's
+        default: the plane's Caddy (bound wildcard, see
+        `fortress.network.caddyBindAddresses`) is the intended ingress,
+        and the tunnel forwarder owns the tunnel IP, so the dashboard
+        must not listen on every interface. `planes.nix`
+        reverse-proxies the plane vhost here. The port is outside the
+        service catalog's
         range (cryptpad owns 3000, forgejo 3001, …); a collision with
         an enabled service's port fails the assertions below at eval
         time, not at boot.

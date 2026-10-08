@@ -817,6 +817,19 @@ revisited.
   prefixes (silent-failure seam, banned); 301 redirects (not
   reversible); a second customer-facing routing option (the routing
   mode is derived per service, never configured).
+  **Amended 2026-10-07 (`caddy-wildcard-bind`):** every fortress Caddy
+  vhost binds the wildcard (`0.0.0.0` + `::`), not a per-plane address
+  list. The explicit localhost+LAN list silently bound localhost only
+  when `lanAddress` was unset (the amon-sul cutover failure) and made
+  the tailnet a non-path. The bind list was never the security
+  boundary — the firewall gates `:80`/`:443` and per-plane `remote_ip`
+  allowlists add policy. **Bare wildcard with no allowlist is
+  deliberate short-term debt** (eased debugging), to be closed by a
+  per-plane `remote_ip` allowlist within the next few releases. The
+  tunnel forwarder no longer contends for `:80`/`:443` on the tunnel
+  IP: the control plane's `EDGE_FORWARDS` binds the public port on the
+  customer `/128` and forwards to a distinct client port
+  (`:8080`/`:8443`) on the tunnel IP.
 
 - **ADR-035: The apply model — fortress-owned `config.nix` + a
   system-manager-uniform applier; Linux native + one Mac/Windows
