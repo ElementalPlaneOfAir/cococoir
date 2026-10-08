@@ -5,9 +5,16 @@
 #
 # One origin per plane, every catalog service at `/<path>` on it:
 #
-#   clearnet  https://<baseDomain>     dashboard at /
-#   LAN       http://<lanAddress>      dashboard at /, zero DNS
+#   clearnet  https://<baseDomain>     dashboard at /  (the only HTTPS plane)
+#   LAN       http://<any host>        dashboard at /, zero DNS, plain HTTP
 #   I2P       http://<i2pLabel>.i2p
+#
+# HTTPS is scoped to the clearnet hostnames. Caddy's blanket
+# `auto_https` redirect (which 308s every host on :80 to a certless
+# HTTPS origin — the amon-sul hostname failure, 2026-10-08) is
+# disabled, each clearnet hostname gets an explicit http->https
+# redirect, and every other host on :80 is the LAN plane over plain
+# HTTP. So `http://<machine-hostname>` serves the app.
 #
 # Every service answers at `/<path>` on every plane origin, and
 # every service hostname 307s to its canonical shape — so `/<path>`
@@ -56,6 +63,12 @@
   clearnetOrigin =
     if baseDomain == null then null else "https://${baseDomain}";
   lanOrigin = if lan == null then null else "http://${lan}";
+  # The LAN plane is a :80 catch-all (any hostname, plain HTTP), so
+  # its Caddy origin tracks the request host — a static LAN-IP origin
+  # would bounce a `http://<machine-hostname>` visitor, and dex's
+  # rewritten issuer, to the IP. `lanOrigin` stays the IP for OIDC
+  # callbacks, which are registered per-origin.
+  lanCaddyOrigin = "http://{http.request.host}";
   i2pOrigin = if i2pLabel == null then null else "http://${i2pLabel}.i2p";
   dashboardAddr = config.services.fortress-client.dashboardAddr;
 
@@ -226,6 +239,23 @@
     })
     routableNames);
 
+  # The clearnet hostnames that keep HTTPS: the apex plus every
+  # routable service's `domain` (e.g. `auth.<baseDomain>`). Each gets
+  # an explicit plain-HTTP redirect, since `auto_https disable_redirects`
+  # turns off Caddy's blanket redirect.
+  clearnetHosts = lib.unique (
+    lib.optional (baseDomain != null) baseDomain
+    ++ map (name: routable.${name}.domain) routableNames
+  );
+
+  clearnetRedirectVhosts = lib.listToAttrs (map (host: {
+    name = "http://${host}";
+    value.extraConfig = ''
+      bind ${bindAddrs}
+      redir https://${host}{uri} 308
+    '';
+  }) clearnetHosts);
+
   planeVhosts =
     lib.optionalAttrs (clearnetOrigin != null) {
       "${baseDomain}".extraConfig = planeExtra {
@@ -235,10 +265,10 @@
       };
     }
     // lib.optionalAttrs (lanOrigin != null) {
-      "http://${lan}".extraConfig = planeExtra {
-        origin = lanOrigin;
+      ":80".extraConfig = planeExtra {
+        origin = lanCaddyOrigin;
         failover = lanFailover;
-        swaps = planeSwapLines lanOrigin;
+        swaps = planeSwapLines lanCaddyOrigin;
       };
     }
     // lib.optionalAttrs (i2pOrigin != null) {
@@ -334,6 +364,9 @@ in {
         after = ["fortress-client.service"];
       };
 
-      services.caddy.virtualHosts = planeVhosts // hostnameVhosts // portVhosts;
+      services.caddy.globalConfig = "auto_https disable_redirects";
+
+      services.caddy.virtualHosts =
+        planeVhosts // hostnameVhosts // portVhosts // clearnetRedirectVhosts;
   };
 }

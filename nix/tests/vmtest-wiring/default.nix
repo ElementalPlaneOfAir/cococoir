@@ -107,12 +107,16 @@ let
     lib.hasInfix "bind 0.0.0.0 ::"
       vmtestConfig.services.caddy.virtualHosts."${d}".extraConfig)
     enabledDomains;
-  # The LAN IP is a DNS-free entry point to the embedded config
-  # dashboard. If this vhost silently vanishes (or stops binding the
-  # LAN address), typing the box's IP 404s and the customer has no
-  # zero-config way in — invisible to every per-service check.
+  # The LAN plane is a :80 catch-all: any hostname (the box's IP, its
+  # machine name, anything the LAN resolves) serves the dashboard over
+  # plain HTTP. If this vhost silently vanishes, typing the box's IP
+  # 404s and the customer has no zero-config way in — invisible to
+  # every per-service check.
   dashboardAddr = vmtestConfig.services.fortress-client.dashboardAddr;
-  lanDashboardVhost = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}" or null;
+  lanDashboardVhost = vmtestConfig.services.caddy.virtualHosts.":80" or null;
+  caddyGlobalConfig = vmtestConfig.services.caddy.globalConfig or "";
+  clearnetRedirectVhost = host:
+    vmtestConfig.services.caddy.virtualHosts."http://${host}" or null;
 
   # ── claim-flow boot tripwire (claim-flow T7) ──────────────────
   # vmtest-bootstrap.sh's claim-flow section only bites when the e2e
@@ -147,7 +151,7 @@ let
   jfPath = vmtestConfig.fortress.services.jellyfin.path;
   jfI2p = vmtestConfig.fortress.services.jellyfin.i2pDomain;
   clearnetPlane = vmtestConfig.services.caddy.virtualHosts."${baseDomain}".extraConfig or "";
-  lanPlane = vmtestConfig.services.caddy.virtualHosts."http://${lanAddress}".extraConfig or "";
+  lanPlane = vmtestConfig.services.caddy.virtualHosts.":80".extraConfig or "";
   i2pPlane = vmtestConfig.services.caddy.virtualHosts."http://${i2pPlaneHost}".extraConfig or "";
   jellyfinVhost = vmtestConfig.services.caddy.virtualHosts."${jfDomain}".extraConfig or "";
   jellyfinI2pVhost = vmtestConfig.services.caddy.virtualHosts."http://${jfI2p}".extraConfig or null;
@@ -305,7 +309,7 @@ assert lib.assertMsg (lib.hasInfix ">Location \"^http://127" i2pPlane && lib.has
   "vmtest-wiring: the I2P plane vhost lost the dex issuer Location rewrite — SSO would redirect the browser to an unreachable loopback address";
 assert lib.assertMsg (lib.hasInfix "^https://${baseEscaped}(/|$)" i2pPlane && lib.hasInfix "\"http://${i2pPlaneHost}\$1\"" i2pPlane)
   "vmtest-wiring: the I2P plane vhost lost the clearnet-callback swap — dex would redirect the browser to the clearnet callback, dead on the I2P path";
-assert lib.assertMsg (lib.hasInfix "^https://${baseEscaped}(/|$)" lanPlane && lib.hasInfix "\"http://${lanAddress}\$1\"" lanPlane)
+assert lib.assertMsg (lib.hasInfix "^https://${baseEscaped}(/|$)" lanPlane && lib.hasInfix "\"http://{http.request.host}\$1\"" lanPlane)
   "vmtest-wiring: the LAN plane vhost lost the clearnet-callback swap — a login would drag the LAN browser onto the clearnet origin mid-flow";
 assert lib.assertMsg (jellyfinDexClient != null && builtins.elem "http://${i2pPlaneHost}${jfPath}/sso/OIDC/Callback/dex" (jellyfinDexClient.redirectURIs or []) && builtins.elem "https://${baseDomain}${jfPath}/sso/OIDC/Callback/dex" (jellyfinDexClient.redirectURIs or []))
   "vmtest-wiring: the jellyfin plane callbacks (clearnet + I2P) are not registered in dex staticClients — SSO callbacks would dead-end";
@@ -326,9 +330,23 @@ assert lib.assertMsg (dnsUnit.serviceConfig.DynamicUser == true)
 assert lib.assertMsg everyVhostBindsWildcard
   "vmtest-wiring: an enabled vhost does not bind the wildcard — a tailnet or LAN ingress would hit a closed port (correct DNS, dead ingress)";
 assert lib.assertMsg (lanDashboardVhost != null)
-  "vmtest-wiring: the LAN-IP dashboard vhost is missing — typing the box's LAN IP would 404 instead of serving the config homepage";
+  "vmtest-wiring: the LAN plane catch-all is missing — typing the box's LAN IP (or machine hostname) would 404 instead of serving the config homepage";
 assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "bind 0.0.0.0 ::" lanDashboardVhost.extraConfig)
-  "vmtest-wiring: the LAN-IP plane vhost does not bind the wildcard — the homepage and every /<path> row would be unreachable on the LAN";
+  "vmtest-wiring: the LAN plane catch-all does not bind the wildcard — the homepage and every /<path> row would be unreachable on the LAN";
+
+# ── HTTPS scoping assertions (2026-10-08) ─────────────────────
+# HTTPS is scoped to the clearnet hostnames. Caddy's blanket
+# `auto_https` redirect 308s every host on :80 to a certless HTTPS
+# origin — the amon-sul hostname failure (2026-10-08). It is
+# disabled; each clearnet hostname gets an explicit redirect; the LAN
+# plane is a plain-HTTP catch-all. A regression silently breaks the
+# machine hostname or resurrects the blanket redirect.
+assert lib.assertMsg (lib.hasInfix "auto_https disable_redirects" caddyGlobalConfig)
+  "vmtest-wiring: services.caddy.globalConfig does not disable the blanket auto_https redirect — every non-clearnet host on :80 would 308 to a certless HTTPS origin";
+assert lib.assertMsg (builtins.all (h: let v = clearnetRedirectVhost h; in
+    v != null && lib.hasInfix "redir https://${h}{uri} 308" v.extraConfig)
+    (lib.unique ([baseDomain] ++ enabledDomains)))
+  "vmtest-wiring: a clearnet hostname lost its explicit http->https redirect — it would serve the LAN plane over plain HTTP instead of redirecting";
 
 # ── path-routing matrix assertions (ADR-034) ──────────────────
 # The uniform entry point contract: every enabled service answers at
@@ -361,9 +379,9 @@ assert lib.assertMsg (seerrPortSite != null && lib.hasInfix "bind ${lanAddress}"
 assert lib.assertMsg (cryptpadPortSite == null)
   "vmtest-wiring: cryptpad got a LAN port-site despite originLocked — a second origin breaks CryptPad's safe/unsafe origin model";
 assert lib.assertMsg (lanDashboardVhost != null && lib.hasInfix "reverse_proxy ${dashboardAddr}" lanDashboardVhost.extraConfig)
-  "vmtest-wiring: the LAN-IP dashboard vhost does not reverse-proxy the client dashboard (${dashboardAddr}) — the homepage would 502";
+  "vmtest-wiring: the LAN plane catch-all does not reverse-proxy the client dashboard (${dashboardAddr}) — the homepage would 502";
 assert lib.assertMsg (lanDashboardVhost != null && !lib.hasInfix "tls " lanDashboardVhost.extraConfig)
-  "vmtest-wiring: the LAN-IP dashboard vhost emits a tls directive — HTTPS on a private IP is a browser warning, and the plain-HTTP homepage must not redirect to it";
+  "vmtest-wiring: the LAN plane catch-all emits a tls directive — HTTPS on a private IP is a browser warning, and the plain-HTTP homepage must not redirect to it";
 
 # ── dashboard port-collision assertions ───────────────────────
 assert lib.assertMsg (!dashboardDefaultCollides)
@@ -384,10 +402,11 @@ assert lib.assertMsg claimableConfig
       forgejo: OIDC wired (dex client clearnet+i2p, auth-source bootstrap boot-activated)
       cryptpad: OIDC wired (SSO enabled + enforced, dex client registered, secret oneshot boot-activated, CRYPTPAD_CONFIG env set, SSO plugin bundled in package)
       ingress: caddy.service orders after fortress-client.service (ACME over the tunnel)
-      path-routing matrix (ADR-034): one site per plane, every service at /<path> on each, failover307s both directions, cookie Path scoping, per-plane dex issuer rewrite + I2P callback swap, seerr LAN port-site (cryptpad originLocked)
+      path-routing matrix (ADR-034): one site per plane (LAN plane is a :80 catch-all), every service at /<path> on each, failover307s both directions, cookie Path scoping, per-plane dex issuer rewrite + I2P callback swap, seerr LAN port-site (cryptpad originLocked)
       I2P seam: loopback dex issuer, .i2p callback registered
+      HTTPS scoping: blanket auto_https redirect disabled, every clearnet hostname redirects http->https, LAN plane serves plain HTTP for any host
       LAN DNS: dnsmasq answers every enabled service domain — and ${baseDomain} — with ${lanAddress}, DoH canary NXDOMAINs, every vhost binds the wildcard
-      LAN dashboard: http://${lanAddress} reverse-proxies ${dashboardAddr} (DNS-free config homepage)
+      LAN plane: :80 catch-all reverse-proxies ${dashboardAddr} (DNS-free config homepage on the IP or machine hostname)
       dashboard port: default bind collides with no enabled service port; the collision assertion fires on a forced collision
       claim flow: fortress-client enabled in the claimable shape ({tunnel_ip} forwards) — the box boots its dashboard to be claimed
     EOF

@@ -9,7 +9,7 @@ works today. Rules (from AGENTS.md § Context System):
 - Update this file in the same commit that changes reality.
 - Stay under ~80 lines. History belongs in `git log`.
 
-Last e2e: PASS — 2026-10-06 — db7e613
+Last e2e: PASS — 2026-10-08 — d46a656
 Last smtest e2e: PASS — 2026-10-07 — working tree on a3c5fad
 (`scripts/vmtest-e2e.sh` rewrites this line on PASS.)
 
@@ -42,6 +42,18 @@ customer `/128` and forwards to a distinct client port (`:8080`/`:8443`).
 `edge-forward` PASS (public `:80` → client `:8080` → app `:80`),
 `vmtest-wiring` PASS (every vhost binds the wildcard), L0
 `edge_forwards_decouple_public_and_client_ports`.
+
+**HTTPS is scoped to the clearnet hostnames (2026-10-08, `https-scoping`).**
+Caddy's default `auto_https` blankets *every* host on `:80` with a 308 to a
+certless HTTPS origin, so `http://<machine-hostname>` (e.g. `http://amon-sul`)
+bounced to `https://amon-sul` and died. Now `auto_https disable_redirects` is
+set, each clearnet hostname gets an explicit `http://<host>` →
+`https://<host>` 308, and the LAN plane is a `:80` catch-all serving plain
+HTTP for any host, its Caddy origin tracking the request host so dex's issuer
+and the callback swaps stay on the typed host (`fortress.planes.lanOrigin`
+stays the LAN IP for OIDC callbacks). **Proof:** `vmtest-wiring` PASS (blanket
+redirect disabled, every clearnet hostname redirects, LAN plane is a `:80`
+catch-all), `nix flake check` PASS.
 
 **Still blocked: the rest of amon-sul's services.** The applier imports
 only `dex.nix` + `caddy/default.nix`; `host-shim.nix` stubs

@@ -830,6 +830,18 @@ revisited.
   IP: the control plane's `EDGE_FORWARDS` binds the public port on the
   customer `/128` and forwards to a distinct client port
   (`:8080`/`:8443`) on the tunnel IP.
+  **Amended 2026-10-08 (`https-scoping`):** the LAN plane is a `:80`
+  catch-all (any hostname serves it over plain HTTP) and HTTPS is
+  scoped to the clearnet hostnames. Caddy's default `auto_https`
+  blankets *every* host on `:80` with a 308 to a certless HTTPS
+  origin — `http://<machine-hostname>` bounced and died (amon-sul,
+  2026-10-08). `auto_https disable_redirects` is set, each clearnet
+  hostname gets an explicit `http://<host>` → `https://<host>` 308,
+  and the LAN plane's Caddy origin tracks the request host
+  (`http://{http.request.host}`) so dex's issuer and the callback
+  swaps stay on whatever host the browser typed. `fortress.planes.lanOrigin`
+  stays the LAN IP for OIDC callbacks, which are registered
+  per-origin.
 
 - **ADR-035: The apply model — fortress-owned `config.nix` + a
   system-manager-uniform applier; Linux native + one Mac/Windows
