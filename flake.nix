@@ -279,6 +279,11 @@
         public = true;
         mediaRoot = "/media/entertain";
       };
+      fortress.services.media.enable = true;
+      fortress.services.radarr = {enable = true; public = true;};
+      fortress.services.sonarr = {enable = true; public = true;};
+      fortress.services.qbittorrent = {enable = true; public = true;};
+      fortress.services.seerr = {enable = true; public = true;};
       services.fortress-client = {
         enable = true;
         settings.forwards = [

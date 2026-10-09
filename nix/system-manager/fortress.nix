@@ -159,7 +159,12 @@
       ++ lib.concatMap (
         name: config.fortress.services.${name}.journald.units
       ) (
-        lib.filter (name: config.fortress.services.${name}.enable)
+        # `fortress.services` also holds plain toggles that are not
+        # routed services (e.g. `media`, the *arr wiring machinery). Only
+        # mkFortressService-built entries carry `journald.units`.
+        lib.filter (name:
+          config.fortress.services.${name}.enable
+          && config.fortress.services.${name} ? journald)
         (builtins.attrNames config.fortress.services)
       );
   };

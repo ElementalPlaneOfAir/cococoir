@@ -53,6 +53,12 @@ keep `wantedBy = multi-user.target` and get pulled by the target instead.
 `jellyfin.service`, `fortress-media-apply.service`, `qbittorrent.service`
 are in `applierUnitNames`; `vmtest-wiring` accepts `fortress.target` for
 boot activation.
+**The L1 fixture now enables the whole media stack** (jellyfin, radarr,
+sonarr, qbittorrent, seerr + `media`) and `nix flake check` is green —
+turning on a service is a config line end to end. That surfaced one
+aggregation bug: `fortress.services.media` is a plain toggle, not a
+`mkFortressService`, so the `journald.units` walk over `fortress.services`
+crashed on it; it now filters to entries that carry `journald`.
 
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was
