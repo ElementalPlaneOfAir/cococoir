@@ -34,6 +34,10 @@ use fortress_core::logger;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    /// Defaults to no forwards: a box that serves only its dashboard has
+    /// nothing to forward, and requiring the key forced every dashboard-
+    /// only config to write `"forwards": []` or crash-loop on parse.
+    #[serde(default)]
     forwards: Vec<Forward>,
     /// Optional client-owned tunnel: if present, the client generates +
     /// persists its own WG keypair, brings wg0 up, then the forwarder
@@ -589,6 +593,25 @@ mod tests {
     fn config_file_rejects_unknown_field() {
         let err = serde_json::from_str::<ConfigFile>(r#"{"forwards":[],"bogus":1}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    /// Tripwire for the amon-sul crash-loop (2026-10-09): `forwards` was
+    /// a required key, so the dashboard-only default `settings = {}` was
+    /// rejected at parse and fortress-client restart-looped 66 times with
+    /// "missing field `forwards`" while `/` served nothing. A box with no
+    /// forwards is a legitimate box — it runs the dashboard and nothing else.
+    #[test]
+    fn config_file_allows_a_dashboard_only_config() {
+        let cfg: ConfigFile = serde_json::from_str("{}").expect("no forwards is a legal box");
+        assert!(cfg.forwards.is_empty());
+        assert!(cfg.tunnel.is_none());
+        assert!(cfg.invite.is_none());
+    }
+
+    #[test]
+    fn config_file_allows_an_explicit_empty_forwards() {
+        let cfg: ConfigFile = serde_json::from_str(r#"{"forwards":[]}"#).unwrap();
+        assert!(cfg.forwards.is_empty());
     }
 
     #[test]
