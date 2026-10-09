@@ -36,42 +36,11 @@ let
     '';
   };
 
-  secretFile = "/etc/dex/clients/jellyfin-secret";
-  jellarrGroup =
-    if options.services ? jellarr
-    then config.services.jellarr.group
-    else "root";
+  secretFile = config.sops.secrets.oidc-jellyfin-secret.path;
 in
 mkIf oidcEnabled (lib.mkMerge [
   {
-    systemd.tmpfiles.rules = [
-      "d /etc/dex/clients 0755 root root -"
-    ];
-
-    systemd.services.fortress-jellyfin-oidc-secret = {
-      description = "Generate Jellyfin OIDC client secret";
-      wantedBy = ["multi-user.target"];
-      before = ["dex.service"];
-      path = [pkgs.openssl];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = pkgs.writeShellScript "gen-jellyfin-secret" ''
-          set -euo pipefail
-          SECRET_FILE="${secretFile}"
-          if [ ! -f "$SECRET_FILE" ]; then
-            openssl rand -hex -out "$SECRET_FILE" 32
-            chmod 0440 "$SECRET_FILE"
-            chown root:${jellarrGroup} "$SECRET_FILE"
-          fi
-        '';
-      };
-    };
-
-    systemd.services.dex = {
-      after = ["fortress-jellyfin-oidc-secret.service"];
-      serviceConfig.BindReadOnlyPaths = [secretFile];
-    };
+    systemd.services.dex.after = ["sops-install-secrets.service"];
 
     services.dex.settings.staticClients = lib.mkAfter [
       {
@@ -101,6 +70,14 @@ mkIf oidcEnabled (lib.mkMerge [
     '';
   }
   (lib.optionalAttrs (options.services ? jellarr) {
+    # jellarr's preStart substitutes the secret into its config, so it
+    # must be able to read the file — not just dex (which runs the
+    # substitution as root).
+    sops.secrets.oidc-jellyfin-secret = {
+      group = config.services.jellarr.group;
+      mode = "0440";
+    };
+
     services.jellarr.config = {
       branding = {
         loginDisclaimer = ''<a href="${jf.path}/sso/OIDC/Start/dex" class="raised block emby-button button-submit" style="display:block;margin:1em 0;padding:0.9em;text-align:center;text-decoration:none;">Sign in with Dex</a>'';
@@ -139,7 +116,7 @@ mkIf oidcEnabled (lib.mkMerge [
       (pkgs.writeShellScript "jellarr-oidc-secret" ''
         set -e
         if [ -f ${secretFile} ]; then
-          ${pkgs.gnused}/bin/sed -i "s|@OIDC_SECRET@|$(cat ${secretFile})|" \
+          ${pkgs.gnused}/bin/sed -i "s|@OIDC_SECRET@|$(tr -d '\n' < ${secretFile})|" \
             /var/lib/jellarr/config/config.yml
         fi
       '')

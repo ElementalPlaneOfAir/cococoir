@@ -104,6 +104,7 @@
         ./nixosConfigurations/vmtest.nix
         "${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
         inputs.jellarr.nixosModules.default
+        inputs.sops-nix.nixosModules.sops
       ];
     };
 
@@ -115,7 +116,6 @@
       imports = [
         inputs.jellarr.nixosModules.default
         inputs.sops-nix.nixosModules.sops
-        ./nix/nixos-modules/sops-wire.nix
         ./nix/nixos-modules
       ];
     };
@@ -179,14 +179,32 @@
     # L1 fixture for the applier-wiring check: the same applier config but
     # with a *public* service, so Caddy (never enabled in the dex-only
     # slice above) is exercised. See nix/tests/applier-wiring/.
-    applierPublicConfig = (mkFortressSystemConfig ({...}: {
+    applierPublicConfig = (mkFortressSystemConfig ({pkgs, ...}: {
       nixpkgs.hostPlatform = "x86_64-linux";
       fortress.baseDomain = "example.com";
       fortress.storage.backend = "plain-dirs";
       fortress.network.lanAddress = "10.0.2.15";
+      # sops is mandatory (secrets.nix): a sealed inventory is the only
+      # way secret material arrives. L1 only asserts the *wiring*, so the
+      # ciphertext is a placeholder and its hash is not checked — real
+      # decryption is proven at L2 (smtest) with real sops.
+      sops.validateSopsFiles = false;
+      fortress.secrets.sopsFile = pkgs.writeText "l1-test-secrets.yaml" ''
+        fortress-admin-password-hash: ENC[PLACEHOLDER]
+      '';
       fortress.services.dex = {
         enable = true;
         public = true;
+      };
+      services.fortress-client = {
+        enable = true;
+        settings.forwards = [
+          {
+            listen_addr = "{tunnel_ip}:8080";
+            proto = "tcp";
+            dest_addr = "127.0.0.1:80";
+          }
+        ];
       };
     })).config;
 

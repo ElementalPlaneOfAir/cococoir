@@ -29,7 +29,9 @@
   # reads the flat `config.nix` beside it — exactly the onbox magic-folder
   # shape (PLAN.md ADR-035). Editing config.nix here and re-running
   # fortress-apply is the decoupled update path: no nixos-rebuild.
-  fortressConfig = pkgs.runCommand "fortress-magic-folder" {} ''
+  fortressConfig = pkgs.runCommand "fortress-magic-folder" {
+    buildInputs = [pkgs.age pkgs.sops pkgs.openssl];
+  } ''
     mkdir -p $out
     # Carry a full copy of the source inside the folder rather than pointing
     # at it by store path: a store path is an unrooted build input, and a GC
@@ -39,6 +41,24 @@
     # self-contained magic folder needs.
     cp -r ${cococoirSource} $out/cococoir-source
     chmod -R u+w $out/cococoir-source
+
+    # Sealed inventory, generated at build: the fixture has to carry one
+    # before the first apply, because sops is mandatory (secrets.nix) and
+    # the platform never mints a credential at runtime. Mirrors what
+    # fortress-bootstrap does on a real box.
+    mkdir -p $out/secrets
+    age-keygen -o $out/secrets/device.agekey 2>/dev/null
+    pub=$(age-keygen -y $out/secrets/device.agekey)
+    plaintext=$(mktemp)
+    printf '%s: "%s"\n' fortress-admin-password-hash \
+      '$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W' >> "$plaintext"
+    ${builtins.concatStringsSep "\n" (builtins.map (k: ''
+      printf '%s: "%s"\n' ${k} "$(openssl rand -hex 32)" >> "$plaintext"
+    '') ["jellarr-api-key" "jellyfin-admin-password"
+         "radarr-api-key" "sonarr-api-key" "seerr-admin-password" "cryptpad-jwt-secret"
+         "oidc-jellyfin-secret" "oidc-cryptpad-secret" "oidc-forgejo-secret"])}
+    sops --encrypt --age "$pub" --input-type yaml --output-type yaml "$plaintext" > "$out/secrets/secrets.enc.yaml"
+    rm -f "$plaintext"
     cat > $out/flake.nix <<'FLAKE'
     {
       description = "fortress magic folder (smtest fixture)";
@@ -61,6 +81,7 @@
       # deliberately exercises it: the dex-only (public = false) slice left
       # Caddy's identity + /etc gaps invisible until the amon-sul cutover
       # (2026-10-07). tls defaults to "off", so Caddy serves plain HTTP.
+      fortress.secrets.sopsFile = ./secrets/secrets.enc.yaml;
       fortress.services.dex = {
         enable = true;
         public = true;
@@ -136,6 +157,11 @@ in {
       mkdir -p /etc/fortress/config
       cp -r ${fortressConfig}/. /etc/fortress/config/
       chmod -R u+w /etc/fortress/config
+      # The device age key is the one thing outside the store and outside
+      # the folder (see sops-wire.nix) — a real box keeps it at
+      # /etc/fortress/system_age_keys.txt, written by fortress-bootstrap.
+      install -m 0400 ${fortressConfig}/secrets/device.agekey \
+        /etc/fortress/system_age_keys.txt
     fi
   '';
 }

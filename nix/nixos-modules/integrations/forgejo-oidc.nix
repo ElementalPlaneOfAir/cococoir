@@ -31,39 +31,19 @@ let
   fj = config.fortress.services.forgejo;
   dx = config.fortress.services.dex;
   oidcEnabled = fj.enable && dx.enable;
-  secretFile = "/etc/dex/clients/forgejo-secret";
+  secretFile = config.sops.secrets.oidc-forgejo-secret.path;
   forgejoPkg = config.services.forgejo.package;
   discoveryUrl = "http://127.0.0.1:${toString dx.port}/dex/.well-known/openid-configuration";
 in
 mkIf oidcEnabled {
-  systemd.tmpfiles.rules = [
-    "d /etc/dex/clients 0755 root root -"
-  ];
-
-  systemd.services.fortress-forgejo-oidc-secret = {
-    description = "Generate Forgejo OIDC client secret";
-    wantedBy = ["multi-user.target"];
-    before = ["dex.service" "forgejo.service"];
-    path = [pkgs.openssl];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = pkgs.writeShellScript "gen-forgejo-secret" ''
-        set -euo pipefail
-        SECRET_FILE="${secretFile}"
-        if [ ! -f "$SECRET_FILE" ]; then
-          openssl rand -hex -out "$SECRET_FILE" 32
-          chmod 0440 "$SECRET_FILE"
-          chown root:forgejo "$SECRET_FILE"
-        fi
-      '';
-    };
+  # Forgejo's own preStart substitutes the secret, so it needs group
+  # read — not just dex (which substitutes as root).
+  sops.secrets.oidc-forgejo-secret = {
+    group = config.services.forgejo.group;
+    mode = "0440";
   };
 
-  systemd.services.dex = {
-    after = ["fortress-forgejo-oidc-secret.service"];
-    serviceConfig.BindReadOnlyPaths = [secretFile];
-  };
+  systemd.services.dex.after = ["sops-install-secrets.service"];
 
   services.dex.settings.staticClients = lib.mkAfter [
     {

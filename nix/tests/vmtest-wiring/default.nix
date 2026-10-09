@@ -124,7 +124,7 @@ let
   # of the vmtest composition, the boot-dead-end guard is gone and
   # nothing else in L1 would notice.
   clientEnabled = vmtestConfig.services.fortress-client.enable or false;
-  clientConfigJson = vmtestConfig.environment.etc."fortress-client.json".text or "";
+  clientConfigJson = builtins.toJSON (vmtestConfig.services.fortress-client.settings or {});
   claimableConfig = lib.hasInfix "{tunnel_ip}" clientConfigJson;
 
   # ── media automation stack ───────────────────────────────────
@@ -190,10 +190,21 @@ assert lib.assertMsg (builtins.all mediaServiceEnabled mediaStackServices)
   "vmtest-wiring: the media toggle did not render all four media stack services enabled";
 assert lib.assertMsg (mediaApplySvc != null && builtins.elem "multi-user.target" (mediaApplySvc.wantedBy or []))
   "vmtest-wiring: fortress-media-apply is missing or has no boot activation — the stack would boot unwired";
-assert lib.assertMsg (mediaApplySvc != null && builtins.all (u: builtins.elem u (mediaApplySvc.after or [])) ["radarr.service" "sonarr.service" "qbittorrent.service" "fortress-media-api-keys.service"])
-  "vmtest-wiring: fortress-media-apply does not order after the media services — it could apply against half-up services";
-assert lib.assertMsg (mediaKeygenSvc != null && builtins.elem "multi-user.target" (mediaKeygenSvc.wantedBy or []))
-  "vmtest-wiring: fortress-media-api-keys is missing or has no boot activation — *arr API keys would never be pinned";
+assert lib.assertMsg (mediaApplySvc != null && builtins.all (u: builtins.elem u (mediaApplySvc.after or [])) ["radarr.service" "sonarr.service" "qbittorrent.service" "sops-install-secrets.service"])
+  "vmtest-wiring: fortress-media-apply does not order after the media services + sops-install-secrets — it could apply against half-up services or with no secrets";
+# Secrets are sealed, never minted. A reintroduced minting oneshot is the
+# bug that made every rebuild rotate every key (2026-10-08).
+assert lib.assertMsg (mediaKeygenSvc == null)
+  "vmtest-wiring: fortress-media-api-keys is back — API keys must come from the sealed inventory (secrets.nix), not be minted at boot";
+# Mechanism-agnostic: on NixOS sops-nix may install via the activation
+# script or via sops-install-secrets, and the two disagree about which
+# target pulls them in. What must hold is that the *whole* inventory is
+# declared and pointed at a real sealed file — otherwise a key is missing
+# and the consumer starts with no credential.
+assert lib.assertMsg (vmtestConfig.sops.defaultSopsFile != null)
+  "vmtest-wiring: sops.defaultSopsFile is unset — nothing decrypts the sealed inventory";
+assert lib.assertMsg (lib.all (n: builtins.hasAttr n vmtestConfig.sops.secrets) (builtins.attrNames vmtestConfig.fortress.secrets._inventory))
+  "vmtest-wiring: the sops inventory is not fully declared in sops.secrets — a consumer would start with no credential";
 assert lib.assertMsg (qbittorrentCfg.enable)
   "vmtest-wiring: services.qbittorrent is not enabled";
 assert lib.assertMsg (qbittorrentFortressCfg.public == false)

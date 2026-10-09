@@ -886,6 +886,20 @@ revisited.
   option tree); a Docker container tier (ADR-030's cgroup +
   licensing warts, and a "rebuild the artifact" apply that forks
   the very path this unifies).
+  **Amended 2026-10-08 (`applier-store-path-config`):** the applier
+  materializes **units only** — `apply.sh` installs `systemd/system`
+  into `/run/systemd/system` and nothing else. So a fortress module must
+  express a unit's runtime inputs as **store paths** referenced by the
+  unit; the sole sanctioned non-store reach is decrypting a sops secret
+  at runtime via the device age key at `/etc/fortress/system_age_keys.txt`.
+  Config never travels through `environment.etc` (the applier never
+  writes `/etc`), and dirs come from systemd units / `StateDirectory`,
+  never `systemd.tmpfiles.rules` (the applier never applies them). A
+  module that breaks this loses its effect silently and the unit dies at
+  boot — the amon-sul dashboard 502, 2026-10-08. The surface is enforced
+  by `applier-wiring`: no tmpfiles beyond system-manager's baseline, no
+  service referencing `/etc` (except the age key), every config a store
+  path. Design in `.specify/specs/applier-store-path-config/`.
 
 - **ADR-036: Service identity under the applier is `DynamicUser` or
   root — never a named OS user.** The ADR-035 applier installs units
@@ -970,6 +984,50 @@ revisited.
   machine flake (a pure eval reading a mutable path, and it re-couples
   the two shapes); re-exposing the service stack on the machine flake
   (the rejected NixOS-module world).
+
+- **ADR-038: Secret material is sealed ciphertext in the store, and
+  there is exactly one mechanism for it.** Every credential the platform
+  needs is minted **once** — by `fortress-bootstrap` on a box, or at
+  build time in the dev tier — sealed to the device age key, and stored
+  as ciphertext. Ciphertext in the store is safe *and* deterministic: a
+  rebuild reproduces the box, and the only thing outside the store is
+  `/etc/fortress/system_age_keys.txt`. **No platform module ever mints a
+  credential at runtime.** `sops-wire.nix` is the single place secret
+  material is declared (it derives `sops.secrets` / `sops.templates`
+  from `fortress.secrets._inventory`); services read
+  `config.sops.secrets.<key>.path` or `config.sops.templates.<n>.path`
+  and have no secret-plumbing options of their own.
+  `fortress.secrets.sopsFile` is **required** — sops-nix is imported by
+  every entry point (NixOS module set and the applier), so a config
+  cannot fall back to a second mechanism.
+
+  **Why:** the pre-2026-10-08 shape minted each key at first boot
+  (`openssl rand`, idempotent `if [ ! -f ]`) — "no key ever enters the
+  Nix store" was solved by giving up determinism. Every rebuild rotated
+  every key and silently broke the integrations that had registered the
+  old one. Sealing gets both properties.
+
+  **Applier-specific trap:** sops-nix has two install paths and
+  system-manager stubs the NixOS one to a no-op
+  (`nix/modules/upstream/sops-nix.nix`). `useSystemdActivation` defaults
+  off unless sysusers/userborn are on — neither of which the applier
+  wants — so a secret would *evaluate* cleanly and decrypt nothing at
+  boot. The applier forces `sops.useSystemdActivation = true` and hangs
+  `sops-install-secrets` off `fortress.target` (not the
+  `sysinit-reactivation.target` sops-nix uses, which the applier never
+  starts). `applier-wiring` asserts all of it.
+
+  **Enforced by:** `applier-wiring` (install unit exists and precedes
+  `fortress.target`), `vmtest-wiring` (whole inventory declared, and the
+  old minting oneshot is **gone** — reintroducing it fails), and
+  `bootstrapInventory` (`fortress-bootstrap` mints every inventory key;
+  the two lists are compared, so adding a key without adding it to the
+  generator fails a check). `smtest-e2e` proves decryption at boot under
+  the applier: `/run/secrets/*` populated. **Rejected:** a `*File`
+  option per secret that the customer wires when `sopsFile` is null
+  (more customer config, and the dev tier would diverge from production —
+  the user chose mandatory sops precisely so test fixtures take the
+  production path).
 
 ## Implementation backlog
 

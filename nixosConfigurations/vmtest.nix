@@ -112,18 +112,15 @@
   services.fortress-client = {
     enable = true;
     adminPasswordEnvFile = "/etc/fortress-admin.env";
-  };
-  environment.etc."fortress-admin.env".text = ''
-    FORTRESS_ADMIN_PASSWORD_HASH=$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W
-  '';
-  environment.etc."fortress-client.json".text = builtins.toJSON {
-    forwards = [
-      {
-        listen_addr = "\${tunnel_ip}:8080";
-        proto = "tcp";
-        dest_addr = "127.0.0.1:80";
-      }
-    ];
+    settings = {
+      forwards = [
+        {
+          listen_addr = "\${tunnel_ip}:8080";
+          proto = "tcp";
+          dest_addr = "127.0.0.1:80";
+        }
+      ];
+    };
   };
 
   # Jellyfin's StorageHelper.TestDataDirectorySize checks

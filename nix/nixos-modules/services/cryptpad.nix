@@ -97,7 +97,7 @@ mkFortressService {
           fi
           if [ ! -f "$DECREE" ] || ! grep -q SET_BEARER_SECRET "$DECREE"; then
             mkdir -p "$(dirname "$DECREE")"
-            SECRET="$(${pkgs.openssl}/bin/openssl rand -base64 32 | tr -d '\n')"
+            SECRET="$(tr -d '\\n' < ${config.sops.secrets.cryptpad-jwt-secret.path})"
             printf '["SET_BEARER_SECRET",["%s"],"INTERNAL",%s]\n' "$SECRET" "$(date +%s%3N)" >> "$DECREE"
           fi
         '')

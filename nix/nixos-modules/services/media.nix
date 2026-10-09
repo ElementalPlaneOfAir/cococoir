@@ -5,12 +5,9 @@
 #
 # The *toggle* (fortress.services.media.enable) lives here too (T7).
 #
-# fortress-media-api-keys (jellarr pattern, jellyfin.nix:196): one
-# idempotent oneshot generates each *arr API key once and writes it
-# into an env file the *arr systemd service consumes via
-# `environmentFiles` (RADARR__SERVER__APIKEY=...). The Seerr bootstrap
-# password (for the seerr-bootstrap Jellyfin admin user) is generated
-# once too. No key ever enters the Nix store.
+# Secrets: every *arr API key and the Seerr bootstrap password come from
+# the sealed inventory (sops-wire.nix) as `/run/secrets/<name>`. Nothing
+# here mints a credential — see secrets.nix for why (determinism).
 #
 # fortress-media-apply: idempotent curl+jq handshake at boot —
 #   1. qbittorrent categories (per-category save paths; qbt persists
@@ -41,27 +38,7 @@
 let
   btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
   dataRoot = config.fortress.storage.dataRoot;
-  mediaRoot = "/var/lib/fortress-media";
-  keyFor = name: "${mediaRoot}/${name}-api-key";
-  envFor = name: "${mediaRoot}/${name}.env";
-  keyFileScript = pkgs.writeShellScript "fortress-media-api-keys" ''
-    set -euo pipefail
-    umask 077
-    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root ${mediaRoot}
-    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: envVar: ''
-      if [ ! -f ${keyFor name} ]; then
-        ${pkgs.openssl}/bin/openssl rand -hex 32 > ${keyFor name}
-      fi
-      ${pkgs.coreutils}/bin/printf '${envVar}=%s\n' "$(${pkgs.coreutils}/bin/cat ${keyFor name})" > ${envFor name}
-      ${pkgs.coreutils}/bin/chmod 0640 ${envFor name}
-    '') {radarr = "RADARR__SERVER__APIKEY"; sonarr = "SONARR__SERVER__APIKEY";})}
-    if [ ! -f ${mediaRoot}/seerr-admin-password ]; then
-      ${pkgs.openssl}/bin/openssl rand -hex 32 > ${mediaRoot}/seerr-admin-password
-    fi
-    ${pkgs.coreutils}/bin/chmod 0640 \
-      ${keyFor "radarr"} ${keyFor "sonarr"} ${mediaRoot}/seerr-admin-password \
-      ${envFor "radarr"} ${envFor "sonarr"}
-  '';
+  secretPath = name: config.sops.secrets.${name}.path;
 
   # Loopback connection URLs incl. each app's base path (ADR-034):
   # the *arrs serve their API under <UrlBase>, Jellyfin under its
@@ -81,10 +58,10 @@ let
     set -euo pipefail
     umask 077
 
-    radarr_key=$(cat ${mediaRoot}/radarr-api-key)
-    sonarr_key=$(cat ${mediaRoot}/sonarr-api-key)
-    jellyfin_key=$(cat /var/lib/jellarr/api-key)
-    seerr_password=$(cat ${mediaRoot}/seerr-admin-password)
+    radarr_key=$(cat ${secretPath "radarr-api-key"})
+    sonarr_key=$(cat ${secretPath "sonarr-api-key"})
+    jellyfin_key=$(cat ${secretPath "jellarr-api-key"})
+    seerr_password=$(cat ${secretPath "seerr-admin-password"})
     # Jellyfin 12 requires the Authorization header; X-Emby-Token
     # returns 401 (same break as upstream jellarr, fixed there by
     # PR #79).
@@ -323,24 +300,11 @@ in
     })
 
     (lib.mkIf (config.services.radarr.enable || config.services.sonarr.enable) {
-      systemd.services.fortress-media-api-keys = {
-        description = "Generate *arr API keys (idempotent)";
-        wantedBy = ["multi-user.target"];
-        before = ["radarr.service" "sonarr.service"];
-        after = ["systemd-tmpfiles-setup.service"];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = keyFileScript;
-        };
-        path = [pkgs.openssl];
-      };
-
       systemd.services.fortress-media-apply = {
         description = "Apply media stack wiring (qbittorrent, radarr, sonarr, seerr)";
         wantedBy = ["multi-user.target"];
         after =
-          ["fortress-media-api-keys.service"]
+          ["sops-install-secrets.service"]
           ++ lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]
           ++ lib.optional config.services.radarr.enable "radarr.service"
           ++ lib.optional config.services.sonarr.enable "sonarr.service"
@@ -349,7 +313,7 @@ in
           (["seerr.service" "jellyfin.service"]
             ++ lib.optionals (options.services ? jellarr) ["jellarr.service"]);
         requires =
-          ["fortress-media-api-keys.service"]
+          ["sops-install-secrets.service"]
           ++ lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];
         serviceConfig = {
           Type = "oneshot";

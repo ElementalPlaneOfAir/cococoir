@@ -11,10 +11,17 @@
 {
   config,
   lib,
+  inputs,
   nixosModulesPath,
   ...
 }: {
   imports = [
+    # sops-nix materializes the sealed inventory at boot. system-manager
+    # already stubs the `system.activationScripts` hooks sops-nix declares
+    # (nix/modules/upstream/sops-nix.nix, pulled in via upstream/nixpkgs),
+    # so the module imports cleanly — but those stubs are no-ops, which is
+    # why `sops.useSystemdActivation` is forced below.
+    inputs.sops-nix.nixosModules.sops
     # nixpkgs service modules fortress wraps that are ENABLED in this
     # config. Disabled services' `mkIf`-false definitions still need their
     # options to exist (see host-shim.nix) — those are stubbed there and
@@ -36,6 +43,43 @@
   # systemd DynamicUser or users the OS declares.
   systemd.services.userborn.enable = false;
   systemd.services.userborn-import-legacy.enable = false;
+
+  # ── sops-nix: install secrets from a unit, not an activation script ──
+  #
+  # sops-nix has two install paths: `system.activationScripts.setupSecrets`
+  # (NixOS activation) or `systemd.services.sops-install-secrets`. Under
+  # system-manager the activation script is a no-op stub, and its default
+  # for `useSystemdActivation` keys off `services.userborn.enable` /
+  # `systemd.sysusers.enable` — neither of which the applier wants. Without
+  # forcing this, declaring a secret *evaluates* fine and silently decrypts
+  # nothing at boot. Force the unit path.
+  sops.useSystemdActivation = true;
+
+  # sops-nix hangs its installer off `sysinit-reactivation.target`, which
+  # the applier deliberately never starts (see below). Hang it off the
+  # target the applier *does* start, so secrets exist before any service.
+  # Gated: declaring ordering for a service that does not exist would
+  # create it without an ExecStart.
+  systemd.services.sops-install-secrets = lib.mkIf (
+    config.sops.useSystemdActivation
+    && (config.sops.secrets != {} || config.sops.templates != {})
+  ) {
+    wantedBy = ["fortress.target"];
+    requiredBy = ["fortress.target"];
+    before = ["fortress.target"];
+  };
+
+  assertions = [
+    {
+      assertion = config.sops.secrets == {} || config.systemd.services ? sops-install-secrets;
+      message = ''
+        fortress: secrets are declared but no `sops-install-secrets` unit
+        exists. sops-nix would fall back to `system.activationScripts`,
+        which system-manager stubs out — the secrets would silently never
+        be written. Keep `sops.useSystemdActivation = true`.
+      '';
+    }
+  ];
 
   # ── Caddy: adapt upstream's module to the applier ──────────────────
   # Upstream's caddy module assumes nixos-rebuild owns the host: it

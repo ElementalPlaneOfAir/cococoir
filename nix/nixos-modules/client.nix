@@ -37,6 +37,11 @@
 }: let
   cfg = config.services.fortress-client;
   clientPkg = pkgs.callPackage ../packages/fortress {};
+  # A store path, never `environment.etc`: the applier installs units only
+  # and never materializes /etc (ADR-035 amendment) — config that rides
+  # /etc is silently absent and the unit dies. Config with a secret must
+  # come from sops at runtime instead.
+  clientConfig = pkgs.writeText "fortress-client.json" (builtins.toJSON cfg.settings);
   dashboardPortMatch = builtins.match ".*:([0-9]+)" cfg.dashboardAddr;
   dashboardPort = if dashboardPortMatch == null then null else builtins.head dashboardPortMatch;
   catalogPorts =
@@ -51,16 +56,15 @@ in {
   options.services.fortress-client = {
     enable = lib.mkEnableOption "fortress v2 client service (L4 TCP/UDP forwarder + embedded dashboard on the customer box)";
 
-    configFile = lib.mkOption {
-      type = lib.types.path;
-      default = "/etc/fortress-client.json";
-      defaultText = lib.literalExpression "/etc/fortress-client.json";
+    settings = lib.mkOption {
+      type = lib.types.attrs;
+      default = {};
       description = ''
-        Path to client.json. Most users should generate this with
-        `environment.etc."fortress-client.json".text = builtins.toJSON { ... };`
-        (or `sops.templates."fortress-client.json".content = builtins.toJSON { ... };`
-        if the config needs secrets). The default points at the standard
-        `/etc/fortress-client.json` path produced by `environment.etc`.
+        The client's JSON config (tunnel + forwards), rendered to a
+        store path and passed to `-config`. A store path, never
+        `environment.etc`: the applier installs units only and never
+        materializes `/etc` (ADR-035 amendment). Config that carries a
+        secret must be delivered by sops at runtime instead.
       '';
     };
 
@@ -189,7 +193,7 @@ in {
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/fortress-client -config ${cfg.configFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr} -dashboard-addr ${cfg.dashboardAddr}";
+        ExecStart = "${cfg.package}/bin/fortress-client -config ${clientConfig} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr} -dashboard-addr ${cfg.dashboardAddr}";
         Restart = "on-failure";
         RestartSec = 5;
 

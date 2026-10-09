@@ -139,6 +139,20 @@ if [ -z "$via_caddy" ]; then
 fi
 echo "    caddy active; Dex reachable through it (store config, no /etc)"
 
+# The sealed inventory must actually decrypt at boot. This is the failure
+# that looks like nothing: sops-nix falls back to a stubbed activation
+# script under system-manager and silently writes no secrets at all, so
+# every consumer starts with no credential.
+for key in fortress-admin-password-hash jellarr-api-key radarr-api-key; do
+  if ! $SSH "test -s /run/secrets/$key"; then
+    echo "FAIL: /run/secrets/$key was not decrypted — the sealed inventory did not materialize" >&2
+    $SSH 'ls -la /run/secrets 2>&1' >&2 || true
+    $SSH 'systemctl status sops-install-secrets --no-pager -n 30' >&2 || true
+    exit 1
+  fi
+done
+echo "    sealed inventory decrypted at boot (/run/secrets populated)"
+
 echo "==> [2/6] Asserting the OS closure does NOT contain the fortress closure"
 dex_unit=$($SSH 'readlink -f /run/systemd/system/dex.service')
 if [ -z "$dex_unit" ]; then
@@ -202,6 +216,7 @@ $SSH 'cat > /etc/fortress/config/config.nix <<"EOF"
   fortress.baseDomain = "example.com";
   fortress.storage.backend = "plain-dirs";
   fortress.network.lanAddress = "10.0.2.15";
+  fortress.secrets.sopsFile = ./secrets/secrets.enc.yaml;
   fortress.services.dex = {
     enable = true;
     public = true;

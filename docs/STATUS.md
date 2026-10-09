@@ -9,11 +9,47 @@ works today. Rules (from AGENTS.md § Context System):
 - Update this file in the same commit that changes reality.
 - Stay under ~80 lines. History belongs in `git log`.
 
-Last e2e: PASS — 2026-10-08 — d46a656
-Last smtest e2e: PASS — 2026-10-07 — working tree on a3c5fad
+Last e2e: PASS — 2026-10-08 — 8aedf1b
+Last smtest e2e: PASS — 2026-10-08 — working tree (sealed secrets decrypt at boot)
 (`scripts/vmtest-e2e.sh` rewrites this line on PASS.)
 
 ## Current focus
+
+**Secret material is sealed ciphertext in the store — one mechanism, no
+runtime minting (2026-10-08, ADR-038).** Previously every credential was
+minted at first boot (`openssl rand`, idempotent) and kept in `/var/lib`,
+which solved store-leakage by giving up determinism: a rebuild rotated
+every key and silently broke the integrations holding the old one. Now
+`fortress-bootstrap` mints each inventory key **once**, seals it to the
+device age key, and the platform reads `/run/secrets/<name>`.
+`fortress.secrets.sopsFile` is required; `sops-wire.nix` is the only
+place secret material is declared. The applier trap this fixed: sops-nix
+falls back to `system.activationScripts` (a **no-op stub** under
+system-manager) unless `useSystemdActivation` is forced, so a secret
+would evaluate cleanly and decrypt *nothing* — `applier-wiring` now
+asserts the unit path and that it precedes `fortress.target`.
+`sops-wire.nix` was also dead code on the applier path entirely (imported
+only by `nixosModulesWithJellarr`); it now lives in the shared
+aggregator so every entry point gets it.
+**Proof:** `scripts/smtest-e2e.sh` PASS with a new assertion —
+`/run/secrets/{fortress-admin-password-hash,jellarr-api-key,radarr-api-key}`
+populated at boot under the applier; `applier-wiring` PASS; `vmtest-wiring`
+PASS (and it fails if a minting oneshot returns); `bootstrapInventory` PASS
+(verified it fires on a removed key); `nix flake check` PASS.
+
+**Store-path config for every unit (2026-10-08, `applier-store-path-config`).**
+The applier installs units only, so a unit's inputs must be store paths —
+the dashboard 502 was `fortress-client` reading `/etc/fortress-client.json`,
+which the applier never writes. Client config is now a `settings` attrset
+rendered to a store path; `plain-dirs` is a systemd oneshot rather than
+`systemd.tmpfiles.rules` (which the applier never applies). The
+applier-surface is enforced positively in `applier-wiring`: no tmpfiles
+beyond system-manager's baseline, no service referencing `/etc` (except
+the sops age key), every config a store path. OIDC client secrets also
+moved off `/etc/dex/clients/*` (which tmpfiles was supposed to create)
+onto sops paths.
+**Proof:** `applier-wiring` PASS, `vmtest-wiring` PASS, `vmtest-e2e` PASS
+(client boots, dashboard serves), `nix flake check` PASS.
 
 **Caddy now works under the applier — the amon-sul cutover can serve a
 public service.** Fixed 2026-10-07, after the first cutover died on
@@ -54,6 +90,20 @@ and the callback swaps stay on the typed host (`fortress.planes.lanOrigin`
 stays the LAN IP for OIDC callbacks). **Proof:** `vmtest-wiring` PASS (blanket
 redirect disabled, every clearnet hostname redirects, LAN plane is a `:80`
 catch-all), `nix flake check` PASS.
+
+**The applier's surface is now enforced (2026-10-08, `applier-store-path-config`).**
+The applier installs units only (`apply.sh`), so a module expressing an effect
+via `environment.etc` / `systemd.tmpfiles.rules` lost it silently and the unit
+died at boot — the dashboard 502. Now `fortress-client`'s config is a **store
+path** passed to `-config` (never `/etc`), `plain-dirs` creates its data dirs
+from a **systemd unit** (mirroring `fortress-btrfs-subvolumes`), not tmpfiles,
+and the sole non-store reach is the sops age key. `applier-wiring` enforces the
+surface: no tmpfiles beyond system-manager's baseline, no service referencing
+`/etc` except the age key, every config a store path. **Proof:** `applier-wiring`
+PASS, `vmtest-wiring` PASS, `vmtest-e2e` PASS (client boots, dashboard serves),
+`nix flake check` PASS; ADR-035 amendment. The applier-path dashboard is proven
+on the amon-sul box (client enabled + serving), not in-VM — the client is a
+local Rust build and smtest deliberately never builds the service closure.
 
 **Still blocked: the rest of amon-sul's services.** The applier imports
 only `dex.nix` + `caddy/default.nix`; `host-shim.nix` stubs

@@ -227,9 +227,9 @@ in
           group = "root";
           bootstrap = {
             enable = true;
-            apiKeyFile = "/var/lib/jellarr/api-key";
+            apiKeyFile = config.sops.secrets.jellarr-api-key.path;
           };
-          environmentFile = "/var/lib/jellarr/jellarr.env";
+          environmentFile = config.sops.templates."jellarr.env".path;
           config = {
             version = 1;
             base_url = "http://127.0.0.1:8096${cfg.path}";
@@ -261,37 +261,17 @@ in
           };
         };
 
-        systemd.services.fortress-jellarr-api-key = {
-          description = "Generate jellarr API key (idempotent)";
-          wantedBy = ["multi-user.target"];
-          before = ["jellarr-api-key-bootstrap.service" "jellarr.service"];
-          after = ["systemd-tmpfiles-setup.service"];
-          path = [pkgs.openssl];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = pkgs.writeShellScript "gen-jellarr-api-key" ''
-              set -euo pipefail
-              if [ ! -f /var/lib/jellarr/api-key ]; then
-                umask 077
-                openssl rand -hex 32 > /var/lib/jellarr/api-key
-              fi
-              printf 'JELLARR_API_KEY=%s\n' "$(cat /var/lib/jellarr/api-key)" \
-                > /var/lib/jellarr/jellarr.env
-              chmod 0600 /var/lib/jellarr/jellarr.env
-            '';
-          };
-        };
-
+        # Secrets arrive via sops-install-secrets, ordered before
+        # fortress.target — no minting oneshot.
         systemd.services.jellarr-api-key-bootstrap = {
-          after = ["fortress-jellarr-api-key.service"];
-          requires = ["fortress-jellarr-api-key.service"];
+          after = ["sops-install-secrets.service"];
+          requires = ["sops-install-secrets.service"];
         };
 
         systemd.services.jellarr = {
           wantedBy = ["multi-user.target"];
-          after = ["fortress-jellarr-api-key.service"];
-          requires = ["fortress-jellarr-api-key.service"];
+          after = ["sops-install-secrets.service"];
+          requires = ["sops-install-secrets.service"];
         };
       });
   }

@@ -10,7 +10,7 @@ let
   cp = config.fortress.services.cryptpad;
   dx = config.fortress.services.dex;
   oidcEnabled = cp.enable && dx.enable;
-  secretFile = "/etc/dex/clients/cryptpad-secret";
+  secretFile = config.sops.secrets.oidc-cryptpad-secret.path;
 in
 mkIf oidcEnabled {
   services.cryptpad.settings.sso = {
@@ -33,29 +33,25 @@ mkIf oidcEnabled {
     ];
   };
 
-  systemd.tmpfiles.rules = [
-    "d /etc/dex/clients 0755 root root -"
-  ];
-
+  # The secret is sealed (secrets.nix); this oneshot only materializes
+  # CryptPad's JS config with the value substituted in — the shape has to
+  # be a store path, the value must not be.
   systemd.services.fortress-cryptpad-oidc-secret = {
-    description = "CryptPad OIDC client secret (Dex)";
+    description = "CryptPad OIDC config materialization (Dex)";
     wantedBy = [ "multi-user.target" ];
     before = [ "dex.service" "cryptpad.service" ];
-    path = [ pkgs.openssl ];
+    after = [ "sops-install-secrets.service" ];
+    requires = [ "sops-install-secrets.service" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = pkgs.writeShellScript "fortress-cryptpad-oidc-secret" ''
         set -euo pipefail
-        if [ ! -f "${secretFile}" ]; then
-          openssl rand -hex -out "${secretFile}" 32
-          chmod 0440 "${secretFile}"
-        fi
         DST="/var/lib/fortress/cryptpad-config.js"
         mkdir -p "$(dirname "$DST")"
         cp ${builtins.toFile "cryptpad_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings}")} "$DST" || exit 1
         cp ${builtins.toFile "cryptpad_sso_config.js" ("module.exports = ${builtins.toJSON config.services.cryptpad.settings.sso}")} "/var/lib/fortress/cryptpad-sso-config.js" || exit 1
-        SECRET="$(${pkgs.coreutils}/bin/cat "${secretFile}")"
+        SECRET="$(tr -d '\\n' < "${secretFile}")"
         ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "$DST" || exit 1
         ${pkgs.gnused}/bin/sed -i "s|@CRYPTPAD_SSO_SECRET@|$SECRET|" "/var/lib/fortress/cryptpad-sso-config.js" || exit 1
         if ${pkgs.gnugrep}/bin/grep -q '@CRYPTPAD_SSO_SECRET@' "$DST"; then
@@ -74,7 +70,6 @@ mkIf oidcEnabled {
 
   systemd.services.dex = {
     after = [ "fortress-cryptpad-oidc-secret.service" ];
-    serviceConfig.BindReadOnlyPaths = [ secretFile ];
   };
 
   services.dex.settings.staticClients = lib.mkAfter [

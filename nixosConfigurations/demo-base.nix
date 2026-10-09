@@ -10,10 +10,12 @@
 # public/Dex settings. Platform-specific bits (disks, bootloader,
 # networking, SSH) stay in the importing configs.
 #
-# Hermetic by design: secrets and the TLS cert are generated at
-# build time, no sops-nix, no real network. Production uses
-# sops-nix with the user's age key and a real ACME certificate
-# (see fortress.tls.mode = "acme").
+# Hermetic by design: the sealed inventory and the TLS cert are
+# generated at build time and the device age key is the only thing
+# outside the store — the same shape a real box has after
+# `fortress-bootstrap`, so the dev tier exercises the production
+# secret path rather than a parallel one. No real network; TLS is a
+# self-signed cert (production: fortress.tls.mode = "acme").
 {
   config,
   lib,
@@ -25,22 +27,30 @@
   # /run/secrets/<name>. We keep explicit wiring here because the
   # demo tier does NOT use sops-nix.
 
-  # Build-time Dex secrets: OIDC client secret for Jellyfin
-  # and a bcrypt password hash for the test admin user.
-  # Dex's replace-secret reads the client secret file at
-  # startup and substitutes its path in the YAML config with
-  # the file content. The bcrypt hash goes into Dex's
-  # staticPasswords.
-  testDexSecrets =
-    pkgs.runCommand "vmtest-dex-secrets" {
-      buildInputs = [pkgs.openssl pkgs.apacheHttpd];
+  # Build-time sealed inventory: mint every key the platform expects
+  # (fortress.secrets._inventory), seal it to a device age key, and keep
+  # only that key outside the store. Mirrors `fortress-bootstrap` on a
+  # real box, so the dev tier takes the production secret path rather
+  # than a parallel one. Values are random per build — it is a test —
+  # but nothing in the platform ever mints at runtime.
+  testSecrets =
+    pkgs.runCommand "vmtest-sops" {
+      buildInputs = [pkgs.age pkgs.sops pkgs.openssl];
     } ''
+      set -euo pipefail
       mkdir -p $out
-      openssl rand -hex -out $out/jellyfin-client-secret 32
-      openssl rand -hex -out $out/cryptpad-client-secret 32
-      openssl rand -hex -out $out/forgejo-client-secret 32
-      chmod 0440 $out/jellyfin-client-secret $out/cryptpad-client-secret $out/forgejo-client-secret
-      htpasswd -bnBC 10 "" password | cut -d: -f2 | tr -d '\n' > $out/admin-password-hash
+      age-keygen -o $out/device.agekey 2>/dev/null
+      pub=$(age-keygen -y $out/device.agekey)
+      # The dashboard hash must be a real bcrypt or the client rejects it.
+      # This is the hash of `password` — the same one staticPasswords uses,
+      # so the dev VM has one known credential.
+      ADMIN_HASH='$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W'
+      plaintext=$(mktemp)
+      ${lib.concatStrings (lib.mapAttrsToList (
+        name: _spec: ''printf '%s: "%s"\n' ${lib.escapeShellArg name} "$(openssl rand -hex 32)" >> "$plaintext";''
+      ) config.fortress.secrets._inventory)}
+      sops --encrypt --age "$pub" --input-type yaml --output-type yaml "$plaintext" > "$out/secrets.enc.yaml"
+      rm -f "$plaintext"
     '';
 
   # Build-time self-signed TLS cert for the
@@ -95,11 +105,16 @@ in {
     keyFile = "/etc/vmtest-tls/key.pem";
   };
 
-  # Build-time secrets mounted at well-known paths.
+  # The device age key is the one thing that lives outside the store.
+  # On a real box `fortress-bootstrap` writes it; here the build does.
   environment.etc = {
     "vmtest-tls".source = testCerts;
-    "vmtest-dex-secrets".source = testDexSecrets;
+    "fortress/system_age_keys.txt".source = "${testSecrets}/device.agekey";
   };
+
+  fortress.secrets.sopsFile = "${testSecrets}/secrets.enc.yaml";
+  # The sealed file is a build output, so it cannot be hashed at eval.
+  sops.validateSopsFiles = false;
 
   # Caddy: just enable. Every fortress.services.<name> with
   # enable = true registers a vhost via the contract factory,
@@ -138,11 +153,10 @@ in {
     public = true;
   };
 
-  # Build-time secret files wired into Dex and jellarr.
-  # The generated Jellyfin client secret lives in
-  # /etc/dex/clients/jellyfin-secret; the fortress-jellyfin-oidc-secret
-  # oneshot copies it there on first boot (idempotent within a VM
-  # overlay). The bcrypt hash goes directly into staticPasswords.
+  # Dex's password hashes are config, not secrets — they are bcrypt
+  # digests, and a real box carries them in config.nix the same way
+  # (see limonene/archive/amon-sul/config.nix). This one is the hash of
+  # `password`.
   services.dex.settings = {
     staticClients = [{
       id = "vmtest-cli";
@@ -150,26 +164,15 @@ in {
       name = "vmtest CLI";
     }];
 
-    staticPasswords = let
-      hash = builtins.readFile "${testDexSecrets}/admin-password-hash";
-    in [{
+    staticPasswords = [{
       email = "admin@example.com";
-      hash = hash;
+      hash = "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
       username = "admin";
       userID = "08a8684b-db88-4b73-90a9-3cd1661f5466";
       groups = ["admins"];
       preferredUsername = "admin";
     }];
   };
-
-  environment.etc."dex/clients/jellyfin-secret".source =
-    "${testDexSecrets}/jellyfin-client-secret";
-
-  environment.etc."dex/clients/cryptpad-secret".source =
-    "${testDexSecrets}/cryptpad-client-secret";
-
-  environment.etc."dex/clients/forgejo-secret".source =
-    "${testDexSecrets}/forgejo-client-secret";
 
   # Jellarr library config comes from the jellyfin service module's
   # defaults (libraries at <subvol>/library, downloads staging invisible

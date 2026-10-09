@@ -4,9 +4,10 @@
 #
 # 3-option contract (metadata-only service, no bucket).
 #
-# Media-stack wiring: same pattern as radarr.nix (API key env file,
-# root identity, media-shows downloads/library mounts, PrivateUsers
-# forced off) — see radarr.nix + .specify/specs/media-automation-stack/.
+# Media-stack wiring: same pattern as radarr.nix (API key from the
+# sealed `sonarr.env` sops template, root identity, media-shows
+# downloads/library mounts, PrivateUsers forced off) — see radarr.nix
+# + .specify/specs/media-automation-stack/.
 {
   config,
   lib,
@@ -38,7 +39,7 @@ mkFortressService {
     ];
     pinApiKey = pkgs.writeShellScript "sonarr-pin-api-key" ''
       set -euo pipefail
-      key=$(cat /var/lib/fortress-media/sonarr-api-key)
+      key=$(cat ${config.sops.secrets.sonarr-api-key.path})
       dir=/var/lib/sonarr/.config/NzbDrone
       install -d -m 0750 -o root -g root "$dir"
       if [ -f "$dir/config.xml" ]; then
@@ -67,7 +68,7 @@ EOF
       openFirewall = false;
       user = "root";
       group = "root";
-      environmentFiles = lib.mkAfter ["/var/lib/fortress-media/sonarr.env"];
+      environmentFiles = lib.mkAfter [config.sops.templates."sonarr.env".path];
       settings = {
         server.bindAddress = "127.0.0.1";
         update.automatically = false;
@@ -76,14 +77,8 @@ EOF
     };
 
     systemd.services.sonarr = {
-      after =
-        lib.mkAfter
-        (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]
-          ++ ["fortress-media-api-keys.service"]);
-      requires =
-        lib.mkAfter
-        (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]
-          ++ ["fortress-media-api-keys.service"]);
+      after = lib.mkAfter (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]);
+      requires = lib.mkAfter (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]);
       unitConfig.RequiresMountsFor = lib.mkAfter mediaDirs;
       serviceConfig = {
         PrivateUsers = lib.mkForce false;

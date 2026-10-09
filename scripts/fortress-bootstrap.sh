@@ -162,12 +162,28 @@ if [ ! -f "$SECRETS" ]; then
     *) echo "fortress-bootstrap: passphrase malformed: $admin_pw" >&2; exit 1 ;;
   esac
   admin_hash="$(printf '%s' "$admin_pw" | mkpasswd -m bcrypt -R 10 -s)"
-  jellarr_key="$(openssl rand -hex 32)"
   jellyfin_pw="$(xkcdpass -n 5 -d - -c 1)"
   case "$admin_hash" in
     \$*) ;;
     *) echo "fortress-bootstrap: bcrypt hash malformed: $admin_hash" >&2; exit 1 ;;
   esac
+
+  # Every key in nix/nixos-modules/secrets.nix must be minted here exactly
+  # once — the platform never mints at runtime (it reads /run/secrets).
+  # A tripwire in nix/tests asserts this list matches the inventory, so
+  # adding a key there without adding it here fails a check.
+  INVENTORY_KEYS=(
+    jellarr-api-key
+    jellyfin-admin-password
+    fortress-admin-password-hash
+    radarr-api-key
+    sonarr-api-key
+    seerr-admin-password
+    cryptpad-jwt-secret
+    oidc-jellyfin-secret
+    oidc-cryptpad-secret
+    oidc-forgejo-secret
+  )
 
   RECIPIENTS="$DEVICE_PUB"
   for owner in ${OWNER_KEYS[@]+"${OWNER_KEYS[@]}"}; do
@@ -179,10 +195,17 @@ if [ ! -f "$SECRETS" ]; then
   # printf, not a heredoc: bcrypt hashes carry `$`, which an unquoted
   # heredoc would expand as shell variables and corrupt the hash.
   {
+    # Operator-facing only: the plaintext dashboard password. Not in the
+    # inventory — nothing on the box reads it.
     printf 'fortress-admin-password: "%s"\n' "$admin_pw"
-    printf 'fortress-admin-password-hash: "%s"\n' "$admin_hash"
-    printf 'jellarr-api-key: "%s"\n' "$jellarr_key"
-    printf 'jellyfin-admin-password: "%s"\n' "$jellyfin_pw"
+    for key in "${INVENTORY_KEYS[@]}"; do
+      case "$key" in
+        fortress-admin-password-hash) value="$admin_hash" ;;
+        jellyfin-admin-password) value="$jellyfin_pw" ;;
+        *) value="$(openssl rand -hex 32)" ;;
+      esac
+      printf '%s: "%s"\n' "$key" "$value"
+    done
   } > "$plaintext"
 
   sops --encrypt --age "$RECIPIENTS" --input-type yaml --output-type yaml \

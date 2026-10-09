@@ -7,5 +7,10 @@
 {
   imports = [
     ./fortress.nix
+    # Secret material (sops.secrets / sops.templates) derived from the
+    # sealed inventory. Every entry point pairs this aggregator with
+    # sops-nix — see flake.nix nixosModulesWithJellarr and
+    # nix/system-manager/fortress.nix.
+    ./sops-wire.nix
   ];
 }

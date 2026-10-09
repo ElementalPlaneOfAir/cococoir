@@ -73,6 +73,43 @@ let
         exit 1
       ''}
     '';
+  # The platform never mints a secret at runtime — `fortress-bootstrap`
+  # mints each inventory key exactly once and seals it. If a key is added
+  # to the inventory without adding it here, a box boots with a missing
+  # credential and the consumer dies in a way that looks like a service
+  # bug. Assert the two lists match.
+  bootstrapInventory = let
+    secretsSrc = builtins.readFile (../.. + "/nix/nixos-modules/secrets.nix");
+    bootstrapSrc = builtins.readFile (../.. + "/scripts/fortress-bootstrap.sh");
+  in
+    pkgs.runCommand "fortress-bootstrap-inventory" {
+      inherit secretsSrc bootstrapSrc;
+    } ''
+      printf '%s' "$secretsSrc" > secrets.nix
+      printf '%s' "$bootstrapSrc" > bootstrap.sh
+      keys=$(sed -n 's/^    "\([a-z0-9-]*\)" = {$/\1/p' secrets.nix)
+      if [ -z "$keys" ]; then
+        echo "fortress-bootstrap-inventory: parsed no keys from secrets.nix — the" >&2
+        echo "extraction pattern drifted, so this check proves nothing." >&2
+        exit 1
+      fi
+      missing=0
+      for key in $keys; do
+        if ! grep -qF "$key" bootstrap.sh; then
+          echo "  MISSING from fortress-bootstrap.sh: $key" >&2
+          missing=1
+        fi
+      done
+      if [ "$missing" != 0 ]; then
+        echo "fortress-bootstrap-inventory: the sealed inventory and the bootstrap" >&2
+        echo "generator disagree — a box would boot without that credential." >&2
+        exit 1
+      fi
+      cat > $out <<EOF
+      fortress bootstrap-inventory (L1): PASS
+        every fortress.secrets._inventory key is minted by fortress-bootstrap
+      EOF
+    '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};
   docRefsTests = import ./doc-refs {inherit pkgs;};
   # ── L1: the machine-side applier trampoline (ADR-037) ────────────
@@ -260,4 +297,4 @@ in {
   # edge (Redis-backed, IPV6_FREEBIND /128 bind) -> WireGuard tunnel ->
   # cofortress-client (box) -> 127.0.0.1:80 (python http server, Caddy
   # stand-in). See nix/tests/edge/default.nix for the full design.
-} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate systemManagerWiring applierTrampoline; } // contractConformanceTests // docRefsTests
+} // edgeTests // { inherit edgeStoreWiring sopsAdminTemplate bootstrapInventory systemManagerWiring applierTrampoline; } // contractConformanceTests // docRefsTests

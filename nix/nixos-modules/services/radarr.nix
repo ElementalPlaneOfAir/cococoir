@@ -8,15 +8,16 @@
 #   public  — true → Caddy reverse-proxies; false → 403
 #
 # Media-stack wiring (see .specify/specs/media-automation-stack/):
-#   - API key: RADARR__SERVER__APIKEY env var (environmentFiles ←
-#     fortress-media-api-keys oneshot; jellarr pattern). Env vars
-#     override config.xml; the key never enters the Nix store.
+#   - API key: RADARR__SERVER__APIKEY env var (environmentFiles ← the
+#     sealed `radarr.env` sops template). Env vars override config.xml;
+#     the value is sealed ciphertext in the store (secrets.nix).
 #   - Runs as root (ADR-036): imports hardlink from the media-movies
 #     `downloads/` dir into `library/` (both 0770), so it needs write
 #     access to the whole media tree.
 #   - PrivateUsers forced off (the nixpkgs unit's default revokes
 #     access to those subvolumes; tripwired in vmtest-wiring).
-#   - Orders after the btrfs subvolume service + the key oneshot.
+#   - Orders after the btrfs subvolume service; secrets arrive via
+#     sops-install-secrets, ordered before fortress.target.
 {
   config,
   lib,
@@ -54,7 +55,7 @@ mkFortressService {
     # root:jellyfin — ExecStartPre runs as radarr (jellyfin group).
     pinApiKey = pkgs.writeShellScript "radarr-pin-api-key" ''
       set -euo pipefail
-      key=$(cat /var/lib/fortress-media/radarr-api-key)
+      key=$(cat ${config.sops.secrets.radarr-api-key.path})
       dir=/var/lib/radarr/.config/Radarr
       install -d -m 0750 -o root -g root "$dir"
       if [ -f "$dir/config.xml" ]; then
@@ -83,7 +84,7 @@ EOF
       openFirewall = false;
       user = "root";
       group = "root";
-      environmentFiles = lib.mkAfter ["/var/lib/fortress-media/radarr.env"];
+      environmentFiles = lib.mkAfter [config.sops.templates."radarr.env".path];
       settings = {
         server.bindAddress = "127.0.0.1";
         update.automatically = false;
@@ -92,14 +93,8 @@ EOF
     };
 
     systemd.services.radarr = {
-      after =
-        lib.mkAfter
-        (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]
-          ++ ["fortress-media-api-keys.service"]);
-      requires =
-        lib.mkAfter
-        (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]
-          ++ ["fortress-media-api-keys.service"]);
+      after = lib.mkAfter (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]);
+      requires = lib.mkAfter (lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]);
       unitConfig.RequiresMountsFor = lib.mkAfter mediaDirs;
       serviceConfig = {
         PrivateUsers = lib.mkForce false;

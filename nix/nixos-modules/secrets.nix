@@ -72,28 +72,89 @@
         to this secret for T7.
       '';
     };
+    "radarr-api-key" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        Radarr's own API key. Radarr ignores the
+        RADARR__SERVER__APIKEY override once config.xml exists,
+        so this value is pinned into config.xml at start and is
+        also what the media handshake authenticates with.
+      '';
+    };
+    "sonarr-api-key" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        Sonarr's own API key. Same pinning and handshake role as
+        radarr-api-key.
+      '';
+    };
+    "seerr-admin-password" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        Password for the `seerr-bootstrap` Jellyfin admin user
+        that the media handshake creates on first boot, then
+        signs Seerr in through. Seerr has no local admin-creation
+        route, so this is its only first-boot admin path.
+      '';
+    };
+    "cryptpad-jwt-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        CryptPad's JWT signing key. CryptPad refuses to start
+        without one and silently derives an ephemeral key, which
+        invalidates every session on restart.
+      '';
+    };
+    "oidc-jellyfin-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        OIDC client secret shared between dex and Jellyfin.
+      '';
+    };
+    "oidc-cryptpad-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        OIDC client secret shared between dex and CryptPad.
+      '';
+    };
+    "oidc-forgejo-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        OIDC client secret shared between dex and Forgejo.
+      '';
+    };
   };
 in
 {
   options.fortress.secrets.sopsFile = lib.mkOption {
-    type = lib.types.nullOr lib.types.path;
-    default = null;
-    example = "./secrets.yaml";
+    type = lib.types.path;
+    example = "./secrets/secrets.enc.yaml";
     description = ''
-      Path to a sops-encrypted YAML containing all machine
-      secrets. Set by the customer in their config.nix. When
-      non-null, the customer also imports sops-nix
-      (`sops-nix.nixosModules.sops`) and wires the *File
-      options on each fortress service from
-      `config.sops.secrets.<key>.path`. See the inventory
-      below for the list of keys. The `nix run .#init` tool
-      (v2.8) generates the YAML with random values for every
-      key in the inventory.
+      Path to the sops-encrypted YAML holding every secret in the
+      inventory below. Required: there is exactly one mechanism for
+      secret material, and it is sealed ciphertext in the store — the
+      value is deterministic, and only the device age key at
+      /etc/fortress/system_age_keys.txt can open it. Nothing mints a
+      secret at boot; `nix run .#init` (or `fortress-bootstrap`)
+      generates and seals the whole inventory once.
 
-      When null (the default), the customer is responsible
-      for supplying *File options explicitly with their own
-      secret paths — this is the dev VM / nixosTest path
-      where secrets are build-time-generated.
+      `sops-wire.nix` turns this one line into every `sops.secrets.*`
+      declaration the platform needs, so no service has its own
+      secret-plumbing option.
     '';
   };
 

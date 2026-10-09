@@ -151,7 +151,33 @@ in {
         };
       };
 
-      client = {lib, pkgs, ...}: {
+      client = {lib, pkgs, ...}: let
+        # Client config as a store path, never environment.etc (the
+        # applier installs units only — ADR-035 amendment). The tunnel
+        # section drives the client-owned wg0. edge_pubkey is the shared
+        # identity's public key — deterministic because WG_PRIVATE_KEY in
+        # edge.env pins it (ADR-029). edge_endpoint is the edge's IPv4,
+        # NOT the hostname: nixosTest resolves node names to their IPv6
+        # (2001:db8:1::N) and a WG handshake to that IPv6 never gets
+        # through to the edge's wg0. The vlan IPv4 is stable per node
+        # order (edge = node 2).
+        clientConfig = pkgs.writeText "fortress-client.json" (builtins.toJSON {
+          tunnel = {
+            ip = "10.10.0.2";
+            prefix = 24;
+            edge_pubkey = edgePublic;
+            edge_endpoint = "192.168.1.2:51820";
+            edge_allowed_ips = "10.10.0.0/24";
+          };
+          forwards = [
+            {
+              listen_addr = "10.10.0.2:8080";
+              proto = "tcp";
+              dest_addr = "127.0.0.1:80";
+            }
+          ];
+        });
+      in {
         # The customer box. wg0 is brought up by the CLIENT process itself
         # (client-owned tunnel, ADR-025): cofortress-client generates +
         # persists its own keypair under /var/lib/fortress, configures the
@@ -168,31 +194,6 @@ in {
         # (the edge's public port 80 maps here) to receive forwarded
         # traffic from the edge.
         networking.firewall.allowedTCPPorts = [8080];
-
-        # Client config: the tunnel section drives the client-owned wg0.
-        # edge_pubkey is the shared identity's public key — deterministic
-        # because WG_PRIVATE_KEY in edge.env pins it (ADR-029).
-        # edge_endpoint is the edge's IPv4, NOT the hostname: nixosTest
-        # resolves node names to their IPv6 (2001:db8:1::N) and a WG
-        # handshake to that IPv6 never gets through to the edge's wg0
-        # (pre-existing, reproduced with the original test too). The
-        # vlan IPv4 is stable per node order (edge = node 2).
-        environment.etc."fortress-client.json".text = builtins.toJSON {
-          tunnel = {
-            ip = "10.10.0.2";
-            prefix = 24;
-            edge_pubkey = edgePublic;
-            edge_endpoint = "192.168.1.2:51820";
-            edge_allowed_ips = "10.10.0.0/24";
-          };
-          forwards = [
-            {
-              listen_addr = "10.10.0.2:8080";
-              proto = "tcp";
-              dest_addr = "127.0.0.1:80";
-            }
-          ];
-        };
 
         # Stand-in for Caddy: a python3 http.server bound to 127.0.0.1:80,
         # serving a fixed HTML file. Auto-started at boot.
@@ -224,7 +225,7 @@ in {
           path = [pkgs.iproute2 pkgs.wireguard-tools];
           serviceConfig = {
             Type = "simple";
-            ExecStart = "${fortressPkg}/bin/fortress-client -config /etc/fortress-client.json -log-format text -health-addr 127.0.0.1:9090";
+            ExecStart = "${fortressPkg}/bin/fortress-client -config ${clientConfig} -log-format text -health-addr 127.0.0.1:9090";
             # The dashboard has no unauthenticated mode: without this
             # hash fortress-client refuses to start, so the test's client
             # must carry one (password "password").

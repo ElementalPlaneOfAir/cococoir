@@ -27,6 +27,49 @@ let
   execStart = lib.concatStringsSep " " (lib.toList (svc.ExecStart or []));
   caddyEnv = lib.toList (svc.Environment or []);
   fortressWants = applierConfig.systemd.targets.fortress.wants or [];
+
+  # ── positive applier surface (ADR-035 amendment) ─────────────
+  # The applier installs *units only*. Any effect a module expresses
+  # through another activation mechanism — environment.etc, tmpfiles,
+  # users, mounts — is silently absent on a customer box, and the only
+  # symptom is a unit that dies at boot. So assert the *surface* at the
+  # unit: no tmpfiles additions beyond system-manager's baseline, and no
+  # service referencing /etc. The one sanctioned non-store reach is the
+  # sops device age key. (We check unit *references*, not the etc option
+  # itself — system-manager and upstream modules write a harmless,
+  # unread baseline into it.)
+  services = applierConfig.systemd.services or {};
+  configRefs = name:
+    let sc = services.${name}.serviceConfig or {};
+    in lib.concatMap (k: lib.toList (sc.${k} or []))
+      ["ExecStart" "ExecStartPre" "ExecReload" "ExecStop" "ExecStopPost"
+       "EnvironmentFile" "Environment" "WorkingDirectory"];
+  etcRefsAllowlist = ["/etc/fortress/system_age_keys.txt"];
+  etcRefServices = lib.filter (name:
+    lib.any (p: lib.hasInfix "/etc/" p && !(lib.any (a: lib.hasInfix a p) etcRefsAllowlist))
+      (configRefs name))
+    (lib.attrNames services);
+  clientExec = lib.concatStringsSep " "
+    (lib.toList (services.fortress-client.serviceConfig.ExecStart or []));
+  applierTmpfiles = applierConfig.systemd.tmpfiles.rules or [];
+  # system-manager contributes one infrastructure rule of its own; the
+  # surface we own is "baseline + fortress units", so anything *beyond*
+  # the baseline is a fortress module reaching outside the surface.
+  tmpfilesBaseline = ["L /run/current-system - - - - /run/system-manager"];
+  unexpectedTmpfiles =
+    lib.filter (r: !(builtins.elem r tmpfilesBaseline)) applierTmpfiles;
+
+  # ── sops under the applier ──────────────────────────────────────
+  # sops-nix has two install paths: the NixOS activation script, or a
+  # `sops-install-secrets` unit. system-manager stubs the activation
+  # script out to a no-op (nix/modules/upstream/sops-nix.nix), and
+  # `useSystemdActivation` defaults off unless sysusers/userborn are on —
+  # neither of which the applier wants. Declaring a secret then evaluates
+  # cleanly and decrypts *nothing* at boot. Assert the unit path is
+  # taken and hung off the target the applier actually starts.
+  installUnit = (applierConfig.systemd.services or {}).sops-install-secrets or null;
+  installBefore = if installUnit == null then [] else lib.toList (installUnit.before or []);
+  installRequiredBy = if installUnit == null then [] else lib.toList (installUnit.requiredBy or []);
 in
 # Caddy must not run under a named OS account: nothing creates it, so
 # systemd fails the unit with 217/USER before ExecStart.
@@ -55,14 +98,38 @@ assert lib.assertMsg (lib.any (e: lib.hasPrefix "HOME=" e) caddyEnv)
 assert lib.assertMsg (builtins.elem "caddy.service" fortressWants)
   "applier-wiring: fortress.target does not want caddy.service — a public service would be unreachable under the applier";
 
+# ── positive applier surface (ADR-035 amendment) ──────────────
+# The applier installs units only. These assertions keep every module
+# inside that surface, so a module that reaches for /etc or tmpfiles
+# fails here — in the same commit — instead of silently on a box.
+assert lib.assertMsg (unexpectedTmpfiles == [])
+  "applier-wiring: the applier composition declares systemd.tmpfiles.rules (${builtins.toJSON unexpectedTmpfiles}) — the applier never applies tmpfiles, so those dirs silently never exist. Create them from a unit instead";
+assert lib.assertMsg (etcRefServices == [])
+  "applier-wiring: a service references /etc (${builtins.toJSON etcRefServices}) — the applier never materializes /etc, so the unit starts with no config. A unit's inputs must be store paths (only the sops age key is exempt)";
+assert lib.assertMsg (lib.hasInfix "-config /nix/store/" clientExec && !(lib.hasInfix "/etc/" clientExec))
+  "applier-wiring: fortress-client reads its config from /etc — the applier never installs environment.etc, so the dashboard starts with no config (the amon-sul 502, 2026-10-08)";
+
+# ── sops under the applier ───────────────────────────────────────
+# Secrets must decrypt from a unit, not from the stubbed activation
+# script — otherwise they silently never exist.
+assert lib.assertMsg (applierConfig.sops.useSystemdActivation or false)
+  "applier-wiring: sops.useSystemdActivation is not forced true — sops-nix would fall back to system.activationScripts, which system-manager stubs to a no-op, so secrets silently never decrypt";
+assert lib.assertMsg (installUnit != null)
+  "applier-wiring: secrets are declared but no sops-install-secrets unit exists — nothing would decrypt them at boot";
+assert lib.assertMsg (builtins.elem "fortress.target" installBefore && builtins.elem "fortress.target" installRequiredBy)
+  "applier-wiring: sops-install-secrets is not ordered before fortress.target — a service can start before its secret exists";
+
 {
   applier-wiring = pkgs.runCommand "fortress-applier-wiring" {} ''
     cat > $out <<EOF
-    fortress applier-wiring (L1, ADR-035/036): PASS
+    fortress applier-wiring (L1, ADR-035 amendment): PASS
       a public service renders Caddy under the applier
       caddy runs as root (no named OS account the applier cannot create)
       caddy reads its Caddyfile from the store, not /etc
       fortress.target starts caddy, so a public service is reachable
+      positive applier surface: no tmpfiles beyond the baseline, no
+      service referencing /etc, fortress-client config is store-pathed
+      sops installs from a unit ordered before fortress.target
     EOF
   '';
 }
