@@ -62,6 +62,12 @@ crashed on it; it now filters to entries that carry `journald`.
 **Also:** `fortress-apply` had no `git` on PATH, so the documented
 `rm flake.lock` re-pin flow died with `error: executing "git": No such
 file or directory` the first time it was used. `path = [git nix]` now.
+**State dirs vs nixpkgs hardening:** nixpkgs' jellyfin sets
+`CapabilityBoundingSet=` (empty), so a uid-0 unit has no CAP_DAC_OVERRIDE /
+CAP_CHOWN and cannot write `/var/lib/jellyfin` left owned by another uid —
+nor run `install -o root`. Fixed by letting pid 1 create the dirs
+(`StateDirectory=`, `CacheDirectory=`) and dropping the chown from radarr's
+pre-start. `nix flake check` green.
 
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was

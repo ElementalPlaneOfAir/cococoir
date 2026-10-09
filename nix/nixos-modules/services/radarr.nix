@@ -51,13 +51,17 @@ mkFortressService {
     # config.xml exists (it keeps its own generated key), so the key is
     # pinned straight into config.xml — and so is the base path
     # (ADR-034): <UrlBase> is the app's own knob and nothing else
-    # (nixpkgs, seerr) can set it declaratively. The key file is 0640
-    # root:jellyfin — ExecStartPre runs as radarr (jellyfin group).
+    # (nixpkgs, seerr) can set it declaratively.
+    # `install` deliberately does NOT pass -o/-g: nixpkgs' hardening sets
+    # CapabilityBoundingSet= (empty), so a uid-0 unit has no CAP_CHOWN and
+    # `install -o root` dies with "Operation not permitted" even on a
+    # root-owned dir. The unit runs as root, so the dirs come out
+    # root-owned anyway; StateDirectory= guarantees they exist.
     pinApiKey = pkgs.writeShellScript "radarr-pin-api-key" ''
       set -euo pipefail
       key=$(cat ${config.sops.secrets.radarr-api-key.path})
       dir=/var/lib/radarr/.config/Radarr
-      install -d -m 0750 -o root -g root "$dir"
+      install -d -m 0750 "$dir"
       if [ -f "$dir/config.xml" ]; then
         ${pkgs.gnused}/bin/sed -i \
           -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
@@ -98,6 +102,10 @@ EOF
       unitConfig.RequiresMountsFor = lib.mkAfter mediaDirs;
       serviceConfig = {
         PrivateUsers = lib.mkForce false;
+        NoNewPrivileges = lib.mkForce false;
+        # systemd (pid 1) creates /var/lib/radarr with the unit's own uid,
+        # so the pre-start can write it without CAP_DAC_OVERRIDE.
+        StateDirectory = "radarr";
         ExecStartPre = lib.mkAfter pinApiKey;
       };
     };

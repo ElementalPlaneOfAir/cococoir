@@ -168,6 +168,12 @@ in
           serviceConfig.TimeoutStopSec = 30;
           serviceConfig.PrivateUsers = lib.mkForce false;
           serviceConfig.NoNewPrivileges = lib.mkForce false;
+          # nixpkgs' hardening sets CapabilityBoundingSet= (empty), so uid 0
+          # has no CAP_DAC_OVERRIDE and cannot write a /var/lib/jellyfin left
+          # behind by an older install (different uid). StateDirectory makes
+          # systemd create/chown it, which is the only party that can.
+          serviceConfig.StateDirectory = "jellyfin";
+          serviceConfig.CacheDirectory = "jellyfin";
           unitConfig.RequiresMountsFor = [
             mediaPaths.movies
             mediaPaths.shows
