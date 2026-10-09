@@ -49,6 +49,11 @@ in {
         RemainAfterExit = true;
         ExecStart = "${fortressApply}/bin/fortress-apply ${root}/config";
       };
+      # `rm flake.lock` is the documented re-pin flow, and nix shells out to
+      # `git` to re-lock a git+file flake. Without it on PATH the apply dies
+      # with `error: executing "git": No such file or directory` the moment
+      # the lock file is absent.
+      path = [pkgs.git pkgs.nix];
     };
   };
 }

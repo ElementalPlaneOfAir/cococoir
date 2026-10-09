@@ -59,6 +59,9 @@ turning on a service is a config line end to end. That surfaced one
 aggregation bug: `fortress.services.media` is a plain toggle, not a
 `mkFortressService`, so the `journald.units` walk over `fortress.services`
 crashed on it; it now filters to entries that carry `journald`.
+**Also:** `fortress-apply` had no `git` on PATH, so the documented
+`rm flake.lock` re-pin flow died with `error: executing "git": No such
+file or directory` the first time it was used. `path = [git nix]` now.
 
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was
