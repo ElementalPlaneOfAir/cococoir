@@ -351,7 +351,7 @@ in
 
     systemd.services.fortress-btrfs-subvolumes = {
       description = "fortress btrfs subvolume creation (idempotent)";
-      wantedBy = ["multi-user.target"];
+      wantedBy = ["fortress.target"];
       after = ["local-fs.target"];
       unitConfig.RequiresMountsFor = mountpoint;
       serviceConfig = {

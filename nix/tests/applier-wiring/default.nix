@@ -73,7 +73,6 @@ let
   tmpfilesStateRule = r: lib.any (root: lib.hasInfix root r) stateRoots;
   unexpectedTmpfiles = lib.filter tmpfilesStateRule applierTmpfiles;
 
-  
 # ── sops under the applier ──────────────────────────────────────
   # sops-nix has two install paths: the NixOS activation script, or a
   # `sops-install-secrets` unit. system-manager stubs the activation
@@ -85,7 +84,29 @@ let
   installUnit = (cfg.systemd.services or {}).sops-install-secrets or null;
   installBefore = if installUnit == null then [] else lib.toList (installUnit.before or []);
   installRequiredBy = if installUnit == null then [] else lib.toList (installUnit.requiredBy or []);
+
+  # The silent-drop class. The applier starts `fortress.target` and nothing
+  # else, so a unit reachable ONLY from multi-user.target is installed into
+  # /run/systemd/system and never runs — which is how fortress-plain-dirs,
+  # fortress-client and fortress-media-apply silently did nothing on
+  # amon-sul. nixpkgs' own services set `wantedBy = multi-user.target` and
+  # are fine, because fortress.target pulls them; the bug is a unit that
+  # fortress.target does NOT pull. So assert the fortress-owned infra units
+  # are in the closure — that is the property that actually failed.
+  closure = applierConfig.applierUnitNames or [];
+  expectedInfra = lib.unique (
+    [ "fortress-plain-dirs.service" ]
+    ++ lib.optional (cfg.fortress.services.jellyfin.enable or false) "jellyfin.service"
+    ++ lib.optional (cfg.fortress.services.radarr.enable or false
+                     || cfg.fortress.services.sonarr.enable or false)
+        "fortress-media-apply.service"
+    ++ lib.optional (cfg.fortress.services.qbittorrent.enable or false) "qbittorrent.service"
+  );
+  missingInfra = lib.filter (n: !(builtins.elem n closure)) expectedInfra;
 in
+assert lib.assertMsg (missingInfra == [])
+  "applier-wiring: these units are enabled but NOT reachable from fortress.target (the applier starts only fortress.target, so they would never run): ${builtins.toJSON missingInfra}";
+
 # Caddy must not run under a named OS account: nothing creates it, so
 # systemd fails the unit with 217/USER before ExecStart.
 assert lib.assertMsg ((svc.User or "") == "root" && (svc.Group or "") == "root")

@@ -269,7 +269,7 @@ in
         };
 
         systemd.services.jellarr = {
-          wantedBy = ["multi-user.target"];
+          wantedBy = ["fortress.target"];
           after = ["sops-install-secrets.service"];
           requires = ["sops-install-secrets.service"];
         };

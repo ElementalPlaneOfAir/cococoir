@@ -38,7 +38,7 @@ mkIf oidcEnabled {
   # be a store path, the value must not be.
   systemd.services.fortress-cryptpad-oidc-secret = {
     description = "CryptPad OIDC config materialization (Dex)";
-    wantedBy = [ "multi-user.target" ];
+    wantedBy = ["fortress.target"];
     before = [ "dex.service" "cryptpad.service" ];
     after = [ "sops-install-secrets.service" ];
     requires = [ "sops-install-secrets.service" ];

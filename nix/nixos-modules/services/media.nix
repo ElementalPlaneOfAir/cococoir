@@ -302,7 +302,7 @@ in
     (lib.mkIf (config.services.radarr.enable || config.services.sonarr.enable) {
       systemd.services.fortress-media-apply = {
         description = "Apply media stack wiring (qbittorrent, radarr, sonarr, seerr)";
-        wantedBy = ["multi-user.target"];
+        wantedBy = ["fortress.target"];
         after =
           ["sops-install-secrets.service"]
           ++ lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"]

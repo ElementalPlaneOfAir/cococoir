@@ -66,7 +66,7 @@ mkIf oidcEnabled {
 
   systemd.services.fortress-forgejo-oidc-bootstrap = {
     description = "Register Dex as a Forgejo OIDC authentication source";
-    wantedBy = ["multi-user.target"];
+    wantedBy = ["fortress.target"];
     after = ["forgejo.service" "dex.service" "fortress-forgejo-oidc-secret.service"];
     requires = ["forgejo.service" "dex.service"];
     path = [

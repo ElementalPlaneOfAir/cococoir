@@ -188,7 +188,7 @@ in {
         # late; a start-before-address race shows up as a failed bind.
         after = ["network-online.target"];
         wants = ["network-online.target"];
-        wantedBy = ["multi-user.target"];
+        wantedBy = ["fortress.target"];
         serviceConfig = {
           # No persistent files, so no stable UID is required: DynamicUser
           # means the host never has to create an account — which the

@@ -38,6 +38,22 @@ installed and never ran (latent on amon-sul). They now hang off
 enabled, `vmtest-wiring`, `systemManagerWiring`, `bootstrapInventory`, the
 edge VM tests). `systemManagerWiring` now fails if `host-shim.nix` returns.
 
+**The silent-drop class, now closed (2026-10-09).** The applier starts
+`fortress.target` and nothing else. Any unit whose only `wantedBy` is
+`multi-user.target` is installed into `/run/systemd/system` and **never
+runs** — which is exactly how `fortress-plain-dirs`, `fortress-client` and
+`fortress-media-apply` sat inert on amon-sul while the box 502'd. Six
+units were on `multi-user.target` (`network.nix`, `storage/btrfs.nix`,
+`cryptpad-oidc`, `forgejo-oidc`, `services/media`, `services/jellyfin`).
+All now hang off `fortress.target`. `applier-wiring` asserts the
+fortress-owned infra units are *reachable from* `fortress.target` — the
+property that actually failed — because nixpkgs' own services legitimately
+keep `wantedBy = multi-user.target` and get pulled by the target instead.
+**Proof:** `applier-wiring` asserts `fortress-plain-dirs.service`,
+`jellyfin.service`, `fortress-media-apply.service`, `qbittorrent.service`
+are in `applierUnitNames`; `vmtest-wiring` accepts `fortress.target` for
+boot activation.
+
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was
 minted at first boot (`openssl rand`, idempotent) and kept in `/var/lib`,

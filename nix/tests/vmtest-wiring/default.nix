@@ -188,7 +188,7 @@ assert lib.assertMsg (builtins.all dashboardServiceEnabled dashboardServices)
 # check.
 assert lib.assertMsg (builtins.all mediaServiceEnabled mediaStackServices)
   "vmtest-wiring: the media toggle did not render all four media stack services enabled";
-assert lib.assertMsg (mediaApplySvc != null && builtins.elem "multi-user.target" (mediaApplySvc.wantedBy or []))
+assert lib.assertMsg (mediaApplySvc != null && lib.any (t: builtins.elem t (mediaApplySvc.wantedBy or [])) ["fortress.target" "multi-user.target"])
   "vmtest-wiring: fortress-media-apply is missing or has no boot activation — the stack would boot unwired";
 assert lib.assertMsg (mediaApplySvc != null && builtins.all (u: builtins.elem u (mediaApplySvc.after or [])) ["radarr.service" "sonarr.service" "qbittorrent.service" "sops-install-secrets.service"])
   "vmtest-wiring: fortress-media-apply does not order after the media services + sops-install-secrets — it could apply against half-up services or with no secrets";
@@ -230,7 +230,7 @@ assert lib.assertMsg (builtins.elem "Movies" folderNames)
   "vmtest-wiring: vmtest's virtualFolders override did not apply";
 assert lib.assertMsg (!(builtins.elem "Entertainment" folderNames))
   "vmtest-wiring: the jellyfin module's mkDefault virtualFolders leaked into vmtest (should be overridden)";
-assert lib.assertMsg (builtins.elem "multi-user.target" vmtestConfig.systemd.services.jellarr.wantedBy)
+assert lib.assertMsg (lib.any (t: builtins.elem t vmtestConfig.systemd.services.jellarr.wantedBy) ["fortress.target" "multi-user.target"])
   "vmtest-wiring: jellarr.service has no boot activation — declarative config would never apply on first boot";
 
 # ── forgejo assertions ────────────────────────────────────────
@@ -250,7 +250,7 @@ assert lib.assertMsg (forgejoDexClient != null)
   "vmtest-wiring: dex staticClients has no 'forgejo' entry — client registration was dropped";
 assert lib.assertMsg (forgejoDexClient != null && builtins.elem "https://${baseDomain}${forgejoCfg.path}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []) && builtins.elem "http://${i2pPlaneHost}${forgejoCfg.path}/user/oauth2/dex/callback" (forgejoDexClient.redirectURIs or []))
   "vmtest-wiring: forgejo dex client redirect URIs (clearnet plane + I2P plane) mismatch — SSO callbacks would dead-end";
-assert lib.assertMsg (forgejoBootstrap != null && builtins.elem "multi-user.target" (forgejoBootstrap.wantedBy or []))
+assert lib.assertMsg (forgejoBootstrap != null && lib.any (t: builtins.elem t (forgejoBootstrap.wantedBy or [])) ["fortress.target" "multi-user.target"])
   "vmtest-wiring: fortress-forgejo-oidc-bootstrap is missing or has no boot activation — the dex auth source would never be registered";
 assert lib.assertMsg (forgejoBootstrap != null && builtins.elem "forgejo.service" (forgejoBootstrap.after or []) && builtins.elem "dex.service" (forgejoBootstrap.after or []))
   "vmtest-wiring: fortress-forgejo-oidc-bootstrap does not order after forgejo + dex — it could run against an un-migrated DB or a down dex";
@@ -292,7 +292,7 @@ assert lib.assertMsg (cryptpadDexClient != null)
   "vmtest-wiring: dex staticClients has no 'cryptpad' entry — client registration was dropped";
 assert lib.assertMsg (cryptpadDexClient != null && builtins.elem "https://${vmtestConfig.fortress.services.cryptpad.domain}/ssoauth" (cryptpadDexClient.redirectURIs or []))
   "vmtest-wiring: cryptpad dex client redirect URI mismatch";
-assert lib.assertMsg (cryptpadSecretSvc.wantedBy != null && builtins.elem "multi-user.target" cryptpadSecretSvc.wantedBy)
+assert lib.assertMsg (cryptpadSecretSvc.wantedBy != null && lib.any (t: builtins.elem t cryptpadSecretSvc.wantedBy) ["fortress.target" "multi-user.target"])
   "vmtest-wiring: fortress-cryptpad-oidc-secret has no boot activation";
 assert lib.assertMsg hasCryptpadConfigEnv
   "vmtest-wiring: cryptpad.service has no CRYPTPAD_CONFIG env var — the oidc config is not wired";
