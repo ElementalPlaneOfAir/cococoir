@@ -94,6 +94,20 @@ in
         '';
       };
 
+      # Customer-facing one-liner, shown on the service's dashboard
+      # card. Set at the factory call alongside `name`, never by the
+      # customer — it is display metadata, not config (ADR-004).
+      description = mkOption {
+        type = types.str;
+        default = args.description;
+        defaultText = literalMD ''the service's one-line description'';
+        description = ''
+          One-line description shown on the service's dashboard card.
+          Derived from the service module's factory call.
+        '';
+        internal = true;
+      };
+
       domain = mkOption {
         type = types.str;
         default =

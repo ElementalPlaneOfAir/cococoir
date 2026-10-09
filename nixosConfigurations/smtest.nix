@@ -21,6 +21,7 @@
   pkgs,
   ...
 }: let
+  devCreds = import ../nix/dev/dev-credentials.nix;
   fortressApply = import ../nix/system-manager/apply.nix {inherit pkgs;};
   fortressBootstrap = import ../nix/system-manager/bootstrap.nix {inherit pkgs;};
 
@@ -51,7 +52,7 @@
     pub=$(age-keygen -y $out/secrets/device.agekey)
     plaintext=$(mktemp)
     printf '%s: "%s"\n' fortress-admin-password-hash \
-      '$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W' >> "$plaintext"
+      '${devCreds.adminPasswordHash}' >> "$plaintext"
     ${builtins.concatStringsSep "\n" (builtins.map (k: ''
       printf '%s: "%s"\n' ${k} "$(openssl rand -hex 32)" >> "$plaintext"
     '') ["jellarr-api-key" "jellyfin-admin-password"

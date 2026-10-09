@@ -37,6 +37,75 @@ pub fn LoginPage(props: &LoginPageProps) -> Node {
     )
 }
 
+/// One service card on the landing page. The link is the service's
+/// `path` on whatever origin the page was reached from, so the same
+/// page works over the LAN address, a public name, and an i2p tunnel
+/// with no per-origin logic.
+pub struct LandingServiceProps {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    pub healthy: bool,
+}
+
+/// The public landing page: every routed service, linked, with the
+/// liveness the prober saw. Unauthenticated by design — it is the page
+/// a device on the LAN lands on, and it exposes only what the box is
+/// already serving on that same network.
+pub struct LandingPageProps {
+    pub services: Vec<LandingServiceProps>,
+}
+
+#[component]
+pub fn LandingPage(props: &LandingPageProps) -> Node {
+    let cards = props
+        .services
+        .iter()
+        .map(|service| {
+            let liveness = if service.healthy {
+                fortress_web_ui::stamp_small("up")
+            } else {
+                fortress_web_ui::stamp_small("down")
+            };
+            rsx!(
+                <a href={service.path.clone()} class="block border-2 border-ink px-4 py-3">
+                    <span class="flex items-center justify-between gap-3">
+                        <span class="font-black">{&service.name}</span>
+                        {liveness}
+                    </span>
+                    <span class="text-sm dim">{&service.description}</span>
+                </a>
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let empty = if props.services.is_empty() {
+        rsx!(<p class="text-sm dim">"No services are configured yet. Enable one in the admin panel."</p>)
+    } else {
+        Node::Empty
+    };
+
+    shell(
+        "Services",
+        ShellVariant::App,
+        rsx!(
+            <main class="mx-auto flex max-w-3xl flex-col gap-6 p-6">
+                <header class="flex items-center justify-between gap-4">
+                    <div>
+                        <h1 class="text-2xl font-black uppercase">"Services"</h1>
+                        <p class="text-sm dim">"Everything this box is running."</p>
+                    </div>
+                    {zine_button("/admin", "Admin", "")}
+                </header>
+                <section class="flex flex-col gap-3">
+                    {cards}
+                    {empty}
+                </section>
+            </main>
+        ),
+    )
+}
+
 /// One service row in the config editor.
 pub struct EditorServiceProps {
     pub nixname: String,

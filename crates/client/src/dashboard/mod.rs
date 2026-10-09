@@ -1,9 +1,11 @@
 pub mod auth;
+pub mod catalog;
 pub mod components;
 mod db;
 pub mod nix_config_parser;
 
 pub use auth::AdminConfig;
+pub use catalog::{Catalog, CatalogEntry, Prober};
 pub use db::Db;
 
 use crate::dashboard::auth::{
@@ -11,8 +13,8 @@ use crate::dashboard::auth::{
     SESSION_COOKIE,
 };
 use crate::dashboard::components::{
-    ClaimView, EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, LoginPage,
-    LoginPageProps,
+    ClaimView, EditorPage, EditorPageProps, EditorServiceProps, EditorUserProps, LandingPage,
+    LandingPageProps, LandingServiceProps, LoginPage, LoginPageProps,
 };
 use crate::dashboard::nix_config_parser::{
     ConfigSchema, FortressConfig, NixConfigFile, NixParseError, NixValue, SetError,
@@ -206,8 +208,31 @@ fn editor_state(path: &ConfigPath) -> (FortressConfig, Option<String>) {
     }
 }
 
+/// The public landing page: every routed service, linked, with the
+/// liveness the prober last saw. The only page besides the login form
+/// that sits outside the session gate.
 #[handler]
-async fn index(
+async fn landing(
+    Data(catalog): Data<&Catalog>,
+    Data(prober): Data<&Prober>,
+) -> Response {
+    let liveness = prober.snapshot(catalog).await;
+    let services = catalog
+        .entries()
+        .iter()
+        .zip(liveness.into_iter())
+        .map(|(entry, healthy)| LandingServiceProps {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+            path: entry.path.clone(),
+            healthy,
+        })
+        .collect::<Vec<_>>();
+    Html(component::<LandingPage>(LandingPageProps { services }).to_html()).into_response()
+}
+
+#[handler]
+async fn admin(
     Data(config_path): Data<&ConfigPath>,
     Data(claim): Data<&ClaimSupport>,
 ) -> Response {
@@ -372,7 +397,7 @@ fn remote_view(claim: &ClaimSupport) -> ClaimView {
 }
 
 #[handler]
-async fn index_save(
+async fn admin_save(
     Data(config_path): Data<&ConfigPath>,
     Data(claim): Data<&ClaimSupport>,
     Form(form): Form<EditorForm>,
@@ -452,27 +477,40 @@ async fn logout(Data(db): Data<&Db>, req: &Request) -> Response {
         .finish()
 }
 
-fn app(db: Db, auth: AdminConfig, config_path: ConfigPath, claim: ClaimSupport) -> impl Endpoint {
-    let gate_auth = auth.clone();
-    // Everything except the login form sits behind the session gate —
-    // including logout, so the "exactly one public page" property stays
-    // true and a stray route can't slip outside it unnoticed.
-    let protected = Route::new()
-        .at("/", get(index).post(index_save))
-        .at("/claim", post(claim_submit))
-        .at("/auth/logout", get(logout))
-        .around(move |ep, req| {
-            let auth = gate_auth.clone();
-            async move { gate_request(&auth, ep, req).await }
-        });
+/// Wrap an endpoint in the session gate. Applied per route rather than
+/// to a nested group so the two public paths cannot accidentally share
+/// a prefix with a guarded one.
+fn with_session<E: Endpoint<Output = Response> + 'static>(ep: E, auth: AdminConfig) -> impl Endpoint {
+    ep.around(move |ep, req| {
+        let auth = auth.clone();
+        async move { gate_request(&auth, ep, req).await }
+    })
+}
 
+fn app(
+    db: Db,
+    auth: AdminConfig,
+    config_path: ConfigPath,
+    claim: ClaimSupport,
+    catalog: Catalog,
+    prober: Prober,
+) -> impl Endpoint {
+    // Exactly two public pages: the service dashboard at `/`, which is
+    // what a device on the LAN lands on, and the login form. Everything
+    // else — including logout, so a stray route cannot slip outside the
+    // gate unnoticed — requires a session.
     Route::new()
+        .at("/", get(landing))
         .at("/auth/login", get(login_page_get).post(login_page_post))
-        .nest("/", protected)
+        .at("/admin", with_session(get(admin).post(admin_save), auth.clone()))
+        .at("/claim", with_session(post(claim_submit), auth.clone()))
+        .at("/auth/logout", with_session(get(logout), auth.clone()))
         .data(db)
         .data(auth)
         .data(config_path)
         .data(claim)
+        .data(catalog)
+        .data(prober)
 }
 
 pub async fn serve(
@@ -482,10 +520,12 @@ pub async fn serve(
     addr: &str,
     shutdown: tokio::sync::watch::Receiver<bool>,
     claim: ClaimSupport,
+    catalog: Catalog,
+    prober: Prober,
 ) -> Result<(), std::io::Error> {
     Server::new(TcpListener::bind(addr))
         .run_with_graceful_shutdown(
-            app(db, auth, config_path, claim),
+            app(db, auth, config_path, claim, catalog, prober),
             async move {
                 let mut shutdown = shutdown;
                 let _ = shutdown.wait_for(|v| *v).await;
@@ -520,6 +560,27 @@ mod tests {
         }
     }
 
+    /// The app with a specific catalog. Routing and gating tests pass
+    /// the empty one; the landing-page tests pass their own.
+    fn test_app_with(
+        db: Db,
+        auth: AdminConfig,
+        config_path: ConfigPath,
+        claim: ClaimSupport,
+        catalog: Catalog,
+    ) -> impl Endpoint {
+        app(db, auth, config_path, claim, catalog, Prober::new())
+    }
+
+    fn test_app(
+        db: Db,
+        auth: AdminConfig,
+        config_path: ConfigPath,
+        claim: ClaimSupport,
+    ) -> impl Endpoint {
+        test_app_with(db, auth, config_path, claim, Catalog::default())
+    }
+
     fn recording_claim_support(
         tunnel_state_path: PathBuf,
     ) -> (ClaimSupport, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
@@ -540,15 +601,15 @@ mod tests {
     /// page test logs in first.
     async fn authed_client(db: Db, config_path: ConfigPath) -> TestClient<impl Endpoint> {
         let token = db.create_session("admin").await.expect("create session");
-        TestClient::new(app(db, test_auth(), config_path, test_claim_support()))
+        TestClient::new(test_app(db, test_auth(), config_path, test_claim_support()))
             .default_header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
     }
 
     #[tokio::test]
     async fn gate_bounces_unauthenticated_page_loads() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
-        let bounced = client.get("/").send().await;
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
+        let bounced = client.get("/admin").send().await;
         bounced.assert_status(StatusCode::SEE_OTHER);
         let location = bounced
             .0
@@ -560,20 +621,23 @@ mod tests {
         assert_eq!(location, "/auth/login");
     }
 
-    /// Tripwire: there is no unauthenticated surface. Exactly one page
-    /// is public — the login form — and everything else bounces a
-    /// request with no session cookie, so a future route added outside
-    /// the gated `Route` cannot silently ship an open admin UI. This is
-    /// the regression guard for the `AuthMode::Dev` hole.
+    /// Tripwire: exactly two pages are public — the service dashboard at
+    /// `/`, which is what a device on the LAN lands on, and the login
+    /// form. Everything else bounces a request with no session cookie,
+    /// so a future route added outside the gate cannot silently ship an
+    /// open admin UI. This is the regression guard for the
+    /// `AuthMode::Dev` hole.
     #[tokio::test]
-    async fn every_page_route_requires_a_session() {
+    async fn exactly_two_pages_are_public() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
 
-        let public = client.get("/auth/login").send().await;
-        public.assert_status(StatusCode::OK);
+        for path in ["/", "/auth/login"] {
+            let public = client.get(path).send().await;
+            assert_eq!(public.0.status(), StatusCode::OK, "{path} must be public");
+        }
 
-        for path in ["/", "/auth/logout"] {
+        for path in ["/admin", "/auth/logout"] {
             let bounced = client.get(path).send().await;
             assert_eq!(
                 bounced.0.status(),
@@ -589,14 +653,82 @@ mod tests {
                 .unwrap();
             assert_eq!(location, "/auth/login", "{path} must bounce to login");
         }
+
+        let bounced_claim = client.post("/claim").send().await;
+        assert_eq!(
+            bounced_claim.0.status(),
+            StatusCode::SEE_OTHER,
+            "/claim must require a session"
+        );
+    }
+
+    /// Tripwire: the landing page is the product surface. It must name
+    /// every catalogued service, link to it on the current origin, and
+    /// show the liveness the prober saw — a card that silently renders
+    /// without a link, or that hides a dead service, is the failure
+    /// this guards against.
+    #[tokio::test]
+    async fn landing_lists_catalog_services_with_links_and_liveness() {
+        let db = Db::open_in_memory().await.expect("in-memory db opens");
+        let catalog = Catalog::from_entries(vec![CatalogEntry {
+            name: "jellyfin".to_string(),
+            description: "Jellyfin media server".to_string(),
+            path: "/jellyfin".to_string(),
+            domain: "jellyfin.vmtest.local".to_string(),
+            port: 8096,
+            public: true,
+            health_url: "http://127.0.0.1:1/health".to_string(),
+        }]);
+        let client = TestClient::new(test_app_with(
+            db,
+            test_auth(),
+            test_config_path(),
+            test_claim_support(),
+            catalog,
+        ));
+        let page = client.get("/").send().await;
+        page.assert_status(StatusCode::OK);
+        let body = page.0.into_body().into_string().await.expect("utf8 body");
+        assert!(body.contains("jellyfin"), "the card names the service");
+        assert!(
+            body.contains("href=\"/jellyfin\""),
+            "the card links to the service path on the current origin"
+        );
+        assert!(
+            body.contains("Jellyfin media server"),
+            "the card carries the catalog's description"
+        );
+        assert!(
+            body.contains("down"),
+            "an unreachable service must be marked down, not hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn landing_explains_an_empty_catalog() {
+        let db = Db::open_in_memory().await.expect("in-memory db opens");
+        let client = TestClient::new(test_app(
+            db,
+            test_auth(),
+            test_config_path(),
+            test_claim_support(),
+        ));
+        let page = client.get("/").send().await;
+        page.assert_status(StatusCode::OK);
+        let body = page.0.into_body().into_string().await.expect("utf8 body");
+        assert!(
+            body.contains("No services are configured"),
+            "an empty catalog must explain itself rather than render a blank page"
+        );
+        assert!(body.contains("Admin"), "the landing page offers the admin panel");
     }
 
     #[tokio::test]
     async fn gate_redirects_htmx_with_hx_header() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
         let bounced = client
-            .get("/")
+            .get("/admin")
             .header("HX-Request", "true")
             .send()
             .await;
@@ -615,9 +747,9 @@ mod tests {
     async fn gate_passes_valid_session_cookie() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let token = db.create_session("alice").await.expect("create session");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
         let response = client
-            .get("/")
+            .get("/admin")
             .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
@@ -627,7 +759,7 @@ mod tests {
     #[tokio::test]
     async fn login_page_renders_in_password_mode() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
         let response = client.get("/auth/login").send().await;
         response.assert_status(StatusCode::OK);
         let body = response
@@ -684,7 +816,7 @@ mod tests {
     #[tokio::test]
     async fn login_grants_session_with_correct_password() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
         let response = client
             .post("/auth/login")
             .content_type("application/x-www-form-urlencoded")
@@ -714,7 +846,7 @@ mod tests {
             .and_then(|rest| rest.split(';').next())
             .expect("cookie token");
         let gate = client
-            .get("/")
+            .get("/admin")
             .header(header::COOKIE, format!("fortress_session={token}"))
             .send()
             .await;
@@ -724,7 +856,7 @@ mod tests {
     #[tokio::test]
     async fn login_rejects_wrong_password() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
         let response = client
             .post("/auth/login")
             .content_type("application/x-www-form-urlencoded")
@@ -739,7 +871,7 @@ mod tests {
             .await
             .expect("utf8 body");
         assert!(body.contains("Incorrect password."));
-        let bounced = client.get("/").send().await;
+        let bounced = client.get("/admin").send().await;
         bounced.assert_status(StatusCode::SEE_OTHER);
     }
 
@@ -747,7 +879,7 @@ mod tests {
     async fn logout_deletes_session_and_clears_cookie() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let token = db.create_session("bob").await.expect("create session");
-        let client = TestClient::new(app(
+        let client = TestClient::new(test_app(
             db.clone(),
             test_auth(),
             test_config_path(),
@@ -921,7 +1053,7 @@ mod tests {
     async fn editor_renders_known_fields() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let client = authed_client(db, temp_config(EDITOR_FIXTURE)).await;
-        let response = client.get("/").send().await;
+        let response = client.get("/admin").send().await;
         response.assert_status(StatusCode::OK);
         let body = response
             .0
@@ -948,7 +1080,7 @@ mod tests {
     async fn editor_shows_read_error_banner_on_missing_file() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let client = authed_client(db, test_config_path()).await;
-        let response = client.get("/").send().await;
+        let response = client.get("/admin").send().await;
         response.assert_status(StatusCode::OK);
         let body = response
             .0
@@ -965,7 +1097,7 @@ mod tests {
         let path = temp_config(EDITOR_FIXTURE);
         let client = authed_client(db, path.clone()).await;
         let response = client
-            .post("/")
+            .post("/admin")
             .content_type("application/x-www-form-urlencoded")
             .body("hostname=other&base_domain=home.arpa&svc_jellyfin=true&svc_cryptpad=true&groups_nicole=wheel")
             .send()
@@ -996,7 +1128,7 @@ mod tests {
         let path = temp_config(EDITOR_FIXTURE);
         let client = authed_client(db, path.clone()).await;
         let response = client
-            .post("/")
+            .post("/admin")
             .content_type("application/x-www-form-urlencoded")
             .body("hostname=vmtest&base_domain=vmtest.local&svc_jellyfin=true&groups_nicole=wheel storage")
             .send()
@@ -1015,7 +1147,7 @@ mod tests {
         let path = temp_config(EDITOR_FIXTURE);
         let client = authed_client(db, path.clone()).await;
         let response = client
-            .post("/")
+            .post("/admin")
             .content_type("application/x-www-form-urlencoded")
             // forgejo has no `enable` binding in the fixture; checking it
             // must CREATE one rather than silently dropping the edit.
@@ -1047,7 +1179,7 @@ mod tests {
         let path = temp_config(EDITOR_FIXTURE);
         let client = authed_client(db, path.clone()).await;
         let response = client
-            .post("/")
+            .post("/admin")
             .content_type("application/x-www-form-urlencoded")
             .body("hostname=vmtest&base_domain=vmtest.local&svc_jellyfin=true&groups_nicole=wheel")
             .send()
@@ -1066,7 +1198,7 @@ mod tests {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
         let client = authed_client(db, test_config_path()).await;
         let response = client
-            .post("/")
+            .post("/admin")
             .content_type("application/x-www-form-urlencoded")
             .body("hostname=other")
             .send()
@@ -1090,11 +1222,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (claim, spawned) = recording_claim_support(dir.path().join("tunnel.json"));
         let token = db.create_session("admin").await.expect("session");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), claim))
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), claim))
             .default_header(header::COOKIE, format!("{SESSION_COOKIE}={token}"));
 
         let body = client
-            .get("/")
+            .get("/admin")
             .send()
             .await
             .0
@@ -1117,7 +1249,7 @@ mod tests {
         resp.assert_status(StatusCode::SEE_OTHER);
         assert!(spawned.lock().unwrap().is_empty(), "garbage never spawns a claim");
         let body = client
-            .get("/")
+            .get("/admin")
             .send()
             .await
             .0
@@ -1141,7 +1273,7 @@ mod tests {
             "the claim action got the link"
         );
         let body = client
-            .get("/")
+            .get("/admin")
             .send()
             .await
             .0
@@ -1173,10 +1305,10 @@ mod tests {
             .expect("persist");
         let (claim, spawned) = recording_claim_support(state_path);
         let token = db.create_session("admin").await.expect("session");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), claim))
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), claim))
             .default_header(header::COOKIE, format!("{SESSION_COOKIE}={token}"));
         let body = client
-            .get("/")
+            .get("/admin")
             .send()
             .await
             .0
@@ -1204,7 +1336,7 @@ mod tests {
     #[tokio::test]
     async fn claim_route_requires_a_session() {
         let db = Db::open_in_memory().await.expect("in-memory db opens");
-        let client = TestClient::new(app(db, test_auth(), test_config_path(), test_claim_support()));
+        let client = TestClient::new(test_app(db, test_auth(), test_config_path(), test_claim_support()));
         let bounced = client
             .post("/claim")
             .content_type("application/x-www-form-urlencoded")

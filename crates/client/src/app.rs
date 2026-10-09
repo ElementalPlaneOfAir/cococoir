@@ -55,6 +55,7 @@ struct Flags {
     log_format: logger::Format,
     health_addr: String,
     dashboard_addr: String,
+    catalog_path: Option<String>,
 }
 
 /// How the box boots: `Full` runs the forwarder (tunnel resolved or not
@@ -145,7 +146,7 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
         Ok(flags) => flags,
         Err(err) => {
             eprintln!("{err}");
-            eprintln!("usage: {component} -config PATH -log-format text|json -health-addr ADDR -dashboard-addr ADDR");
+            eprintln!("usage: {component} -config PATH -log-format text|json -health-addr ADDR -dashboard-addr ADDR [-catalog PATH]");
             return 1;
         }
     };
@@ -346,6 +347,24 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
             });
         }),
     };
+    // The service catalog, baked into the unit at eval time. A malformed
+    // one is a build bug, so it stops the process rather than serving a
+    // dashboard that silently lists nothing.
+    let catalog = match &flags.catalog_path {
+        Some(path) => match dashboard::catalog::Catalog::load(std::path::Path::new(path)) {
+            Ok(catalog) => {
+                tracing::info!(services = catalog.entries().len(), "service catalog loaded");
+                catalog
+            }
+            Err(err) => {
+                error!(err = %err, "service catalog failed to load");
+                return 1;
+            }
+        },
+        None => dashboard::catalog::Catalog::default(),
+    };
+    let prober = dashboard::catalog::Prober::new();
+
     let dashboard_task = match dashboard::Db::open().await {
         Ok(db) => {
             let config_path = dashboard::ConfigPath::resolve();
@@ -360,6 +379,8 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
                     &dashboard_addr,
                     dashboard_shutdown,
                     claim_support,
+                    catalog,
+                    prober,
                 )
                 .await
                 {
@@ -473,6 +494,10 @@ fn parse_flag_args(
     let mut log_format = "text".to_string();
     let mut health_addr = "127.0.0.1:9090".to_string();
     let mut dashboard_addr = "127.0.0.1:3210".to_string();
+    // Optional: the Nix-rendered service catalog. Absent means an empty
+    // catalog (the edge test runs the client with no services behind it),
+    // never a missing dashboard.
+    let mut catalog_path: Option<String> = None;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -484,6 +509,7 @@ fn parse_flag_args(
             "-log-format" => log_format = value,
             "-health-addr" => health_addr = value,
             "-dashboard-addr" => dashboard_addr = value,
+            "-catalog" => catalog_path = Some(value),
             other => return Err(format!("{component}: unknown flag {other}")),
         }
     }
@@ -493,6 +519,7 @@ fn parse_flag_args(
         log_format,
         health_addr,
         dashboard_addr,
+        catalog_path,
     })
 }
 

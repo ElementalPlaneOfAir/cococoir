@@ -40,6 +40,7 @@
 # real signup -> /128 -> WG -> box data path end to end.
 {pkgs, fortressPkg, ...}:
 let
+  devCreds = import ../../dev/dev-credentials.nix;
   fixtures = ./fixtures;
   # The edge's wg0 identity: the shared store-held key (ADR-029), the
   # same shape as production's WG_PRIVATE_KEY (one key, both nodes).
@@ -230,7 +231,7 @@ in {
             # hash fortress-client refuses to start, so the test's client
             # must carry one (password "password").
             Environment = [
-              "FORTRESS_ADMIN_PASSWORD_HASH=$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W"
+              "FORTRESS_ADMIN_PASSWORD_HASH=${devCreds.adminPasswordHash}"
             ];
             Restart = "on-failure";
             RestartSec = 5;

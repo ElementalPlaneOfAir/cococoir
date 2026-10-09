@@ -385,8 +385,7 @@
         realPkgs = inputs.nixpkgs.legacyPackages.${system};
         # Dev admin login for the dashboard: password = "password".
         # Generate a fresh one with `mkpasswd -m bcrypt -R 10 <pw>`.
-        devAdminHash =
-          "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
+        devAdminHash = (import ./nix/dev/dev-credentials.nix).adminPasswordHash;
       in {
         checks = import ./nix/tests {
           inherit (withCrane system) pkgs;

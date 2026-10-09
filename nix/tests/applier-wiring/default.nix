@@ -58,6 +58,14 @@ let
     (lib.attrNames services);
   clientExec = lib.concatStringsSep " "
     (lib.toList (cfg.systemd.services.fortress-client.serviceConfig.ExecStart or []));
+  # The landing page is the product surface: a service missing from the
+  # catalog is running and unreachable from the one page a customer
+  # looks at. Assert the catalog the unit will read covers every service
+  # the routing plane routes.
+  fortressLib = import ../../lib/fortress.nix {inherit lib;};
+  catalogNames = map (e: e.name) (fortressLib.mkCatalog cfg.fortress.services);
+  routedRows = ["jellyfin" "radarr" "sonarr" "seerr" "qbittorrent"];
+  missingFromCatalog = builtins.filter (n: !(builtins.elem n catalogNames)) routedRows;
   applierTmpfiles = cfg.systemd.tmpfiles.rules or [];
   # The failure mode is narrow and worth asserting precisely: a module
   # creating APP STATE through tmpfiles, which the applier never applies,
@@ -149,6 +157,10 @@ assert lib.assertMsg (etcRefServices == [])
   "applier-wiring: a service references /etc (${builtins.toJSON etcRefServices}) — the applier never materializes /etc, so the unit starts with no config. A unit's inputs must be store paths (only the sops age key is exempt)";
 assert lib.assertMsg (lib.hasInfix "-config /nix/store/" clientExec && !(lib.hasInfix "/etc/" clientExec))
   "applier-wiring: fortress-client reads its config from /etc — the applier never installs environment.etc, so the dashboard starts with no config (the amon-sul 502, 2026-10-08)";
+assert lib.assertMsg (lib.hasInfix "-catalog /nix/store/" clientExec && !(lib.hasInfix "-catalog /etc/" clientExec))
+  "applier-wiring: fortress-client does not read the service catalog from a store path — a catalog that rode /etc is silently absent under the applier, and the landing page renders with no services";
+assert lib.assertMsg (missingFromCatalog == [])
+  "applier-wiring: these routed services are missing from the dashboard catalog (${builtins.toJSON missingFromCatalog}) — they would be running but invisible on the landing page, which is the one page a customer looks at";
 
 # ── a service is a config line, not a code change ──────────────────
 # The L1 fixture enables `fortress.services.jellyfin`. Before the

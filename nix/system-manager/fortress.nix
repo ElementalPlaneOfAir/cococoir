@@ -14,7 +14,9 @@
   inputs,
   nixosModulesPath,
   ...
-}: {
+}: let
+  fortressLib = import ../lib/fortress.nix {inherit lib;};
+in {
   imports = [
     # sops-nix materializes the sealed inventory at boot. system-manager
     # already stubs the `system.activationScripts` hooks sops-nix declares
@@ -160,12 +162,9 @@
         name: config.fortress.services.${name}.journald.units
       ) (
         # `fortress.services` also holds plain toggles that are not
-        # routed services (e.g. `media`, the *arr wiring machinery). Only
-        # mkFortressService-built entries carry `journald.units`.
-        lib.filter (name:
-          config.fortress.services.${name}.enable
-          && config.fortress.services.${name} ? journald)
-        (builtins.attrNames config.fortress.services)
+        # routed services (e.g. `media`, the *arr wiring machinery) —
+        # only factory-built entries carry `journald.units`.
+        fortressLib.routedServiceNames config.fortress.services
       );
   };
 }

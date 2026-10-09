@@ -15,6 +15,45 @@ Last smtest e2e: PASS — 2026-10-08 — working tree (sealed secrets decrypt at
 
 ## Current focus
 
+**Service dashboard + liveness at `/` (2026-10-09).** `/` is now a public
+landing page: one card per routed service, linked by its **relative**
+`path` (so it works on the LAN address, a public name and an i2p tunnel
+with no per-origin logic) and stamped `up`/`down` by a prober. The config
+editor moved to `/admin` behind the session gate; the "exactly one public
+page" invariant is rewritten to **two** and pinned by
+`exactly_two_pages_are_public`. `fortress-client` is **always-on** — it is
+the process that serves `/`, so an opt-in toggle left amon-sul 502ing.
+Catalog is rendered by Nix (`nix/lib/fortress.nix` `mkCatalog`) into a
+store path passed as `-catalog`; the ADR-004 contract is the single source
+of truth for what exists and where it lives, and Rust holds no copy.
+`applier-wiring` asserts the catalog is store-pathed (never `/etc`) and
+covers every service the routing plane routes.
+**Proof:** `nix flake check` all pass (incl. `applier-wiring`,
+`vmtest-wiring`, edge VM L2); 93 `fortress-client` tests incl.
+`landing_lists_catalog_services_with_links_and_liveness`.
+
+**Found: reqwest aborts with no system CA store (2026-10-09).**
+`Client::builder().build()` loads the *platform* root store and fails
+`No CA certificates were loaded from the system` wherever there is none —
+the Nix build sandbox, and **every customer box**, where the ADR-035
+applier never materializes `/etc/ssl/certs`. The prober is fixed
+(`tls_certs_only([])` — it only GETs loopback HTTP, so it needs no roots);
+`Catalog::load` rejects an `https` `healthUrl` rather than silently probe
+down forever. **Still open:** `HttpEdgeClient` (the claim flow's HTTPS to
+the edge) has the same bug and would fail identically on a box. Stubbed
+for now; needs bundled roots before the GUI claim flow can work.
+
+**One credential, one definition (2026-10-09).** The dev bcrypt was
+copy-pasted in 7 places, and `demo-base.nix` defined an `ADMIN_HASH` it
+never used while minting `openssl rand -hex 32` for every key — so the
+dashboard login could never succeed and the claim-flow assertions were
+dead. Now `nix/dev/dev-credentials.nix` is the single Nix definition (the
+2 Rust unit-test literals stay, deliberately free of Nix eval), and the
+minting path trips at build time if the hash is not a bcrypt.
+`vmtest.nix`'s `adminPasswordEnvFile = "/etc/fortress-admin.env"` was
+dangling since 92dc01b — it overrode `sops-wire.nix`'s `lib.mkDefault`;
+removed so the production sops template path applies.
+
 **A service is a config line, not a code change (2026-10-09, ADR-039).**
 The applier now evaluates nixpkgs' **full** `module-list.nix` and installs
 only the `fortress.target` closure. `host-shim.nix` is deleted. Root cause

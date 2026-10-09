@@ -22,6 +22,8 @@
   pkgs,
   ...
 }: let
+  devCreds = import ../nix/dev/dev-credentials.nix;
+
   # Build-time secret generation for the demo tier. In production,
   # sops-nix writes these files with mode 0440 / 0400 at
   # /run/secrets/<name>. We keep explicit wiring here because the
@@ -44,11 +46,18 @@
       # The dashboard hash must be a real bcrypt or the client rejects it.
       # This is the hash of `password` — the same one staticPasswords uses,
       # so the dev VM has one known credential.
-      ADMIN_HASH='$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W'
+      ADMIN_HASH='${devCreds.adminPasswordHash}'
       plaintext=$(mktemp)
       ${lib.concatStrings (lib.mapAttrsToList (
-        name: _spec: ''printf '%s: "%s"\n' ${lib.escapeShellArg name} "$(openssl rand -hex 32)" >> "$plaintext";''
+        name: _spec: let
+          value =
+            if name == "fortress-admin-password-hash"
+            then ''"$ADMIN_HASH"''
+            else ''"$(openssl rand -hex 32)"'';
+        in ''printf '%s: "%s"\n' ${lib.escapeShellArg name} ${value} >> "$plaintext";''
       ) config.fortress.secrets._inventory)}
+      grep -q '^fortress-admin-password-hash: "$2b$10$' "$plaintext" \
+        || { echo "demo-base: fortress-admin-password-hash is not a bcrypt — the dashboard login can never succeed" >&2; exit 1; }
       sops --encrypt --age "$pub" --input-type yaml --output-type yaml "$plaintext" > "$out/secrets.enc.yaml"
       rm -f "$plaintext"
     '';
@@ -166,7 +175,7 @@ in {
 
     staticPasswords = [{
       email = "admin@example.com";
-      hash = "$2b$10$1fpkGdW2JfbsNSx9a.HM6.zNjHempOqsubMvxPoq9fOydOs18HG.W";
+      hash = devCreds.adminPasswordHash;
       username = "admin";
       userID = "08a8684b-db88-4b73-90a9-3cd1661f5466";
       groups = ["admins"];

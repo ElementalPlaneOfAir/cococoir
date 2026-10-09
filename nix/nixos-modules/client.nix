@@ -41,20 +41,32 @@
   # and never materializes /etc (ADR-035 amendment) — config that rides
   # /etc is silently absent and the unit dies. Config with a secret must
   # come from sops at runtime instead.
+  fortressLib = import ../lib/fortress.nix {inherit lib;};
   clientConfig = pkgs.writeText "fortress-client.json" (builtins.toJSON cfg.settings);
+  # The service catalog, rendered at eval time into a store path the
+  # dashboard reads. Liveness is probed at runtime from `healthUrl`, so
+  # the catalog carries the URL rather than a status.
+  catalog = fortressLib.mkCatalog config.fortress.services;
+  catalogFile = pkgs.writeText "fortress-catalog.json" (builtins.toJSON catalog);
   dashboardPortMatch = builtins.match ".*:([0-9]+)" cfg.dashboardAddr;
   dashboardPort = if dashboardPortMatch == null then null else builtins.head dashboardPortMatch;
-  catalogPorts =
-    lib.mapAttrsToList
-    (name: s: {inherit name; port = toString s.port;})
-    (lib.filterAttrs (_: s: (s.enable or false) && (s ? port)) config.fortress.services);
   portCollisions =
     builtins.filter
-    (e: dashboardPort != null && e.port == dashboardPort)
-    catalogPorts;
+    (e: dashboardPort != null && toString e.port == dashboardPort)
+    catalog;
 in {
   options.services.fortress-client = {
-    enable = lib.mkEnableOption "fortress v2 client service (L4 TCP/UDP forwarder + embedded dashboard on the customer box)";
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Run the box's control plane: the embedded dashboard (the `/`
+        landing page and `/admin`) and the L4 forwarder. On by
+        default — without it the box has no service dashboard at all,
+        which is the dead end a customer hits when this is an opt-in
+        toggle. False only for a deliberately headless box.
+      '';
+    };
 
     settings = lib.mkOption {
       type = lib.types.attrs;
@@ -169,7 +181,7 @@ in {
         message = ''
           services.fortress-client.dashboardAddr (${cfg.dashboardAddr})
           shares its port with an enabled fortress service:
-          ${lib.concatMapStringsSep ", " (e: "${e.name} (fortress.services.${e.name}.port = ${e.port})") portCollisions}.
+          ${lib.concatMapStringsSep ", " (e: "${e.name} (fortress.services.${e.name}.port = ${toString e.port})") portCollisions}.
 
           The dashboard and the service both bind loopback and one of
           them fails to start at boot. Point dashboardAddr at a free
@@ -195,7 +207,7 @@ in {
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/fortress-client -config ${clientConfig} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr} -dashboard-addr ${cfg.dashboardAddr}";
+        ExecStart = "${cfg.package}/bin/fortress-client -config ${clientConfig} -catalog ${catalogFile} -log-format ${cfg.logFormat} -health-addr ${cfg.healthAddr} -dashboard-addr ${cfg.dashboardAddr}";
         Restart = "on-failure";
         RestartSec = 5;
 

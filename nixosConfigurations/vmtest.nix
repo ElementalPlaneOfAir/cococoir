@@ -107,11 +107,14 @@
   # T7): the forwards reference a tunnel IP that does not exist yet,
   # so the box boots its dashboard to be claimed instead of exiting —
   # the exact dead end the claim flow kills. vmtest-bootstrap.sh
-  # asserts the claim surface serves. The admin hash is the known test
-  # credential ("password") — this is a dev VM, not a customer box.
+  # asserts the claim surface serves. The admin hash comes from the
+  # sealed inventory via the production sops wiring
+  # (services.fortress-client.adminPasswordEnvFile defaults to the
+  # fortress-admin.env template) — this is a dev VM, not a customer
+  # box, but it takes the production secret path rather than a
+  # parallel one. The known test credential is "password".
   services.fortress-client = {
     enable = true;
-    adminPasswordEnvFile = "/etc/fortress-admin.env";
     settings = {
       forwards = [
         {

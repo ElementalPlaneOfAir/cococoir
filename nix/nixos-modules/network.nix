@@ -57,6 +57,7 @@
   ...
 }: let
   inherit (lib) mkOption types;
+  fortressLib = import ../lib/fortress.nix {inherit lib;};
   cfg = config.fortress.network;
   baseDomain = config.fortress.baseDomain;
 
@@ -67,7 +68,7 @@
   enabledDomains =
     lib.unique
     (lib.mapAttrsToList (_: s: s.domain)
-      (lib.filterAttrs (_: s: (s.enable or false) && (s ? domain)) config.fortress.services));
+      (fortressLib.routedServices config.fortress.services));
 
   # The split-horizon answers. Unknown names keep forwarding upstream
   # through dnsmasq's default resolv.conf handling: LAN clients use this
