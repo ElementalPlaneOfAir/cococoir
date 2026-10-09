@@ -1029,7 +1029,43 @@ revisited.
   the user chose mandatory sops precisely so test fixtures take the
   production path).
 
-## Implementation backlog
+- **ADR-039: The applier evaluates nixpkgs' full module list and owns
+  unit extraction.** `mkFortressSystemConfig` is `lib.evalModules` over
+  `module-list.nix` plus fortress's modules — system-manager's module
+  layer is gone from the applier path. `unitsDir` is the transitive
+  `wants`/`requires` closure of `fortress.target`, so NixOS core's
+  auto-enabled host units (`getty@`, `logrotate`) never reach
+  `/run/systemd/system`. **Enabling a service is a config line.**
+
+  **Why:** system-manager reimplements NixOS *core* — `systemd.nix`,
+  `users-groups.nix`, `firewall`, `openssh`, `programs/ssh`, `sudo`,
+  `security-wrappers`, `userborn`, `nix`, `logrotate`, and a `boot`
+  leaf stub — and declares those options itself. The module system
+  forbids an option and nested options at the same path
+  (`lib/modules.nix:961`), so importing a nixpkgs service module pulled
+  in core options that collided with system-manager's. The only local
+  workarounds were per-service stubs plus per-service "graduation"
+  (`host-shim.nix`), which meant turning on jellyfin was a platform code
+  change — the opposite of what a 50-line customer config needs. The
+  whole shape was an artifact of one upstream's stub design.
+
+  **What fortress now owns:** the unit tree extraction (~20 lines, the
+  `fortress.target` closure). That is the only piece system-manager was
+  genuinely providing. The `nixpkgs.overlays` recursion trap stays
+  avoided by handing `misc/nixpkgs.nix` a finished `nixpkgs.pkgs`.
+
+  **Enforced by:** `applier-wiring` asserts `fortress.services.jellyfin`
+  (enabled as a config line in the fixture) resolves nixpkgs' jellyfin
+  module AND lands `jellyfin.service` in `applierUnitNames`; `etcRef`
+  /`tmpfiles` surface assertions are scoped to that closure;
+  `systemManagerWiring` fails if `host-shim.nix` returns.
+  **Rejected:** patching system-manager's stubs to allow nesting (upstream
+  change, and it still leaves a parallel reimplementation of NixOS core
+  diverging from ours); path-filtering `module-list.nix` to avoid the
+  collisions (nixpkgs modules cross-reference heavily — excluding
+  `services/hardware/` orphans `hardware.firmware`/`hardware.amdgpu`
+  that `programs/nix-required-mounts.nix` still reads; it does not
+  converge).
 
 Build order. No dates. Each item: what it produces, what test
 verifies it. "Done" = shipped, tested, committed.
@@ -1050,6 +1086,7 @@ verifies it. "Done" = shipped, tested, committed.
 
 **Built (7 service modules, factory contract, OIDC integrations):**
 
+## Implementation backlog
 - **Services**: jellyfin, cryptpad, dex, radarr, sonarr, lidarr,
   prowlarr — all via the `_contract.nix` factory. `contract-conformance`
   L1 check gates every service module.

@@ -15,6 +15,29 @@ Last smtest e2e: PASS — 2026-10-08 — working tree (sealed secrets decrypt at
 
 ## Current focus
 
+**A service is a config line, not a code change (2026-10-09, ADR-039).**
+The applier now evaluates nixpkgs' **full** `module-list.nix` and installs
+only the `fortress.target` closure. `host-shim.nix` is deleted. Root cause
+of the old shape: system-manager reimplements NixOS *core* (`systemd`,
+`users`, `firewall`, `ssh`, `boot`, `nixpkgs`, `logrotate`) and declares
+those options as leaf stubs — the module system forbids an option and
+nested options at the same path, so every nixpkgs service module had to be
+imported one at a time ("graduated") behind a stub. Fix: drop
+system-manager's module layer entirely; `lib.evalModules` against the real
+module list, and fortress owns the unit extraction (`unitsDir` is the
+transitive `wants`/`requires` closure of `fortress.target`, so the host's
+own `getty@`/`logrotate` are never overwritten). Consequences proven in
+`applier-wiring`: `fortress.services.jellyfin.enable = true` resolves
+nixpkgs' jellyfin module and lands `jellyfin.service` in the applier
+closure — **asserted**, and negative-tested.
+Also fixed: `fortress-client` and `fortress-plain-dirs` hung off
+`multi-user.target`, which the applier never starts — so they were
+installed and never ran (latent on amon-sul). They now hang off
+`fortress.target`.
+**Proof:** `nix flake check` all pass (incl. `applier-wiring` with jellyfin
+enabled, `vmtest-wiring`, `systemManagerWiring`, `bootstrapInventory`, the
+edge VM tests). `systemManagerWiring` now fails if `host-shim.nix` returns.
+
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was
 minted at first boot (`openssl rand`, idempotent) and kept in `/var/lib`,
@@ -36,6 +59,25 @@ aggregator so every entry point gets it.
 populated at boot under the applier; `applier-wiring` PASS; `vmtest-wiring`
 PASS (and it fails if a minting oneshot returns); `bootstrapInventory` PASS
 (verified it fires on a removed key); `nix flake check` PASS.
+
+**Proven on the real box (2026-10-09, amon-sul @ cococoir `92dc01b`).**
+All 10 inventory keys decrypted to `/run/secrets/` at boot under the
+applier; `sops-install-secrets` `Result=success` and ordered into
+`fortress.target`; `fortress-plain-dirs` created the `/media` tree.
+Dex serves on both planes (`/dex/auth` → 302 local, discovery → 200).
+Still 502: `http://amon-sul/` — `fortress-client` is disabled in the box's
+config (the tunnel identity is not registered with the edge yet), so the
+dashboard has nothing to proxy to.
+
+**Operational trap found on that deploy: the on-box `fortress-bootstrap`
+is pinned to whatever rev *installed* it.** The units built at `8aedf1b`
+shipped the old 4-key generator; running it to "regenerate all the keys"
+minted 4 of 10 and would have failed `sops-install-secrets` at apply
+time. The generator must be run from the rev that defines the inventory —
+`scp` the script from the checkout being deployed, not the one the box
+already has. The save was the mechanism itself: `sops.secrets` declares
+the whole inventory, so a short sealed file fails loudly at install
+rather than booting with credentials missing.
 
 **Store-path config for every unit (2026-10-08, `applier-store-path-config`).**
 The applier installs units only, so a unit's inputs must be store paths —

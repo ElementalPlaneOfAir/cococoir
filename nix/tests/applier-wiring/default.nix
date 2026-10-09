@@ -22,11 +22,14 @@
 {pkgs, applierConfig}:
 let
   lib = pkgs.lib;
-  caddy = applierConfig.systemd.services.caddy;
+  # `applierConfig` is the whole eval result (it carries `applierUnitNames`
+  # and `unitsDir`); the module tree lives under `.config`.
+  cfg = applierConfig.config;
+  caddy = cfg.systemd.services.caddy;
   svc = caddy.serviceConfig;
   execStart = lib.concatStringsSep " " (lib.toList (svc.ExecStart or []));
   caddyEnv = lib.toList (svc.Environment or []);
-  fortressWants = applierConfig.systemd.targets.fortress.wants or [];
+  fortressWants = cfg.systemd.targets.fortress.wants or [];
 
   # ── positive applier surface (ADR-035 amendment) ─────────────
   # The applier installs *units only*. Any effect a module expresses
@@ -38,7 +41,11 @@ let
   # sops device age key. (We check unit *references*, not the etc option
   # itself — system-manager and upstream modules write a harmless,
   # unread baseline into it.)
-  services = applierConfig.systemd.services or {};
+  # Only enabled units reach the applier's surface (`unitsDir` filters on
+  # `unit.enable`). The full NixOS module set declares hundreds of units
+  # that stay disabled — asserting on those would be noise.
+  services = lib.filterAttrs (n: _: builtins.elem n (cfg.applierUnitNames or []))
+    (cfg.systemd.services or {});
   configRefs = name:
     let sc = services.${name}.serviceConfig or {};
     in lib.concatMap (k: lib.toList (sc.${k} or []))
@@ -50,16 +57,24 @@ let
       (configRefs name))
     (lib.attrNames services);
   clientExec = lib.concatStringsSep " "
-    (lib.toList (services.fortress-client.serviceConfig.ExecStart or []));
-  applierTmpfiles = applierConfig.systemd.tmpfiles.rules or [];
-  # system-manager contributes one infrastructure rule of its own; the
-  # surface we own is "baseline + fortress units", so anything *beyond*
-  # the baseline is a fortress module reaching outside the surface.
-  tmpfilesBaseline = ["L /run/current-system - - - - /run/system-manager"];
-  unexpectedTmpfiles =
-    lib.filter (r: !(builtins.elem r tmpfilesBaseline)) applierTmpfiles;
+    (lib.toList (cfg.systemd.services.fortress-client.serviceConfig.ExecStart or []));
+  applierTmpfiles = cfg.systemd.tmpfiles.rules or [];
+  # The failure mode is narrow and worth asserting precisely: a module
+  # creating APP STATE through tmpfiles, which the applier never applies,
+  # so the path silently never exists and the unit dies at boot.
+  # Everything NixOS core contributes under /run/lock, /var/db, /nix/var,
+  # /lib64, /var/empty and friends is host-OS by ADR-035 — the host
+  # already has those paths, so they are not this bug.
+  stateRoots = [
+    cfg.fortress.storage.dataRoot
+    "/var/lib"
+    "/etc/fortress"
+  ];
+  tmpfilesStateRule = r: lib.any (root: lib.hasInfix root r) stateRoots;
+  unexpectedTmpfiles = lib.filter tmpfilesStateRule applierTmpfiles;
 
-  # ── sops under the applier ──────────────────────────────────────
+  
+# ── sops under the applier ──────────────────────────────────────
   # sops-nix has two install paths: the NixOS activation script, or a
   # `sops-install-secrets` unit. system-manager stubs the activation
   # script out to a no-op (nix/modules/upstream/sops-nix.nix), and
@@ -67,7 +82,7 @@ let
   # neither of which the applier wants. Declaring a secret then evaluates
   # cleanly and decrypts *nothing* at boot. Assert the unit path is
   # taken and hung off the target the applier actually starts.
-  installUnit = (applierConfig.systemd.services or {}).sops-install-secrets or null;
+  installUnit = (cfg.systemd.services or {}).sops-install-secrets or null;
   installBefore = if installUnit == null then [] else lib.toList (installUnit.before or []);
   installRequiredBy = if installUnit == null then [] else lib.toList (installUnit.requiredBy or []);
 in
@@ -78,7 +93,7 @@ assert lib.assertMsg ((svc.User or "") == "root" && (svc.Group or "") == "root")
 
 # The account must actually be gone; a lingering users.users.caddy would
 # mean the module still expects the OS to create it.
-assert lib.assertMsg (!((applierConfig.users.users or {}) ? caddy))
+assert lib.assertMsg (!((cfg.users.users or {}) ? caddy))
   "applier-wiring: the applier still declares users.users.caddy — nothing creates it, so caddy.service cannot start";
 
 # The config must come from the store: /etc/caddy/caddy_config is generated
@@ -109,10 +124,20 @@ assert lib.assertMsg (etcRefServices == [])
 assert lib.assertMsg (lib.hasInfix "-config /nix/store/" clientExec && !(lib.hasInfix "/etc/" clientExec))
   "applier-wiring: fortress-client reads its config from /etc — the applier never installs environment.etc, so the dashboard starts with no config (the amon-sul 502, 2026-10-08)";
 
+# ── a service is a config line, not a code change ──────────────────
+# The L1 fixture enables `fortress.services.jellyfin`. Before the
+# module-list change that required importing nixpkgs' jellyfin module by
+# hand and deleting a stub in host-shim.nix; now it is one config line
+# and the unit lands in the applier's closure. Assert both halves —
+# the option resolving AND the unit being installed — so regressing to
+# per-service "graduation" fails here.
+assert lib.assertMsg (builtins.elem "jellyfin.service" (applierConfig.applierUnitNames or []))
+  "applier-wiring: jellyfin is enabled in the fixture but its unit is not in the applier closure — enabling a service is supposed to be a config line";
+
 # ── sops under the applier ───────────────────────────────────────
 # Secrets must decrypt from a unit, not from the stubbed activation
 # script — otherwise they silently never exist.
-assert lib.assertMsg (applierConfig.sops.useSystemdActivation or false)
+assert lib.assertMsg (cfg.sops.useSystemdActivation or false)
   "applier-wiring: sops.useSystemdActivation is not forced true — sops-nix would fall back to system.activationScripts, which system-manager stubs to a no-op, so secrets silently never decrypt";
 assert lib.assertMsg (installUnit != null)
   "applier-wiring: secrets are declared but no sops-install-secrets unit exists — nothing would decrypt them at boot";

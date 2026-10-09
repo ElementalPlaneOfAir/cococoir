@@ -53,7 +53,9 @@ in {
   config = lib.mkIf (cfg.enable && cfg.backend == "plain-dirs") {
     systemd.services.fortress-plain-dirs = {
       description = "fortress plain-dirs directory creation (idempotent)";
-      wantedBy = ["multi-user.target"];
+      # The applier starts exactly `fortress.target` (ADR-035), never
+      # multi-user.target — hang off the target it actually starts.
+      wantedBy = ["fortress.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

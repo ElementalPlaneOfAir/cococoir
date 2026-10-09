@@ -139,22 +139,100 @@
     # function arg is concatenated raw (`overlays ++ cfg.overlays`),
     # preserving fixed-point laziness.
     mkFortressSystemConfig = config: let
-      systemConfig = inputs.system-manager.lib.makeSystemConfig {
+      pkgs = import inputs.nixpkgs {
+        system = "x86_64-linux";
         overlays = fortressOverlays;
-        modules = [
-          config
-          ./nix/system-manager/fortress.nix
-        ];
-        specialArgs = {inherit inputs;};
+        config.allowUnfree = true;
       };
+      eval = inputs.nixpkgs.lib.evalModules {
+        specialArgs = {
+          inherit inputs;
+          # `imports`/`disabledModules` may only reference specialArgs —
+          # ordinary module args resolve through `config` and recurse.
+          nixosModulesPath = "${inputs.nixpkgs}/nixos/modules";
+        };
+        modules =
+          [
+            config
+            ./nix/system-manager/fortress.nix
+            {
+              # Overlays MUST NOT go through `nixpkgs.overlays`: its
+              # `listOf anything` merges function values pointwise and
+              # forces each overlay's output attrs while the pkgs fixed
+              # point is still being built (infinite recursion at
+              # nix-index-database's `comma-with-db`). Instantiate pkgs
+              # here instead and hand it to the module system.
+              # `nixpkgs.overlays` is `listOf anything` and merges function
+              # values pointwise, which forces each overlay's output attrs
+              # while the pkgs fixed point is still being built (infinite
+              # recursion at nix-index-database's `comma-with-db`). Hand
+              # `misc/nixpkgs.nix` a finished pkgs instance instead.
+              nixpkgs.pkgs = pkgs;
+            }
+          ]
+          ++ (import (inputs.nixpkgs + "/nixos/modules/module-list.nix"));
+      };
+      cfg = eval.config;
+      inherit (inputs.nixpkgs) lib;
+      enabledUnits = lib.filterAttrs (_: unit: unit.enable) cfg.systemd.units;
+      # The applier installs ONLY fortress's units. The full NixOS module
+      # set auto-enables host-OS units (getty@, serial-getty@, logrotate),
+      # and writing those into /run/systemd/system would override the
+      # host's own — exactly the class of fight ADR-035 forbids. So the
+      # tree is the transitive `wants`/`requires` closure of
+      # `fortress.target`, nothing else.
+      #
+      # `systemd.units` keys are full unit names ("x.service");
+      # `systemd.services`/`targets`/... keys are bare ("x"). Normalize.
+      unitKindSuffix = {
+        services = ".service";
+        targets = ".target";
+        sockets = ".socket";
+        timers = ".timer";
+        mounts = ".mount";
+        automounts = ".automount";
+        paths = ".path";
+        slices = ".slice";
+      };
+      unitKinds = builtins.attrNames unitKindSuffix;
+      kindOf = kind: let u = cfg.systemd.${kind} or {}; in if builtins.isAttrs u then u else {};
+      unitDeps = name:
+        lib.unique (lib.concatMap (kind:
+          let u = kindOf kind; base = lib.removeSuffix unitKindSuffix.${kind} name; e = u.${base} or {};
+          in (lib.toList (e.wants or [])) ++ (lib.toList (e.requires or []))
+        ) unitKinds);
+      selfHung = lib.concatMap (kind:
+        lib.mapAttrsToList (base: _: base + unitKindSuffix.${kind})
+          (lib.filterAttrs (_: u:
+            builtins.elem "fortress.target" (lib.toList (u.wantedBy or []) ++ lib.toList (u.requiredBy or []))
+          ) (kindOf kind))
+      ) unitKinds;
+      closureOf = roots:
+        let
+          step = seen:
+            let next = lib.filter (n: !(builtins.elem n seen)) (lib.concatMap unitDeps seen);
+            in if next == [] then seen else step (seen ++ next);
+        in step (lib.unique roots);
+      roots =
+        ["fortress.target"]
+        ++ (lib.toList (cfg.systemd.targets.fortress.wants or []))
+        ++ selfHung;
+      wantedUnits = lib.filterAttrs (n: _: builtins.elem n (closureOf roots)) enabledUnits;
     in
-      systemConfig
+      eval
       // {
-        # The rendered systemd unit tree alone (units + their
-        # .wants/.requires enablement). `fortress-apply` installs just this,
-        # so building it never builds system-manager's own activator or its
-        # Rust binaries — which the applier deliberately does not run.
-        unitsDir = systemConfig.config.build.etc.staticEnv;
+        # Which units the applier installs — the `fortress.target` closure.
+        # `applier-wiring` asserts against exactly this set.
+        applierUnitNames = builtins.attrNames wantedUnits;
+        # The rendered systemd unit tree — `fortress-apply` installs just
+        # this into /run/systemd/system. Building it alone keeps the
+        # applier decoupled from the OS closure (ADR-035).
+        unitsDir = pkgs.runCommand "fortress-units" {} ''
+          mkdir -p $out/systemd/system
+          for u in ${toString (lib.mapAttrsToList (n: v: v.unit) wantedUnits)}; do
+            ln -s $u/* $out/systemd/system/
+          done
+        '';
       };
 
     # Current vertical slice: dex (always-on OIDC infra) on loopback.
@@ -196,6 +274,11 @@
         enable = true;
         public = true;
       };
+      fortress.services.jellyfin = {
+        enable = true;
+        public = true;
+        mediaRoot = "/media/entertain";
+      };
       services.fortress-client = {
         enable = true;
         settings.forwards = [
@@ -206,7 +289,7 @@
           }
         ];
       };
-    })).config;
+    }));
 
     # ADR-035 runtime-proof VM: NixOS owns the machine (boot + ssh), and a
     # boot trampoline runs `fortress-apply` against a magic-folder fixture on

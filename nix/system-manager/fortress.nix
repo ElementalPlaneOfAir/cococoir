@@ -26,14 +26,16 @@
     # config. Disabled services' `mkIf`-false definitions still need their
     # options to exist (see host-shim.nix) — those are stubbed there and
     # graduate here, one import per service, as each is turned on.
-    (nixosModulesPath + "/services/web-apps/dex.nix")
-    # planes.nix renders Caddy vhosts AND references `services.caddy.enable`
-    # unconditionally, so caddy's module is always required (even when no
-    # service is public).
-    (nixosModulesPath + "/services/web-servers/caddy/default.nix")
-    ./host-shim.nix
     ../nixos-modules
-  ];
+  ]
+  ++ (import (nixosModulesPath + "/module-list.nix"));
+
+  # system-manager's upstream/nixpkgs/default.nix declares NixOS options
+  # (`boot`, `programs.bash.completion`, `fonts.fontconfig`, ...) as leaf
+  # stubs so that a partial module import still evaluates. Once the real
+  # module list is imported those stubs conflict — the module system
+  # forbids an option and nested options at the same path. Drop the stub
+  # file entirely; module-list provides every option for real.
 
   # NixOS and Debian already own system users and /run/wrappers. userborn
   # would rewrite the host's /etc/passwd out from under the OS, and its Rust
@@ -140,6 +142,20 @@
     wants =
       lib.optional config.fortress.network.dns.enable "fortress-dns.service"
       ++ lib.optional config.services.caddy.enable "caddy.service"
+      # Units that hang themselves off this target (wantedBy/requiredBy)
+      # join the set the applier starts and restarts — otherwise a unit
+      # hanging off multi-user.target is installed but never started.
+      ++ lib.concatMap (
+        kind: let
+          units = config.systemd.${kind} or {};
+          suffix = {services = ".service"; sockets = ".socket"; timers = ".timer"; mounts = ".mount"; paths = ".path"; slices = ".slice";}.${kind};
+        in
+          lib.optionals (builtins.isAttrs units && suffix != null)
+          (lib.mapAttrsToList (base: _: base + suffix)
+            (lib.filterAttrs (_: u:
+              builtins.elem "fortress.target" (lib.toList (u.wantedBy or []) ++ lib.toList (u.requiredBy or []))
+            ) units))
+      ) ["services" "sockets" "timers" "mounts" "paths" "slices"]
       ++ lib.concatMap (
         name: config.fortress.services.${name}.journald.units
       ) (

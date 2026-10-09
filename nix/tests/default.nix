@@ -175,7 +175,10 @@ let
     fortress = builtins.readFile (../.. + "/nix/system-manager/fortress.nix");
     apply = builtins.readFile (../.. + "/nix/system-manager/apply.sh");
     network = builtins.readFile (../.. + "/nix/nixos-modules/network.nix");
-    hostShim = builtins.readFile (../.. + "/nix/system-manager/host-shim.nix");
+    # host-shim.nix is gone for good: with nixpkgs' full module list in the
+    # applier graph there is nothing left to stub. Its return would mean
+    # per-service "graduation" is back.
+    hostShimExists = builtins.pathExists (../.. + "/nix/system-manager/host-shim.nix");
   in
     pkgs.runCommand "fortress-system-manager-wiring" {} ''
       cat > $out <<EOF
@@ -184,6 +187,7 @@ let
         userborn disabled (host OS owns users)
         fortress-apply starts fortress.target, never system-manager.target
         fortress-dns is fortress-owned, store-backed and DynamicUser
+        host-shim.nix stays deleted (module-list supplies every option)
       EOF
       ${lib.optionalString (!(lib.hasInfix "systemd.targets.fortress" fortress)) ''
         echo "nix/system-manager/fortress.nix lost systemd.targets.fortress —" >&2
@@ -225,9 +229,10 @@ let
         echo "/etc/passwd the OS owns." >&2
         exit 1
       ''}
-      ${lib.optionalString (lib.hasInfix "services.dnsmasq" hostShim) ''
-        echo "host-shim still stubs dnsmasq — fortress-dns is fortress-owned" >&2
-        echo "now, so that stub is dead weight and a silent no-op." >&2
+      ${lib.optionalString hostShimExists ''
+        echo "host-shim.nix came back — the applier imports nixpkgs' full" >&2
+        echo "module list now, so service stubs would shadow real options" >&2
+        echo "and force per-service graduation. Delete it again." >&2
         exit 1
       ''}
       ${lib.optionalString (!(lib.hasInfix "RuntimeDirectory" network)) ''

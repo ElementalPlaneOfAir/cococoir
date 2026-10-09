@@ -185,7 +185,9 @@ in {
       # still needs real network-online to reach the edge.
       after = ["network-online.target"];
       wants = ["network-online.target"];
-      wantedBy = ["multi-user.target"];
+      # The applier starts exactly `fortress.target` (ADR-035), never
+      # multi-user.target — hang off the target it actually starts.
+      wantedBy = ["fortress.target"];
 
       # The client shells out to `ip`/`wg` to bring up wg0 (client-owned
       # tunnel); systemd's default PATH lacks /run/current-system/sw/bin.
