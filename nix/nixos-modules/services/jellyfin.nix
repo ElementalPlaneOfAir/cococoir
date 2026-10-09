@@ -188,7 +188,14 @@ in
           preStart = lib.mkAfter ''
             cfgDir=${config.services.jellyfin.configDir}
             if [ -f "$cfgDir/network.xml" ]; then
-              ${pkgs.gnused}/bin/sed -i "s|<BaseUrl>[^<]*</BaseUrl>|<BaseUrl>${cfg.path}</BaseUrl>|" "$cfgDir/network.xml"
+              # Jellyfin writes `<BaseUrl />` when empty and
+              # `<BaseUrl>x</BaseUrl>` when set — match both, or the pin
+              # silently no-ops and Caddy 404s under the base path.
+              ${pkgs.gnused}/bin/sed -i \
+                -e "s|<BaseUrl/>|<BaseUrl>${cfg.path}</BaseUrl>|" \
+                -e "s|<BaseUrl */>|<BaseUrl>${cfg.path}</BaseUrl>|" \
+                -e "s|<BaseUrl>[^<]*</BaseUrl>|<BaseUrl>${cfg.path}</BaseUrl>|" \
+                "$cfgDir/network.xml"
             else
               ${pkgs.coreutils}/bin/printf '%s\n' \
                 '<NetworkConfiguration>' \

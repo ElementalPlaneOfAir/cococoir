@@ -68,6 +68,21 @@ CAP_CHOWN and cannot write `/var/lib/jellyfin` left owned by another uid —
 nor run `install -o root`. Fixed by letting pid 1 create the dirs
 (`StateDirectory=`, `CacheDirectory=`) and dropping the chown from radarr's
 pre-start. `nix flake check` green.
+**Why amon-sul 502'd a fully-up media stack (2026-10-09):** a stale
+`/run/systemd/system/caddy.service.d/overrides.conf` left by an older apply
+overrode `ExecStart` back to an old Caddyfile (dex only), while the unit file
+on disk looked correct. `apply.sh` copied into `/run/systemd/system` but never
+pruned. It now keeps a manifest and removes anything a previous apply
+installed and this one no longer renders — a dropped *unit file* is inert, a
+dropped *drop-in* is not. Two more pins: Jellyfin writes `<BaseUrl />`
+(self-closing) so the pin sed never matched and `/jellyfin` 404'd;
+qBittorrent's WebUI has no base path, so it needs `stripPath`.
+**Proof:** `applier-wiring` now asserts `@row-jellyfin`/`radarr`/`sonarr`/
+`seerr`/`qbittorrent` exist in the rendered Caddyfile (build-time) — this
+caught the bug in L1 once the stale drop-in was understood. On amon-sul:
+`/jellyfin/System/Info/Public` 200, `/sonarr` 200, `/radarr` 302, `/seerr`
+307, `/dex/auth` 302. `/` is still 502 by design (dashboard needs the
+tunnel); `/cryptpad`/`/forgejo` 502 because they are not enabled.
 
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was
@@ -450,7 +465,22 @@ Regenerated: 2026-10-07T23:32:27Z — git 6fcf25b
   `config.sops.placeholder.<n>` (the token sops swaps for the decrypted
   value at activation). **Proof**: `sopsAdminTemplate` (L1) asserts the
   placeholder construct is present and the path-construct is gone;
-  `nix flake check` green. (Device-key path now
+  `nix flake check` green.
+**Why amon-sul 502'd a fully-up media stack (2026-10-09):** a stale
+`/run/systemd/system/caddy.service.d/overrides.conf` left by an older apply
+overrode `ExecStart` back to an old Caddyfile (dex only), while the unit file
+on disk looked correct. `apply.sh` copied into `/run/systemd/system` but never
+pruned. It now keeps a manifest and removes anything a previous apply
+installed and this one no longer renders — a dropped *unit file* is inert, a
+dropped *drop-in* is not. Two more pins: Jellyfin writes `<BaseUrl />`
+(self-closing) so the pin sed never matched and `/jellyfin` 404'd;
+qBittorrent's WebUI has no base path, so it needs `stripPath`.
+**Proof:** `applier-wiring` now asserts `@row-jellyfin`/`radarr`/`sonarr`/
+`seerr`/`qbittorrent` exist in the rendered Caddyfile (build-time) — this
+caught the bug in L1 once the stale drop-in was understood. On amon-sul:
+`/jellyfin/System/Info/Public` 200, `/sonarr` 200, `/radarr` 302, `/seerr`
+307, `/dex/auth` 302. `/` is still 502 by design (dashboard needs the
+tunnel); `/cryptpad`/`/forgejo` 502 because they are not enabled. (Device-key path now
   `/etc/fortress/system_age_keys.txt` per the flat-shape decision.)
 - **config-ui arc — T1 round-trip done; editor found already built
   (2026-10-02)** — the fortress-client dashboard **already** reads,

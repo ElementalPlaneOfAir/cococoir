@@ -37,6 +37,9 @@ mkFortressService {
   description = "qBittorrent torrent client";
   defaultPort = 8080;
   defaultHealthPath = "/api/v2/app/version";
+  # qBittorrent's WebUI serves at / and has no base-path knob, so the
+  # reverse proxy must strip /qbittorrent or every request 404s.
+  stripPath = true;
   requires = ["jellyfin"];
   extraConfig = {
     lib,

@@ -70,8 +70,28 @@ install -d -m 0755 "${systemd_dir}"
 # Mirror the freshly rendered unit tree (unit files plus the .wants/.requires
 # enablement) into systemd's runtime unit directory. NixOS clears /run each
 # boot, so the boot trampoline re-runs this; on Debian the same path works
-# unchanged. Units dropped from the config are left installed but unreferenced
-# — inactive, and swept by the next reboot.
+# unchanged.
+#
+# Prune what a PREVIOUS apply installed and this one no longer renders. A
+# dropped unit file is merely inactive — but a leftover DROP-IN is still
+# applied to the unit it names, so a stale `caddy.service.d/overrides.conf`
+# silently rewrote caddy's ExecStart back to an old Caddyfile and every
+# route 502'd while the unit file on disk looked correct. The manifest makes
+# the applier own exactly its own surface and nothing else.
+manifest=/run/fortress/installed-units
+install -d -m 0755 /run/fortress
+: >"${manifest}.new"
+(cd "${units_dir}" && find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort) >"${manifest}.new"
+if [ -f "${manifest}" ]; then
+  while read -r name; do
+    [ -n "${name}" ] || continue
+    grep -qxF "${name}" "${manifest}.new" && continue
+    echo "fortress-apply: pruning stale ${name}"
+    rm -rf "${systemd_dir:?}/${name}"
+  done <"${manifest}"
+fi
+mv "${manifest}.new" "${manifest}"
+
 cp -a --no-dereference --remove-destination "${units_dir}/." "${systemd_dir}/"
 
 systemctl daemon-reload

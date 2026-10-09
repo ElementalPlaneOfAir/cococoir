@@ -73,6 +73,11 @@ let
   tmpfilesStateRule = r: lib.any (root: lib.hasInfix root r) stateRoots;
   unexpectedTmpfiles = lib.filter tmpfilesStateRule applierTmpfiles;
 
+# ── the routing plane must actually route ───────────────────────────
+# Enabling a service is only half the job: planes.nix has to emit its
+# `@row-<name>` handler into the Caddyfile. On amon-sul a whole media stack
+# came up on its ports while Caddy still 502'd every path, because the
+# rendered Caddyfile contained dex and nothing else. Assert the rows exist.
 # ── sops under the applier ──────────────────────────────────────
   # sops-nix has two install paths: the NixOS activation script, or a
   # `sops-install-secrets` unit. system-manager stubs the activation
@@ -166,10 +171,26 @@ assert lib.assertMsg (builtins.elem "fortress.target" installBefore && builtins.
   "applier-wiring: sops-install-secrets is not ordered before fortress.target — a service can start before its secret exists";
 
 {
-  applier-wiring = pkgs.runCommand "fortress-applier-wiring" {} ''
+  applier-wiring = pkgs.runCommand "fortress-applier-wiring"
+    { caddyfile = cfg.services.caddy.configFile; }
+    ''
+    # The routing plane must actually route: on amon-sul a whole media stack
+    # came up on its ports while Caddy 502'd every path, because the
+    # rendered Caddyfile contained dex and nothing else. Build-time, so the
+    # derivation output is readable (pure eval forbids reading it at eval).
+    CF=$(find "$caddyfile" -name Caddyfile -o -name Caddyfile-formatted 2>/dev/null | head -1)
+    [ -n "$CF" ] && [ -f "$CF" ] || CF=$(find "$caddyfile" -type f | head -1)
+    for row in jellyfin radarr sonarr seerr qbittorrent; do
+      if ! grep -q "@row-$row" "$CF"; then
+        echo "applier-wiring: @row-$row missing from the Caddyfile ($CF) —" >&2
+        echo "rows: $(grep -oE '@row-[a-z0-9-]+' "$CF" | sort -u | tr '\n' ' ')" >&2
+        exit 1
+      fi
+    done
     cat > $out <<EOF
     fortress applier-wiring (L1, ADR-035 amendment): PASS
       a public service renders Caddy under the applier
+      every enabled public service has a @row-<name> route
       caddy runs as root (no named OS account the applier cannot create)
       caddy reads its Caddyfile from the store, not /etc
       fortress.target starts caddy, so a public service is reachable
