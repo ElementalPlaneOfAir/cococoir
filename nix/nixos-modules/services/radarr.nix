@@ -44,8 +44,8 @@ mkFortressService {
     btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
     dataRoot = config.fortress.storage.dataRoot;
     mediaDirs = [
-      "${dataRoot}/media/movies/downloads"
-      "${dataRoot}/media/movies/library"
+      config.fortress.media.layout.moviesDownloads
+      config.fortress.media.layout.moviesLibrary
     ];
     # Radarr ignores the RADARR__SERVER__APIKEY env override once
     # config.xml exists (it keeps its own generated key), so the key is

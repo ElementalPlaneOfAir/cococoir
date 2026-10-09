@@ -49,10 +49,11 @@ let
   seerrBase = "http://127.0.0.1:5055";
   jellyfinBase = "http://127.0.0.1:8096${config.fortress.services.jellyfin.path}";
   seerrBootstrapUser = "seerr-bootstrap";
-  moviesRoot = "${dataRoot}/media/movies/library";
-  showsRoot = "${dataRoot}/media/shows/library";
-  moviesDownloads = "${dataRoot}/media/movies/downloads";
-  showsDownloads = "${dataRoot}/media/shows/downloads";
+  layout = config.fortress.media.layout;
+  moviesRoot = layout.moviesLibrary;
+  showsRoot = layout.showsLibrary;
+  moviesDownloads = layout.moviesDownloads;
+  showsDownloads = layout.showsDownloads;
 
   applyScript = pkgs.writeShellScript "fortress-media-apply" ''
     set -euo pipefail

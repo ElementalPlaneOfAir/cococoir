@@ -83,6 +83,11 @@ caught the bug in L1 once the stale drop-in was understood. On amon-sul:
 `/jellyfin/System/Info/Public` 200, `/sonarr` 200, `/radarr` 302, `/seerr`
 307, `/dex/auth` 302. `/` is still 502 by design (dashboard needs the
 tunnel); `/cryptpad`/`/forgejo` 502 because they are not enabled.
+**DRY fix:** the media path layout was re-derived in four modules, so
+`media.nix` registered radarr/sonarr root folders under `${dataRoot}/media/...`
+while jellyfin pointed at `mediaRoot` — the wiring died on a curl 22 against
+a path that does not exist. `nix/nixos-modules/media-layout.nix` is now the
+single derivation; jellyfin, media, radarr and sonarr all read it.
 
 **Secret material is sealed ciphertext in the store — one mechanism, no
 runtime minting (2026-10-08, ADR-038).** Previously every credential was
@@ -480,7 +485,12 @@ qBittorrent's WebUI has no base path, so it needs `stripPath`.
 caught the bug in L1 once the stale drop-in was understood. On amon-sul:
 `/jellyfin/System/Info/Public` 200, `/sonarr` 200, `/radarr` 302, `/seerr`
 307, `/dex/auth` 302. `/` is still 502 by design (dashboard needs the
-tunnel); `/cryptpad`/`/forgejo` 502 because they are not enabled. (Device-key path now
+tunnel); `/cryptpad`/`/forgejo` 502 because they are not enabled.
+**DRY fix:** the media path layout was re-derived in four modules, so
+`media.nix` registered radarr/sonarr root folders under `${dataRoot}/media/...`
+while jellyfin pointed at `mediaRoot` — the wiring died on a curl 22 against
+a path that does not exist. `nix/nixos-modules/media-layout.nix` is now the
+single derivation; jellyfin, media, radarr and sonarr all read it. (Device-key path now
   `/etc/fortress/system_age_keys.txt` per the flat-shape decision.)
 - **config-ui arc — T1 round-trip done; editor found already built
   (2026-10-02)** — the fortress-client dashboard **already** reads,

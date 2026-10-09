@@ -34,8 +34,8 @@ mkFortressService {
     btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
     dataRoot = config.fortress.storage.dataRoot;
     mediaDirs = [
-      "${dataRoot}/media/shows/downloads"
-      "${dataRoot}/media/shows/library"
+      config.fortress.media.layout.showsDownloads
+      config.fortress.media.layout.showsLibrary
     ];
     pinApiKey = pkgs.writeShellScript "sonarr-pin-api-key" ''
       set -euo pipefail

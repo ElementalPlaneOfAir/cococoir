@@ -37,6 +37,7 @@
     ./services/sonarr.nix
     ./services/qbittorrent.nix
     ./services/seerr.nix
+    ./media-layout.nix
     ./services/media.nix
     ./services/forgejo.nix
     ./integrations/jellyfin-oidc.nix

@@ -70,24 +70,18 @@ in
       ...
     }: let
       btrfsStorage = config.fortress.storage.enable && config.fortress.storage.backend == "btrfs";
-      dataRoot = config.fortress.storage.dataRoot;
-      mediaRoot =
-        if cfg.mediaRoot == null
-        then "${dataRoot}/media"
-        else cfg.mediaRoot;
+      layout = config.fortress.media.layout;
       mediaPaths = {
-        movies = "${mediaRoot}/movies";
-        shows = "${mediaRoot}/shows";
-        music = "${mediaRoot}/music";
-        metadata = "${dataRoot}/jellyfin/metadata";
+        inherit (layout) movies shows music metadata;
       };
       # Jellyfin scans only the `library/` subdir of each media
       # subvolume; `downloads/` (the qbittorrent staging area) stays
       # invisible to it. Downloads hardlink INTO library — same
       # subvolume, so hardlinks are possible and imports are free.
       libraryPaths = {
-        movies = "${mediaPaths.movies}/library";
-        shows = "${mediaPaths.shows}/library";
+        inherit (layout) moviesLibrary;
+        movies = layout.moviesLibrary;
+        shows = layout.showsLibrary;
       };
       mediaDirs = {
         "${mediaPaths.movies}/downloads" = {
