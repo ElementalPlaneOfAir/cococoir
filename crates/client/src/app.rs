@@ -89,6 +89,28 @@ pub fn boot_mode(tunnel: Option<&TunnelConfig>, forwards: &[Forward]) -> BootMod
     mode
 }
 
+/// The forwards a `Full` boot will bind, or `None` when a config has
+/// none. `Forwarder::new` rejects an empty list outright, and a box whose
+/// only surface is the dashboard must not fail to boot over it — that is
+/// exactly the crash-loop amon-sul hit (2026-10-09).
+fn bindable_forwards(
+    tunnel: Option<&TunnelConfig>,
+    forwards: &[Forward],
+) -> Option<Vec<Forward>> {
+    if forwards.is_empty() {
+        return None;
+    }
+    let resolved = match tunnel {
+        Some(t) => substitute_tunnel_ip(forwards, t),
+        None => forwards.to_vec(),
+    };
+    assert!(
+        resolved.iter().all(|f| !pairing::forward_needs_tunnel(f)),
+        "claimable mode gates every forward that still needs a tunnel"
+    );
+    Some(resolved)
+}
+
 /// The process-image restart a runtime claim triggers: after
 /// `tunnel.json` exists, re-exec this very binary so the one boot path
 /// resolves the persisted state and brings wg0 up. A seam so tests can
@@ -279,20 +301,13 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
             info!("claimable: no tunnel yet — claim this box from its dashboard's Remote access panel");
             None
         }
-        BootMode::Full => {
-            let resolved_forwards = tunnel_cfg
-                .as_ref()
-                .map(|t| substitute_tunnel_ip(&cfg.forwards, t))
-                .unwrap_or_else(|| cfg.forwards.clone());
-            let forwards_valid = resolved_forwards
-                .iter()
-                .all(|f| !pairing::forward_needs_tunnel(f));
-            assert!(
-                forwards_valid,
-                "claimable mode gates every forward that still needs a tunnel"
-            );
-            match Forwarder::new(Config {
-                forwards: resolved_forwards,
+        BootMode::Full => match bindable_forwards(tunnel_cfg.as_ref(), &cfg.forwards) {
+            None => {
+                info!("no forwards configured — running the dashboard only");
+                None
+            }
+            Some(resolved) => match Forwarder::new(Config {
+                forwards: resolved,
                 component: component.to_string(),
                 ..Config::default()
             }) {
@@ -301,8 +316,8 @@ pub async fn run(component: &str, default_config: &str) -> i32 {
                     error!(err = %err, "forwarder init failed");
                     return 1;
                 }
-            }
-        }
+            },
+        },
     };
 
     // Dashboard: open the sqlite db, resolve the edited config path,
@@ -673,6 +688,45 @@ mod tests {
         assert_eq!(boot_mode(Some(&tunnel), &[tunneled]), BootMode::Full);
         assert_eq!(boot_mode(None, &[concrete]), BootMode::Full);
         assert_eq!(boot_mode(None, &[]), BootMode::Full);
+    }
+
+    /// The whole shape of a dashboard-only box, in one place. Both
+    /// amon-sul crash-loops (2026-10-09) lived in this path — the config
+    /// the Nix default produces failed to parse, then failed to build a
+    /// forwarder — and nothing exercised it: `nix flake check` never runs
+    /// Rust, and the vmtest fixture sets `settings.forwards` explicitly.
+    /// If this test fails, a box that only serves its dashboard cannot boot.
+    #[test]
+    fn a_dashboard_only_config_needs_nothing_but_the_dashboard() {
+        let cfg: ConfigFile = serde_json::from_str("{}").expect("the empty config parses");
+        assert!(cfg.forwards.is_empty());
+        assert!(cfg.tunnel.is_none());
+        assert!(cfg.invite.is_none());
+        assert_eq!(boot_mode(None, &cfg.forwards), BootMode::Full);
+        assert!(bindable_forwards(None, &cfg.forwards).is_none());
+    }
+
+    /// Tripwire for the amon-sul crash-loop (2026-10-09): a dashboard-only
+    /// config reached `Forwarder::new` with zero forwards, which rejects an
+    /// empty list outright, and fortress-client restart-looped with
+    /// "no forwards in config" while `/` served nothing. A box with nothing
+    /// to forward runs no forwarder — it runs the dashboard.
+    #[test]
+    fn bindable_forwards_is_none_for_a_dashboard_only_config() {
+        assert!(bindable_forwards(None, &[]).is_none());
+        assert!(bindable_forwards(Some(&resolved_tunnel()), &[]).is_none());
+    }
+
+    #[test]
+    fn bindable_forwards_resolves_placeholders_and_keeps_concrete() {
+        let tunnel = resolved_tunnel();
+        let resolved =
+            bindable_forwards(Some(&tunnel), &[concrete_forward("{tunnel_ip}:80")])
+                .expect("a tunneled forward binds once the tunnel exists");
+        assert_eq!(resolved[0].dest_addr, "10.10.0.7:80");
+        let concrete = bindable_forwards(None, &[concrete_forward("127.0.0.1:8080")])
+            .expect("a concrete forward binds with no tunnel");
+        assert_eq!(concrete[0].dest_addr, "127.0.0.1:8080");
     }
 
     struct RecordingRestarter {
