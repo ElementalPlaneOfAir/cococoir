@@ -24,6 +24,16 @@ in {
     # so the module imports cleanly — but those stubs are no-ops, which is
     # why `sops.useSystemdActivation` is forced below.
     inputs.sops-nix.nixosModules.sops
+    # jellarr is a flake input, NOT part of nixpkgs' module-list.nix, so
+    # `options.services ? jellarr` is false unless it is imported here.
+    # Every consumer gates on that test with `lib.optionalAttrs` — and when
+    # it is false the whole block is silently dropped: no `jellarr.service`,
+    # and no `jellarr-api-key-bootstrap.service`, which is the oneshot that
+    # inserts the sealed `jellarr-api-key` into Jellyfin's ApiKeys table.
+    # On amon-sul that left `jellarr-api-key` stale after a secret rotation
+    # and `fortress-media-apply` crash-looped 62 times on "jellyfin not
+    # ready" (a 401 it could not tell apart from a startup race).
+    inputs.jellarr.nixosModules.default
     # nixpkgs service modules fortress wraps that are ENABLED in this
     # config. Disabled services' `mkIf`-false definitions still need their
     # options to exist (see host-shim.nix) — those are stubbed there and

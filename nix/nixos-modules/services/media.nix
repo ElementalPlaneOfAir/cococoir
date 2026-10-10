@@ -70,13 +70,25 @@ let
     cookie_jar=$(mktemp)
     trap '${pkgs.coreutils}/bin/rm -f "$cookie_jar"' EXIT
 
+    # A credential rejection is permanent; only a connection/5xx is a race.
+    # `curl -sf` reports both as failure, so a rotated API key looked exactly
+    # like a slow start and the unit retried 60x then restarted forever
+    # (62 restarts on amon-sul). Read the status code and stop on 401/403.
     wait_ready() {
-      local label=$1 base=$2 key=$3 health_path=$4 header=$5 i
+      local label=$1 base=$2 key=$3 health_path=$4 header=$5 i code
       for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
-        if ${pkgs.curl}/bin/curl -sf -H "''${header}: ''${key}" "''${base}''${health_path}" >/dev/null 2>&1; then
-          return 0
-        fi
-        echo "[fortress-media-apply] ''${label} not ready (attempt ''${i}/60)" >&2
+        code=$(${pkgs.curl}/bin/curl -s -o /dev/null -w '%{http_code}' \
+          -H "''${header}: ''${key}" "''${base}''${health_path}") || code=000
+        case "$code" in
+          2??|3??)
+            return 0
+            ;;
+          401|403)
+            echo "[fortress-media-apply] ''${label} rejected our credential (HTTP ''${code}) at ''${base}''${health_path} — retrying cannot fix this. The sealed API key does not match the one the service holds." >&2
+            exit 1
+            ;;
+        esac
+        echo "[fortress-media-apply] ''${label} not ready (HTTP ''${code}, attempt ''${i}/60)" >&2
         ${pkgs.coreutils}/bin/sleep 5
       done
       echo "[fortress-media-apply] ''${label} never became ready" >&2
@@ -88,7 +100,17 @@ let
     # between restarts. Wait until jellarr has *finished* (oneshot unit
     # gone inactive) before wiring anything against Jellyfin.
     wait_jellarr_done() {
-      local i state result
+      local i state result load
+      # `systemctl show` on a unit that does not exist reports
+      # ActiveState=inactive, Result=success — so the loop below passed
+      # vacuously whenever jellarr was absent, and the missing
+      # `jellarr-api-key-bootstrap` (the oneshot that inserts the sealed
+      # key into Jellyfin) stayed invisible. Absent is a build error.
+      load=$(${pkgs.systemd}/bin/systemctl show jellarr.service -p LoadState --value)
+      if [ "$load" = "not-found" ]; then
+        echo "[fortress-media-apply] jellarr.service does not exist (LoadState=not-found). The jellarr nixosModule is not in the module list, so the Jellyfin API key was never bootstrapped and seerr can never sign in. This is a build error, not a runtime one." >&2
+        exit 1
+      fi
       for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
         state=$(${pkgs.systemd}/bin/systemctl show jellarr.service -p ActiveState --value)
         result=$(${pkgs.systemd}/bin/systemctl show jellarr.service -p Result --value)
@@ -111,11 +133,18 @@ let
       fi
     }
 
+    # The category field is named per *arr — `movieCategory` (radarr),
+    # `tvCategory` (sonarr), `musicCategory` (lidarr). A bare `category`
+    # is accepted by the API and silently discarded, so the *arr kept its
+    # default (`radarr`/`tv-sonarr`) and every torrent fell through to
+    # qBittorrent's DefaultSavePath where the *arr could not import it.
+    # Converge rather than create-once: a drifted field is repaired.
     ensure_download_client() {
-      local base=$1 key=$2 category=$3 listing
+      local base=$1 key=$2 category=$3 category_field=$4 listing existing updated id
       listing=$(${pkgs.curl}/bin/curl -sf -H "X-Api-Key: ''${key}" "''${base}/api/v3/downloadclient")
-      if ! ${pkgs.jq}/bin/jq -e 'map(select(.name == "qBittorrent")) | length > 0' <<<"''${listing}" >/dev/null; then
-        ${pkgs.jq}/bin/jq -n --arg category "''${category}" \
+      existing=$(${pkgs.jq}/bin/jq -c 'map(select(.name == "qBittorrent")) | first // empty' <<<"''${listing}")
+      if [ -z "$existing" ]; then
+        ${pkgs.jq}/bin/jq -n --arg category "''${category}" --arg field "''${category_field}" \
           '{name: "qBittorrent", implementation: "QBittorrent", configContract: "QbittorrentSettings",
             protocol: "torrent", enable: true, priority: 1,
             removeCompletedDownloads: true, removeFailedDownloads: true, tags: [],
@@ -124,10 +153,24 @@ let
               {name: "port", value: 8080},
               {name: "useSsl", value: false},
               {name: "baseUrl", value: ""},
-              {name: "category", value: $category}
+              {name: $field, value: $category}
             ]}' \
           | ${pkgs.curl}/bin/curl -sf -X POST -H "X-Api-Key: ''${key}" -H 'Content-Type: application/json' \
               -d @- "''${base}/api/v3/downloadclient" >/dev/null
+        return 0
+      fi
+      if ! ${pkgs.jq}/bin/jq -e --arg field "''${category_field}" \
+          '[.fields[].name] | index($field) != null' <<<"''${existing}" >/dev/null; then
+        echo "[fortress-media-apply] qBittorrent download client exposes no ''${category_field} field — the category would be silently dropped" >&2
+        exit 1
+      fi
+      updated=$(${pkgs.jq}/bin/jq -c --arg category "''${category}" --arg field "''${category_field}" \
+        '(.fields[] | select(.name == $field) | .value) = $category' <<<"''${existing}")
+      if [ "$updated" != "$existing" ]; then
+        id=$(${pkgs.jq}/bin/jq -r '.id' <<<"''${existing}")
+        ${pkgs.curl}/bin/curl -sf -X PUT -H "X-Api-Key: ''${key}" -H 'Content-Type: application/json' \
+          -d "''${updated}" "''${base}/api/v3/downloadclient/''${id}" >/dev/null
+        echo "[fortress-media-apply] converged qBittorrent download client ''${category_field}=''${category}" >&2
       fi
     }
 
@@ -141,14 +184,28 @@ let
       fi
     }
 
+    # Categories live in categories.json, which is not conf-declarable, so
+    # the applier owns them. Create-once was not enough: a savePath written
+    # by an older layout derivation (`/media/media/...`) stuck forever while
+    # the root folders moved on, so torrents landed where no *arr looked.
+    # Converge the savePath too.
     ensure_qbt_category() {
-      local name=$1 save_path=$2 categories
+      local name=$1 save_path=$2 categories current
       categories=$(${pkgs.curl}/bin/curl -sf "${qbtBase}/api/v2/torrents/categories")
       if ! ${pkgs.jq}/bin/jq -e --arg n "''${name}" 'has($n)' <<<"''${categories}" >/dev/null; then
         ${pkgs.curl}/bin/curl -sf -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
           --data-urlencode "category=''${name}" \
           --data-urlencode "savePath=''${save_path}" \
           "${qbtBase}/api/v2/torrents/createCategory" >/dev/null
+        return 0
+      fi
+      current=$(${pkgs.jq}/bin/jq -r --arg n "''${name}" '.[$n].savePath' <<<"''${categories}")
+      if [ "$current" != "''${save_path}" ]; then
+        ${pkgs.curl}/bin/curl -sf -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+          --data-urlencode "category=''${name}" \
+          --data-urlencode "savePath=''${save_path}" \
+          "${qbtBase}/api/v2/torrents/editCategory" >/dev/null
+        echo "[fortress-media-apply] converged qbt category ''${name} savePath ''${current} -> ''${save_path}" >&2
       fi
     }
 
@@ -176,22 +233,23 @@ let
         -d "''${payload}" "${seerrBase}/api/v1/settings/''${kind}" >/dev/null
     }
 
+    # Create the named user if it is absent. Gating creation on "the user
+    # list is empty" was wrong: every real box already has at least one
+    # user, so the bootstrap account was never created and the apply died
+    # at "could not find or create Jellyfin user".
     ensure_jellyfin_bootstrap_user() {
       local list user_id
-      list=$(${pkgs.curl}/bin/curl -sf -H "Authorization: $jellyfin_auth" \
-        "${jellyfinBase}/Users")
-      if [ "$(${pkgs.jq}/bin/jq -r 'length' <<<"''${list}")" = "0" ]; then
+      list=$(${pkgs.curl}/bin/curl -sf -H "Authorization: $jellyfin_auth" "${jellyfinBase}/Users")
+      user_id=$(${pkgs.jq}/bin/jq -r --arg n "${seerrBootstrapUser}" \
+        '.[] | select(.Name == $n) | .Id // empty' <<<"''${list}")
+      if [ -z "$user_id" ]; then
         ${pkgs.curl}/bin/curl -sf -X POST -H "Authorization: $jellyfin_auth" \
           -H 'Content-Type: application/json' \
           -d "{\"Name\": \"${seerrBootstrapUser}\"}" \
           "${jellyfinBase}/Users/New" >/dev/null
-      fi
-      user_id=$(${pkgs.jq}/bin/jq -r \
-        --arg n "${seerrBootstrapUser}" '.[] | select(.Name == $n) | .Id' <<<"''${list}")
-      if [ -z "$user_id" ]; then
         list=$(${pkgs.curl}/bin/curl -sf -H "Authorization: $jellyfin_auth" "${jellyfinBase}/Users")
-        user_id=$(${pkgs.jq}/bin/jq -r \
-          --arg n "${seerrBootstrapUser}" '.[] | select(.Name == $n) | .Id' <<<"''${list}")
+        user_id=$(${pkgs.jq}/bin/jq -r --arg n "${seerrBootstrapUser}" \
+          '.[] | select(.Name == $n) | .Id // empty' <<<"''${list}")
       fi
       if [ -z "$user_id" ]; then
         echo "[fortress-media-apply] could not find or create Jellyfin user ${seerrBootstrapUser}" >&2
@@ -218,14 +276,14 @@ let
     ${lib.optionalString config.services.radarr.enable ''
     wait_ready radarr ${radarrBase} "$radarr_key" /api/v3/health X-Api-Key
     ensure_root_folder ${radarrBase} "$radarr_key" ${moviesRoot}
-    ensure_download_client ${radarrBase} "$radarr_key" movies
+    ensure_download_client ${radarrBase} "$radarr_key" movies movieCategory
     ensure_hardlinks ${radarrBase} "$radarr_key"
     ''}
 
     ${lib.optionalString config.services.sonarr.enable ''
     wait_ready sonarr ${sonarrBase} "$sonarr_key" /api/v3/health X-Api-Key
     ensure_root_folder ${sonarrBase} "$sonarr_key" ${showsRoot}
-    ensure_download_client ${sonarrBase} "$sonarr_key" tv
+    ensure_download_client ${sonarrBase} "$sonarr_key" tv tvCategory
     ensure_hardlinks ${sonarrBase} "$sonarr_key"
     ''}
 
@@ -312,7 +370,12 @@ in
           ++ lib.optional config.services.qbittorrent.enable "qbittorrent.service"
           ++ lib.optionals config.services.seerr.enable
           (["seerr.service" "jellyfin.service"]
-            ++ lib.optionals (options.services ? jellarr) ["jellarr.service"]);
+            # media-apply authenticates to Jellyfin with the sealed
+            # jellarr-api-key, which only exists in ApiKeys after
+            # jellarr-api-key-bootstrap has run. Without this the apply
+            # can win the race and see a 401 it reports as "not ready".
+            ++ lib.optionals (options.services ? jellarr)
+            ["jellarr.service" "jellarr-api-key-bootstrap.service"]);
         requires =
           ["sops-install-secrets.service"]
           ++ lib.optionals btrfsStorage ["fortress-btrfs-subvolumes.service"];

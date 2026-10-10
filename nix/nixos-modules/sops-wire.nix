@@ -65,6 +65,13 @@ in {
       "sonarr.env" = envTemplate ''
         SONARR__SERVER__APIKEY=${config.sops.placeholder.sonarr-api-key}
       '';
+      # The gate's two secrets. oauth2-proxy reads them as env vars via
+      # `keyFile`, so the values stay sealed and only the rendered file
+      # lands in /run/secrets/rendered/.
+      "oauth2-proxy.env" = envTemplate ''
+        OAUTH2_PROXY_CLIENT_SECRET=${config.sops.placeholder.oidc-gate-secret}
+        OAUTH2_PROXY_COOKIE_SECRET=${config.sops.placeholder.gate-cookie-secret}
+      '';
     };
 
     services.fortress-client.adminPasswordEnvFile =

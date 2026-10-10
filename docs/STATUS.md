@@ -9,11 +9,169 @@ works today. Rules (from AGENTS.md § Context System):
 - Update this file in the same commit that changes reality.
 - Stay under ~80 lines. History belongs in `git log`.
 
-Last e2e: PASS — 2026-10-08 — 8aedf1b
+Last e2e: **NOT RUNNABLE** — `vmtest-e2e` is red on a stale fixture (see below).
 Last smtest e2e: PASS — 2026-10-08 — working tree (sealed secrets decrypt at boot)
-(`scripts/vmtest-e2e.sh` rewrites this line on PASS.)
+Last amon-sul live verification: PASS — 2026-10-09 — working tree (*rr stack wired).
+Last L1: PASS — 2026-10-10 — working tree (`nix flake check`, incl. `applier-wiring`).
+(`scripts/vmtest-e2e.sh` rewrites the e2e line on PASS.)
+
+> **Doc-budget violation:** this file is ~1570 lines against its own
+> "stay under ~80 lines" rule. History belongs in `git log`. Needs a
+> trim pass — do not add to it without removing.
 
 ## Current focus
+
+**fortress-bootstrap secrets are now RECONCILE (2026-10-10).** §4 used to be
+"mint everything if the file is absent, else do nothing" — so a box
+bootstrapped before a secret was introduced kept it **silently missing** for
+ever. Exactly the failure `bootstrapInventory` catches in the fixture; the
+generator had no protection at all. Now: default merges (mint only missing
+keys, leave every existing value byte-identical, via `sops set` which also
+preserves the recipient set), complete file is a true no-op (byte-identical,
+no re-encrypt, no git churn), `--force` rotates everything and reprints the
+one-time passwords. Verified all four paths against a scratch ROOT.
+Two real bugs surfaced while building it: `mint_value` ran in a command
+substitution so the Jellyfin password printed **empty** (side effects lost to
+the subshell — now a `MINTED_VALUE` global with an empty-value assertion),
+and `sops set` must *decrypt* while the create path only ever encrypted, so
+the device key was never wired (`SOPS_AGE_KEY_FILE` now exported explicitly
+rather than taken from the operator's ambient environment).
+Note `nix run .#init` / `#add-secret` — documented in secrets.nix as the
+customer-facing interface — **still do not exist** (marked v2.8); this fixed
+the generator that actually runs.
+
+**Dex forward-auth gate (2026-10-10, implemented — NOT yet verified live).**
+The *arrs cannot log in with Dex: they have no OIDC support, and their only
+RBAC is Sonarr#7186, a **locked, unmerged draft**. `AuthenticationMethod=
+External` is not an identity mapping either — it is the *same handler as
+`None`* (Sonarr#5252). So Dex fronts them: Caddy `forward_auth` →
+oauth2-proxy → Dex. The app trusts the loopback source; **the gate is the
+only thing between a LAN client and radarr/sonarr/qbittorrent.**
+
+This was not hardening. On amon-sul three of four admin surfaces were already
+LAN-open — qBittorrent accepted unauthenticated `POST` torrent writes
+(`WebUI\LocalHostAuth=false`, no password configured) and sonarr ran
+`AuthenticationRequired=DisabledForLocalAddresses`. Only radarr challenged
+anyone.
+
+Group model (`gate-policy.nix`, one rule, one place): `admins` is an implicit
+member of **every** group (root); `arr` grants the *rr stack. Policy is
+**per-request** — `oauth2/auth?allowed_groups=<csv>` — so one gate serves
+every group and each route carries its own. The `/api` prefix is exempt
+(Prowlarr/mobile use `X-Api-Key`; a login redirect there breaks inter-*arr
+sync) and remains API-key-protected.
+
+Posture per app, all converged every start: *arrs `AuthenticationMethod=
+External` (`services/_pin-arr.nix`, shared by radarr+sonarr — it also removed
+a duplicated script whose two copies had already drifted), qBittorrent
+`LocalHostAuth = true` (the value its own comment always described).
+
+**Tripwires, all proven to fire:** gated row lost its `forward_auth` →
+builder exits 1 naming the service (verified by removing the gate from
+`rowBody`); gate group lost the `admins` superset → same; gated service with
+dex off → build fails (`_contract.nix`); a gate group nobody can pass →
+build fails (`dex-gate.nix`, "would be reachable by nobody at all"); secret
+inventory vs bootstrap generator → **fired mid-change** and caught two
+ungenerated credentials (`gate-cookie-secret` must be base64 of 16/24/32
+bytes, not hex).
+
+Proof: `nix flake check` all pass incl. `applier-wiring`; Caddyfile adapts to
+JSON with `forward_auth` inside `route` and `allowed_groups=arr,admins`.
+**Open:** live verification on amon-sul (Dex redirect, `arr` member in,
+`users` member 403, `/radarr/api` + `X-Api-Key` still works, and a qbt write
+from the LAN refused without a session — the exact probe that found it open).
+Customer config grows by two secret declarations; `nix run .#init` mints
+them. `.specify/specs/dex-gate/proposal.md` has the alternatives and the
+strongest objection (the API surface is ungated by necessity; `public = true`
+means it is internet-exposed once TLS is up).
+
+**qBittorrent CSS (2026-10-10, fixed).** `planes.nix` served a prefix-stripped
+path at its bare form with no trailing-slash redirect. qBittorrent emits
+*relative* asset URLs, so at `/qbittorrent` the browser resolved
+`css/style.css` against `/` → 404 → unstyled UI. Now `handle /qbittorrent {
+redir /qbittorrent/ 307 }`. Only qbt was affected: forgejo is also
+`stripPath` but generates absolute URLs; the *arrs and jellyfin use
+`UrlBase`/`BaseUrl`. Tripwire derives stripped rows from the *same* predicate
+`planes.nix` uses (`routing == "path" && stripPath`).
+
+**The *rr stack works on amon-sul (2026-10-09).** It was not merely
+unwired — `fortress-media-apply` had **crash-looped 314 times** since
+Sep 22, and the seerr half had never once run. Six independent
+silent-drop bugs, all the same class:
+
+1. **`jellarr` was never in the applier's module list.** It is a flake
+   input, not in nixpkgs' `module-list.nix`, so `options.services ?
+   jellarr` was false and every `lib.optionalAttrs` guard dropped its
+   block *without error* — no `jellarr.service`, and no
+   `jellarr-api-key-bootstrap`, the oneshot that inserts the sealed
+   `jellarr-api-key` into Jellyfin's ApiKeys. The key went stale after
+   the `92dc01b` secrets rotation and every authed call 401'd forever.
+   Fixed in `nix/system-manager/fortress.nix` (import the module).
+2. **`wait_ready` used `curl -sf`**, so a permanent 401 was
+   indistinguishable from a startup race: 60 retries, fail, restart,
+   forever. Now reads the status code and stops on 401/403.
+3. **`wait_jellarr_done` passed vacuously** — `systemctl show` on a
+   not-found unit reports `inactive`/`success`. Now fails loud.
+4. **`ensure_download_client` sent the field `category`**, which
+   radarr/sonarr accept and silently discard (they want
+   `movieCategory`/`tvCategory`). Both *arrs kept defaults
+   `radarr`/`tv-sonarr`, whose qbt categories had an empty savePath, so
+   every torrent fell through to a path nothing imports from.
+5. **`ensure_qbt_category`/`ensure_download_client` were create-once**,
+   so drifted values stuck forever — live on amon-sul as
+   `/media/media/...` save paths from an older layout derivation while
+   the root folders had moved to `/media/entertain/...`.
+6. **`ensure_jellyfin_bootstrap_user` gated creation on "the user list
+   is empty"** — every real box has a user, so `seerr-bootstrap` was
+   never created and the apply died there.
+
+Also: `jellarr-api-key-bootstrap` and `jellarr.timer` hung off
+`multi-user.target`/`timers.target` (upstream), which the applier never
+starts — re-hung off `fortress.target`; jellarr's `dataDir` tmpfiles
+are inert under the applier so the unit now gets `StateDirectory`
+(annotated in `applier-wiring`'s allowlist); qBittorrent's
+`DefaultSavePath` pointed at a dir nothing creates.
+**Tripwires added:** `applier-wiring` asserts jellarr is in the option
+tree, `jellarr.service`/`jellarr-api-key-bootstrap`/`jellarr.timer` are
+in the applier closure, media-apply is ordered after the key bootstrap,
+and the rendered script sets `movieCategory`/`tvCategory` (never bare
+`category`); `vmtest-bootstrap.sh` now asserts qbt save *paths* and the
+*arr category *fields*, not mere presence. Each of those assertions
+fired against the pre-fix tree before it was made to pass.
+**Proof:** `nix flake check` all pass incl. `applier-wiring`; live on
+amon-sul @ working tree — `fortress-media-apply` `active`/`Result=
+success` (no longer restarting), `seerr wired to jellyfin + radarr +
+sonarr`, Radarr Main / Sonarr Main / Jellyfin registered in seerr,
+`seerr-bootstrap` created and admin, all of
+`/`,`/radarr`,`/sonarr`,`/jellyfin`,`/seerr`,`/dex/auth` → 200,
+`movieCategory=movies`/`tvCategory=tv`, qbt `movies`→`/media/entertain/
+movies/downloads` and `tv`→`/media/entertain/shows/downloads`, and both
+*arrs' "download client cannot see this directory" health error gone.
+
+**Still open on amon-sul:** zero indexers on both *arrs (the documented
+one manual step), so nothing can grab; 253 unimported files in
+`/media/entertain/downloads` left alone deliberately; two dead qbt
+categories (`radarr`, `tv-sonarr`) with empty savePaths left behind by
+the old defaults; the box is pinned to a **working-tree path**, not a
+rev (`/etc/fortress/config/flake.nix` "VERIFICATION PIN") — re-pin to a
+reviewed cococoir rev once this is committed.
+
+**The vmtest fixture is stale and covers the wrong topology (2026-10-09,
+BUG).** `scripts/vmtest-bootstrap.sh` asserts on `fortress-media-api-keys`,
+`fortress-jellarr-api-key`, `fortress-jellyfin-oidc-secret`,
+`fortress-cryptpad-oidc-secret` — units that no longer exist in the
+current (sops-based) design — and `vmtest` is a **NixOS** config while
+amon-sul runs the **applier**. The six bugs above shipped precisely
+because the only L2 covering the applier's shape is `smtest`, and none
+of them were asserted. Two fixes made in passing: `demo-base.nix`'s
+bcrypt tripwire used a BRE whose trailing `$` was an end-of-line
+anchor, so it **always** failed and `vmtest-e2e` could not build at
+all (fixed with `grep -qF`); `vmtest-bootstrap.sh` printed nothing on
+timeout, so a crash loop (`Restart=` parks it in `activating`, where
+`is-failed` is false) was undiagnosable — it now dumps `systemctl
+status` + journal. **Needs:** a triage pass to make vmtest green again
+or retire it in favour of `smtest`, and a rule that new
+`nix/nixos-modules/` wiring is asserted on the **applier** path.
 
 **Service dashboard + liveness at `/` (2026-10-09).** `/` is now a public
 landing page: one card per routed service, linked by its **relative**

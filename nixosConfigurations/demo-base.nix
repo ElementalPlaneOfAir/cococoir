@@ -56,7 +56,10 @@
             else ''"$(openssl rand -hex 32)"'';
         in ''printf '%s: "%s"\n' ${lib.escapeShellArg name} ${value} >> "$plaintext";''
       ) config.fortress.secrets._inventory)}
-      grep -q '^fortress-admin-password-hash: "$2b$10$' "$plaintext" \
+      # Fixed-string match: the hash contains `$`, and a trailing `$` in a
+      # BRE is an end-of-line anchor — so the pattern as a regex required
+      # the line to END at "$2b$10" and never matched the real value.
+      grep -qF 'fortress-admin-password-hash: "$2b$10$' "$plaintext" \
         || { echo "demo-base: fortress-admin-password-hash is not a bcrypt — the dashboard login can never succeed" >&2; exit 1; }
       sops --encrypt --age "$pub" --input-type yaml --output-type yaml "$plaintext" > "$out/secrets.enc.yaml"
       rm -f "$plaintext"

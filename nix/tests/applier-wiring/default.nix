@@ -66,20 +66,37 @@ let
   catalogNames = map (e: e.name) (fortressLib.mkCatalog cfg.fortress.services);
   routedRows = ["jellyfin" "radarr" "sonarr" "seerr" "qbittorrent"];
   missingFromCatalog = builtins.filter (n: !(builtins.elem n catalogNames)) routedRows;
-  applierTmpfiles = cfg.systemd.tmpfiles.rules or [];
+  # Inspect what modules *declare*, not only the merged value: a
+  # `mkForce []` would hide a bad declaration from the merged check while
+  # the rule is still wrong for the applier surface. `definitions` is the
+  # pre-merge contribution of every module.
+  declaredTmpfiles = lib.concatLists (map lib.toList
+    ((applierConfig.options.systemd.tmpfiles.rules.definitions or [])));
   # The failure mode is narrow and worth asserting precisely: a module
   # creating APP STATE through tmpfiles, which the applier never applies,
   # so the path silently never exists and the unit dies at boot.
   # Everything NixOS core contributes under /run/lock, /var/db, /nix/var,
   # /lib64, /var/empty and friends is host-OS by ADR-035 — the host
   # already has those paths, so they are not this bug.
+  # A state-root rule is only acceptable when a unit in the closure
+  # creates that path anyway (StateDirectory / ExecStartPre) — the rule is
+  # then inert under the applier and harmless. Named here with its
+  # mechanism so a NEW state-root tmpfiles rule still fails.
+  unitCreatedStateDirs = [
+    # services/jellyfin.nix: systemd.services.jellarr.serviceConfig.StateDirectory
+    "/var/lib/jellarr"
+    # jellarr's preStart `install -D` creates dataDir/config
+    "/var/lib/jellarr/config"
+  ];
   stateRoots = [
     cfg.fortress.storage.dataRoot
     "/var/lib"
     "/etc/fortress"
   ];
-  tmpfilesStateRule = r: lib.any (root: lib.hasInfix root r) stateRoots;
-  unexpectedTmpfiles = lib.filter tmpfilesStateRule applierTmpfiles;
+  tmpfilesStateRule = r:
+    lib.any (root: lib.hasInfix root r) stateRoots
+    && !(lib.any (d: lib.hasInfix d r) unitCreatedStateDirs);
+  unexpectedTmpfiles = lib.filter tmpfilesStateRule (lib.unique declaredTmpfiles);
 
 # ── the routing plane must actually route ───────────────────────────
 # Enabling a service is only half the job: planes.nix has to emit its
@@ -116,9 +133,67 @@ let
     ++ lib.optional (cfg.fortress.services.qbittorrent.enable or false) "qbittorrent.service"
   );
   missingInfra = lib.filter (n: !(builtins.elem n closure)) expectedInfra;
+
+  # ── jellarr must actually be in the module list ────────────────────
+  # jellarr is a flake input, not a nixpkgs module, so `module-list.nix`
+  # does not supply it. Every consumer gates on `options.services ?
+  # jellarr` with `lib.optionalAttrs` — and when that is false the block
+  # is dropped WITHOUT ERROR: no jellarr.service and no
+  # jellarr-api-key-bootstrap.service, the oneshot that inserts the
+  # sealed jellarr-api-key into Jellyfin's ApiKeys table. That is exactly
+  # what shipped to amon-sul: the key went stale after a secret rotation
+  # and fortress-media-apply crash-looped 62 times on a 401 it read as
+  # "not ready". Assert the units exist and the gate is taken.
+  jellarrEnabled = cfg.services.jellarr.enable or false;
+  mediaApply = (cfg.systemd.services or {}).fortress-media-apply or null;
+  mediaApplyAfter =
+    if mediaApply == null then [] else lib.toList (mediaApply.after or []);
+
+  # Rows that strip their prefix AND proxy to the app. The failover
+  # aliases strip too, but they redirect to another origin rather than to
+  # the slash form, so they are out of scope. Mirrors planes.nix's
+  # `routable` + `proxyHandle` predicate.
+  strippedProxyPaths =
+    let
+      routable = lib.filterAttrs
+        (_: s: (s.enable or false) && (s ? path) && (s ? routing))
+        cfg.fortress.services;
+    in
+    lib.mapAttrsToList (_: s: s.path)
+      (lib.filterAttrs (_: s: s.public && s.routing == "path" && (s.stripPath or false)) routable);
+
+  # Services whose own login is disabled in favour of the Dex gate. If the
+  # gate row goes missing from the Caddyfile these are OPEN DOORS — the *arr
+  # `External` handler is the same as `None` (Servarr, Sonarr#5252) and
+  # qBittorrent trusts the loopback source. Shipped exactly that way on
+  # amon-sul: every LAN device had full qBittorrent control.
+  gatedRows =
+    lib.mapAttrsToList (name: s: {inherit name; group = s.accessGroup;})
+      (lib.filterAttrs (_: s: (s.accessGroup or null) != null) cfg.fortress.services);
+  gatedGroups = lib.unique (map (r: r.group) gatedRows);
 in
 assert lib.assertMsg (missingInfra == [])
   "applier-wiring: these units are enabled but NOT reachable from fortress.target (the applier starts only fortress.target, so they would never run): ${builtins.toJSON missingInfra}";
+
+# jellarr is a flake input, so it is absent from the module list unless
+# fortress.nix imports it. Without it every `options.services ? jellarr`
+# gate is false and the guarded block vanishes silently.
+assert lib.assertMsg (lib.hasAttrByPath ["services" "jellarr"] cfg)
+  "applier-wiring: services.jellarr is not in the option tree — the jellarr nixosModule is missing from the applier's imports, so jellarr.service and jellarr-api-key-bootstrap.service are never declared and the sealed Jellyfin API key is never inserted";
+assert lib.assertMsg (!(cfg.fortress.services.jellyfin.enable or false) || jellarrEnabled)
+  "applier-wiring: jellyfin is enabled but services.jellarr.enable is false — the optionalAttrs gate on `options.services ? jellarr` did not fire, so Jellyfin gets no API key and no declarative config";
+assert lib.assertMsg (!(cfg.fortress.services.jellyfin.enable or false)
+  || builtins.elem "jellarr.service" closure)
+  "applier-wiring: jellyfin is enabled but jellarr.service is not in the applier closure — declarative Jellyfin config would never apply on first boot";
+assert lib.assertMsg (!(cfg.fortress.services.jellyfin.enable or false)
+  || builtins.elem "jellarr-api-key-bootstrap.service" closure)
+  "applier-wiring: jellyfin is enabled but jellarr-api-key-bootstrap.service is not in the applier closure — the sealed jellarr-api-key is never inserted into Jellyfin's ApiKeys, so every authed integration 401s permanently";
+assert lib.assertMsg (!(cfg.fortress.services.jellyfin.enable or false)
+  || builtins.elem "jellarr.timer" closure)
+  "applier-wiring: jellyfin is enabled but jellarr.timer is not in the applier closure — upstream hangs it off timers.target, which the applier never starts, so jellarr's periodic re-apply silently never runs";
+assert lib.assertMsg (!(cfg.fortress.services.seerr.enable or false)
+  || builtins.elem "jellarr-api-key-bootstrap.service" mediaApplyAfter)
+  "applier-wiring: fortress-media-apply is not ordered after jellarr-api-key-bootstrap — it can win the race, find no API key, and report a 401 as 'not ready'";
 
 # Caddy must not run under a named OS account: nothing creates it, so
 # systemd fails the unit with 217/USER before ExecStart.
@@ -184,7 +259,12 @@ assert lib.assertMsg (builtins.elem "fortress.target" installBefore && builtins.
 
 {
   applier-wiring = pkgs.runCommand "fortress-applier-wiring"
-    { caddyfile = cfg.services.caddy.configFile; }
+    {
+      caddyfile = cfg.services.caddy.configFile;
+      mediaApplyScript =
+        if mediaApply == null then pkgs.writeText "no-media-apply" ""
+        else lib.head (lib.toList mediaApply.serviceConfig.ExecStart);
+    }
     ''
     # The routing plane must actually route: on amon-sul a whole media stack
     # came up on its ports while Caddy 502'd every path, because the
@@ -199,16 +279,83 @@ assert lib.assertMsg (builtins.elem "fortress.target" installBefore && builtins.
         exit 1
       fi
     done
+
+    # A prefix-stripped path must redirect its bare form to the trailing
+    # slash. qBittorrent emits relative asset URLs, so at `/qbittorrent`
+    # the browser resolves `css/style.css` against `/`, gets a 404, and the
+    # UI renders unstyled. Shipped to amon-sul as "the css on qbittorrent
+    # doesn't seem to be showing up".
+    ${lib.optionalString (strippedProxyPaths != []) ''
+      for p in ${lib.escapeShellArgs strippedProxyPaths}; do
+        if ! grep -qF "redir $p/ 307" "$CF"; then
+          echo "applier-wiring: the bare path $p does not redirect to $p/ in" >&2
+          echo "the Caddyfile ($CF). $p strips its prefix, so an app that" >&2
+          echo "emits relative asset URLs has them resolve against / and 404." >&2
+          exit 1
+        fi
+      done
+    ''}
+
+    # The gate is the ONLY auth in front of these apps — their own logins are
+    # off (`AuthenticationMethod=External`, `LocalHostAuth=true`). A row that
+    # loses its `forward_auth` does not degrade to a login page; it becomes an
+    # open door. Shipped exactly that way on amon-sul, where every LAN device
+    # had full qBittorrent control (unauthenticated API writes included).
+    ${lib.optionalString (gatedRows != []) ''
+      for row in ${lib.escapeShellArgs (map (r: r.name) gatedRows)}; do
+        if ! grep -A4 "handle @row-$row {" "$CF" | grep -q "forward_auth"; then
+          echo "applier-wiring: @row-$row has no forward_auth preflight in" >&2
+          echo "the Caddyfile ($CF). $row's own login is disabled, so this" >&2
+          echo "row would serve it to anyone who can reach caddy." >&2
+          exit 1
+        fi
+      done
+      for g in ${lib.escapeShellArgs gatedGroups}; do
+        if ! grep -qF "allowed_groups=$g,admins" "$CF"; then
+          echo "applier-wiring: no route admits gate group '$g' (with the" >&2
+          echo "admins superset) in $CF. Either the group policy was lost or" >&2
+          echo "gate-policy.nix stopped appending admins — which silently" >&2
+          echo "locks the box owner out of their own services." >&2
+          exit 1
+        fi
+      done
+    ''}
+
+    # The download-client category field is named per *arr. A bare
+    # `category` is accepted by the API and silently discarded, so the
+    # *arr keeps its default category and every torrent falls through to
+    # qBittorrent's DefaultSavePath where nothing imports it. This
+    # shipped to amon-sul as health errors on both *arrs.
+    if [ -s "$mediaApplyScript" ]; then
+      for field in movieCategory tvCategory; do
+        if ! grep -q "$field" "$mediaApplyScript"; then
+          echo "applier-wiring: fortress-media-apply never sets $field —" >&2
+          echo "the download-client category would be silently dropped." >&2
+          exit 1
+        fi
+      done
+      if grep -qE '\{name: "category"' "$mediaApplyScript"; then
+        echo "applier-wiring: fortress-media-apply sends the field name \"category\"" >&2
+        echo "to the *arrs. That field does not exist; radarr/sonarr accept" >&2
+        echo "the payload and discard it. Use movieCategory/tvCategory." >&2
+        exit 1
+      fi
+    fi
     cat > $out <<EOF
     fortress applier-wiring (L1, ADR-035 amendment): PASS
       a public service renders Caddy under the applier
       every enabled public service has a @row-<name> route
+      a prefix-stripped path redirects its bare form to the slash form
+      every gated service row carries a forward_auth preflight
+      every gate group is admitted (with the admins superset)
       caddy runs as root (no named OS account the applier cannot create)
       caddy reads its Caddyfile from the store, not /etc
       fortress.target starts caddy, so a public service is reachable
       positive applier surface: no tmpfiles beyond the baseline, no
       service referencing /etc, fortress-client config is store-pathed
       sops installs from a unit ordered before fortress.target
+      jellarr is in the module list (API key bootstrap is not dropped)
+      fortress-media-apply sets movieCategory/tvCategory, not "category"
     EOF
   '';
 }

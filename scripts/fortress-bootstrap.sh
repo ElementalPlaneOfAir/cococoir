@@ -43,11 +43,13 @@ fi
 
 ROOT="/etc/fortress"
 OWNER_KEYS=()
+FORCE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) ROOT="${2:?--root needs a path}"; shift 2 ;;
     --owner-key) OWNER_KEYS+=("${2:?--owner-key needs an age pubkey}"); shift 2 ;;
+    --force) FORCE=1; shift ;;
     *) echo "fortress-bootstrap: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -66,6 +68,12 @@ if [ ! -f "$KEYFILE" ]; then
   chmod 600 "$KEYFILE"
 fi
 [ -f "$KEYFILE" ] || { echo "fortress-bootstrap: device key missing at $KEYFILE" >&2; exit 1; }
+# `sops set` (the merge path below) has to DECRYPT the sealed file to write
+# one key, so sops needs the device key explicitly — the create path only
+# ever encrypts, which is why this was never wired before. Explicit rather
+# than ambient: the bootstrap owns this key and must not pick up whatever
+# identity happens to be in the operator's environment.
+export SOPS_AGE_KEY_FILE="$KEYFILE"
 DEVICE_PUB="$(age-keygen -y "$KEYFILE")"
 case "$DEVICE_PUB" in
   age1*) ;;
@@ -149,47 +157,117 @@ if [ ! -f "$CONFIG/flake.lock" ] && command -v nix >/dev/null 2>&1; then
     echo "fortress-bootstrap: flake.lock not created (offline / inputs unfetchable) — a later rebuild adds it." >&2
 fi
 
-# ── 4. sealed secrets (idempotent — only when missing) ───────────────
-generated_secrets=0
-if [ ! -f "$SECRETS" ]; then
-  # correct-horse-battery-staple: an operator reads this off the terminal
-  # and types it at the login prompt, so it has to be speakable. Five words
-  # from xkcdpass's list is ~64 bits — stronger than the 24-char token it
-  # replaces, and far easier to handle at first boot.
+# ── 4. sealed secrets — RECONCILE by default, regenerate with --force ─
+#
+# Default is a MERGE: mint only the keys the sealed file is missing and
+# leave every existing value byte-identical. `sops set` writes one key in
+# place and preserves the file's recipient set, so a platform release that
+# adds a secret does not rotate the ones already registered with their
+# integrations — jellarr's API key is registered in Jellyfin, Dex client
+# secrets are registered in Dex, and rotating them silently breaks those
+# integrations until something re-registers. A complete file is left
+# completely untouched: no re-encrypt, no git churn, nothing to review.
+#
+# --force mints every value fresh. Every credential rotates; the operator
+# gets new one-time passwords to record, and every integration holding the
+# old value goes stale.
+#
+# Every key in nix/nixos-modules/secrets.nix must appear here exactly once —
+# the platform never mints at runtime (it reads /run/secrets). A tripwire in
+# nix/tests asserts this list matches the inventory, so adding a key there
+# without adding it here fails a check.
+INVENTORY_KEYS=(
+  jellarr-api-key
+  jellyfin-admin-password
+  fortress-admin-password-hash
+  radarr-api-key
+  sonarr-api-key
+  seerr-admin-password
+  cryptpad-jwt-secret
+  oidc-jellyfin-secret
+  oidc-cryptpad-secret
+  oidc-forgejo-secret
+  oidc-gate-secret
+  gate-cookie-secret
+)
+
+# The dashboard password is minted only when its hash is, so an unrelated
+# merge never rotates a password the operator has already recorded. Stays
+# empty when nothing was minted; non-empty means "show this once".
+admin_pw=""
+admin_hash=""
+jellyfin_pw=""
+
+# correct-horse-battery-staple: an operator reads this off the terminal and
+# types it at the login prompt, so it has to be speakable. Five words from
+# xkcdpass's list is ~64 bits — stronger than the 24-char token it
+# replaces, and far easier to handle at first boot.
+ensure_admin_pair() {
+  [ -n "$admin_hash" ] && return 0
   admin_pw="$(xkcdpass -n 5 -d - -c 1)"
   case "$admin_pw" in
     *-*-*-*) ;;
     *) echo "fortress-bootstrap: passphrase malformed: $admin_pw" >&2; exit 1 ;;
   esac
   admin_hash="$(printf '%s' "$admin_pw" | mkpasswd -m bcrypt -R 10 -s)"
-  jellyfin_pw="$(xkcdpass -n 5 -d - -c 1)"
   case "$admin_hash" in
     \$*) ;;
     *) echo "fortress-bootstrap: bcrypt hash malformed: $admin_hash" >&2; exit 1 ;;
   esac
+}
 
-  # Every key in nix/nixos-modules/secrets.nix must be minted here exactly
-  # once — the platform never mints at runtime (it reads /run/secrets).
-  # A tripwire in nix/tests asserts this list matches the inventory, so
-  # adding a key there without adding it here fails a check.
-  INVENTORY_KEYS=(
-    jellarr-api-key
-    jellyfin-admin-password
-    fortress-admin-password-hash
-    radarr-api-key
-    sonarr-api-key
-    seerr-admin-password
-    cryptpad-jwt-secret
-    oidc-jellyfin-secret
-    oidc-cryptpad-secret
-    oidc-forgejo-secret
-  )
+ensure_jellyfin_pw() {
+  [ -n "$jellyfin_pw" ] && return 0
+  jellyfin_pw="$(xkcdpass -n 5 -d - -c 1)"
+}
 
+# Sets MINTED_VALUE rather than printing: several callers run inside a
+# pipeline or a brace group where a command substitution would take the
+# `ensure_*` side effects (the one-time passwords) into a subshell and
+# leave the parent empty — which silently printed a blank password.
+MINTED_VALUE=""
+mint_value() {
+  case "$1" in
+    fortress-admin-password-hash) ensure_admin_pair; MINTED_VALUE="$admin_hash" ;;
+    jellyfin-admin-password) ensure_jellyfin_pw; MINTED_VALUE="$jellyfin_pw" ;;
+    # oauth2-proxy rejects a cookie seed that is not exactly 16, 24 or 32
+    # bytes base64-encoded — hex is not valid base64.
+    gate-cookie-secret) MINTED_VALUE="$(openssl rand -base64 32)" ;;
+    *) MINTED_VALUE="$(openssl rand -hex 32)" ;;
+  esac
+  [ -n "$MINTED_VALUE" ] || {
+    echo "fortress-bootstrap: minted an empty value for $1" >&2
+    exit 1
+  }
+}
+
+# `sops set` takes a JSON-encoded value. None of the minted shapes carry a
+# quote, backslash or newline; fail loud rather than seal a corrupt value.
+seal_key() {
+  local key=$1 value
+  mint_value "$key"
+  value="$MINTED_VALUE"
+  case "$value" in
+    *\"*|*\\*|*$'\n'*)
+      echo "fortress-bootstrap: value for $key is not safely JSON-encodable" >&2
+      exit 1
+      ;;
+  esac
+  printf '"%s"' "$value" | sops set --value-stdin "$SECRETS" "[\"$key\"]"
+}
+
+# Key names are plaintext in a sops file (only values are sealed), so this
+# diff needs no decryption and never touches the device key. Everything
+# above the `sops:` metadata block is ours.
+sealed_keys() {
+  awk '/^sops:/{exit} /^[A-Za-z0-9_.-]+:/{sub(/:.*/,""); print}' "$SECRETS"
+}
+
+if [ ! -f "$SECRETS" ]; then
   RECIPIENTS="$DEVICE_PUB"
   for owner in ${OWNER_KEYS[@]+"${OWNER_KEYS[@]}"}; do
     RECIPIENTS="$RECIPIENTS,$owner"
   done
-
   plaintext="$(mktemp)"
   trap 'rm -f "$plaintext"' EXIT
   # printf, not a heredoc: bcrypt hashes carry `$`, which an unquoted
@@ -197,22 +275,51 @@ if [ ! -f "$SECRETS" ]; then
   {
     # Operator-facing only: the plaintext dashboard password. Not in the
     # inventory — nothing on the box reads it.
+    ensure_admin_pair
     printf 'fortress-admin-password: "%s"\n' "$admin_pw"
     for key in "${INVENTORY_KEYS[@]}"; do
-      case "$key" in
-        fortress-admin-password-hash) value="$admin_hash" ;;
-        jellyfin-admin-password) value="$jellyfin_pw" ;;
-        *) value="$(openssl rand -hex 32)" ;;
-      esac
-      printf '%s: "%s"\n' "$key" "$value"
+      mint_value "$key"
+      printf '%s: "%s"\n' "$key" "$MINTED_VALUE"
     done
   } > "$plaintext"
-
   sops --encrypt --age "$RECIPIENTS" --input-type yaml --output-type yaml \
     "$plaintext" > "$SECRETS"
   rm -f "$plaintext"
   trap - EXIT
-  generated_secrets=1
+else
+  have="$(sealed_keys)"
+  wanted=()
+  if [ "$FORCE" = 1 ]; then
+    echo "fortress-bootstrap: --force rotates EVERY secret." >&2
+    echo "  jellarr's API key is registered in Jellyfin and Dex client secrets" >&2
+    echo "  are registered in Dex; those integrations keep the old value until" >&2
+    echo "  something re-registers them." >&2
+    wanted=("${INVENTORY_KEYS[@]}")
+  else
+    for key in "${INVENTORY_KEYS[@]}"; do
+      grep -qxF "$key" <<<"$have" || wanted+=("$key")
+    done
+  fi
+
+  if [ "${#wanted[@]}" -eq 0 ]; then
+    echo "fortress-bootstrap: sealed secrets already complete ($SECRETS) — untouched"
+  else
+    for key in ${wanted[@]+"${wanted[@]}"}; do
+      seal_key "$key"
+    done
+    # The operator-facing password rides along only when its hash was minted.
+    if [ -n "$admin_pw" ]; then
+      case "$admin_pw" in
+        *\"*|*\\*)
+          echo "fortress-bootstrap: admin password is not safely JSON-encodable" >&2
+          exit 1
+          ;;
+      esac
+      printf '"%s"' "$admin_pw" |
+        sops set --value-stdin "$SECRETS" '["fortress-admin-password"]'
+    fi
+    echo "fortress-bootstrap: sealed ${#wanted[@]} secret(s): ${wanted[*]}"
+  fi
 fi
 [ -f "$SECRETS" ] || { echo "fortress-bootstrap: sealed secrets missing at $SECRETS" >&2; exit 1; }
 grep -q 'ENC\[' "$SECRETS" || { echo "fortress-bootstrap: $SECRETS is not sops-encrypted" >&2; exit 1; }
@@ -230,9 +337,10 @@ echo "  device key: $KEYFILE (outside the repo — back this up)"
 echo "  config:     $CONFIG (git repo — edit, commit, or 'git revert' + apply)"
 
 # Shown exactly once, at the moment the operator is looking at the terminal
-# and can move it into a password manager. Repeats keep the secrets sealed;
-# recovering later means `sops -d $SECRETS`.
-if [ "$generated_secrets" = 1 ]; then
+# and can move it into a password manager. A merge that minted no admin
+# password shows nothing — there is no new password to show. Repeats keep
+# the secrets sealed; recovering later means `sops -d $SECRETS`.
+if [ -n "$admin_pw" ]; then
   echo ""
   echo "  ────────────────────────────────────────────────────────────"
   echo "  ADMIN PASSWORD — shown once, save it now:"

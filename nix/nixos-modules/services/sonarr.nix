@@ -24,6 +24,7 @@ mkFortressService {
   defaultPort = 8989;
   defaultHealthPath = "/ping";
   requires = ["jellyfin"];
+  accessGroup = "arr";
   extraConfig = {
     cfg,
     lib,
@@ -37,31 +38,16 @@ mkFortressService {
       config.fortress.media.layout.showsDownloads
       config.fortress.media.layout.showsLibrary
     ];
-    pinApiKey = pkgs.writeShellScript "sonarr-pin-api-key" ''
-      set -euo pipefail
-      key=$(cat ${config.sops.secrets.sonarr-api-key.path})
-      dir=/var/lib/sonarr/.config/NzbDrone
-      install -d -m 0750 -o root -g root "$dir"
-      if [ -f "$dir/config.xml" ]; then
-        ${pkgs.gnused}/bin/sed -i \
-          -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
-          -e "s|<UrlBase>[^<]*</UrlBase>|<UrlBase>${cfg.path}</UrlBase>|" \
-          "$dir/config.xml"
-      else
-        cat > "$dir/config.xml" <<EOF
-  <Config>
-    <BindAddress>127.0.0.1</BindAddress>
-    <Port>8989</Port>
-    <UrlBase>${cfg.path}</UrlBase>
-    <ApiKey>$key</ApiKey>
-    <AuthenticationMethod>External</AuthenticationMethod>
-    <UpdateMechanism>External</UpdateMechanism>
-    <AnalyticsEnabled>False</AnalyticsEnabled>
-  </Config>
-EOF
-      fi
-      chown root:root "$dir/config.xml"
-    '';
+    # Sonarr keeps its own generated API key once config.xml exists, and
+    # <UrlBase> is the app's own knob (ADR-034) — so both are pinned into
+    # config.xml, along with the auth posture the Dex gate depends on.
+    # See services/_pin-arr.nix.
+    pinApiKey = import ./_pin-arr.nix {
+      inherit pkgs;
+      dataDir = "/var/lib/sonarr/.config/NzbDrone";
+      apiKeySecretPath = config.sops.secrets.sonarr-api-key.path;
+      urlBase = cfg.path;
+    };
   in {
     services.sonarr = {
       enable = true;

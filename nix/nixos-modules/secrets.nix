@@ -137,6 +137,26 @@
         OIDC client secret shared between dex and Forgejo.
       '';
     };
+    "oidc-gate-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        OIDC client secret shared between dex and the forward-auth gate
+        (oauth2-proxy). The gate is what stands between a LAN browser and
+        radarr/sonarr/qbittorrent, whose own logins are disabled.
+      '';
+    };
+    "gate-cookie-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      description = ''
+        Seed for the gate's session cookie (oauth2-proxy). Must be 16, 24
+        or 32 bytes, base64-encoded — `nix run .#init` generates one that
+        fits. Rotating it signs every user out of the gated services.
+      '';
+    };
   };
 in
 {

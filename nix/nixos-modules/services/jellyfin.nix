@@ -270,7 +270,17 @@ in
 
         # Secrets arrive via sops-install-secrets, ordered before
         # fortress.target — no minting oneshot.
+        #
+        # Upstream hangs these off multi-user.target / timers.target,
+        # which the applier never starts (it starts fortress.target and
+        # nothing else). And `after` is not a dependency edge, so
+        # jellarr.service's `after = [jellarr-api-key-bootstrap]` does
+        # not pull it into the closure either. Without this re-hang the
+        # units install into /run/systemd/system and never run — the
+        # sealed jellarr-api-key then never reaches Jellyfin's ApiKeys
+        # and every authed integration 401s permanently.
         systemd.services.jellarr-api-key-bootstrap = {
+          wantedBy = ["fortress.target"];
           after = ["sops-install-secrets.service"];
           requires = ["sops-install-secrets.service"];
         };
@@ -279,6 +289,14 @@ in
           wantedBy = ["fortress.target"];
           after = ["sops-install-secrets.service"];
           requires = ["sops-install-secrets.service"];
+          # jellarr's module declares its dataDir via tmpfiles.rules, which
+          # the applier never applies — so the dir silently never exists and
+          # the unit dies on its WorkingDirectory. pid 1 creates it instead
+          # (the forgejo pattern), which survives the applier. jellarr's own
+          # `install -D` in preStart makes dataDir/config.
+          serviceConfig.StateDirectory = "jellarr";
         };
+
+        systemd.timers.jellarr.wantedBy = ["fortress.target"];
       });
   }

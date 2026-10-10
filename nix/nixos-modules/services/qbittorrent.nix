@@ -10,7 +10,8 @@
 #     binds 127.0.0.1.
 #   - WebUI auth is bypassed for localhost: the entire control plane
 #     (radarr, sonarr, the applier) is same-host, same trust domain;
-#     no password to manage or leak.
+#     no password to manage or leak. The human-facing boundary is the
+#     Dex gate (`accessGroup = "arr"`), not a qBittorrent login.
 #   - The download directory is the media subvolume's `downloads/`
 #     dir (per-category save paths are created by the applier via
 #     the qbt API — categories live in categories.json, which is not
@@ -41,6 +42,7 @@ mkFortressService {
   # reverse proxy must strip /qbittorrent or every request 404s.
   stripPath = true;
   requires = ["jellyfin"];
+  accessGroup = "arr";
   extraConfig = {
     lib,
     ...
@@ -66,7 +68,15 @@ mkFortressService {
         };
         Preferences.WebUI = {
           Address = "127.0.0.1";
-          LocalHostAuth = false;
+          # Bypass auth for localhost — the value this comment always
+          # described but the config never set. qBittorrent has no
+          # "trust the reverse proxy" mode, so this IS the posture: the
+          # app trusts the loopback source and the Dex gate (caddy
+          # `forward_auth`, planes.nix) is the only thing between a LAN
+          # client and the WebUI. It binds 127.0.0.1 only, so the reachable
+          # surface is the gate. Woe betide a route that loses its gate:
+          # asserted in applier-wiring.
+          LocalHostAuth = true;
           HostHeaderValidation = false;
           UseUPnP = false;
           CSRFProtection = true;
@@ -82,6 +92,10 @@ mkFortressService {
       PrivateUsers = lib.mkForce false;
       Restart = "on-failure";
       RestartSec = 5;
+      # qBittorrent does not create DefaultSavePath on startup, and an
+      # absent one is a permanent `error` in radarr/sonarr's health
+      # ("cannot see this directory") — not a transient. Make it exist.
+      ExecStartPre = lib.mkAfter ["+${pkgs.coreutils}/bin/mkdir -p /var/lib/qBittorrent/incomplete"];
     };
   };
 }

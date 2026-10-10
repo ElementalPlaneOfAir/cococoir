@@ -1066,6 +1066,76 @@ revisited.
   `services/hardware/` orphans `hardware.firmware`/`hardware.amdgpu`
   that `programs/nix-required-mounts.nix` still reads; it does not
   converge).
+- **ADR-040: The box evaluates and substitutes; the provider never sees
+  its configuration. Releases are immutable tags built on the provider
+  host.**
+
+  **Decision — release boundary.** A release is an immutable git tag
+  `v<generation>.<minor>.<patch>`, where `generation` is ADR-001's
+  generation number (v2's first release is `v2.0.0`): one numbering
+  system, not a second one laid beside the generation table. Tags live
+  on a plain git remote (GitHub today; any host later — nothing in the
+  flow assumes GitHub). The builder is `scripts/release.sh`, a script,
+  not a CI vendor, so *where* it runs is swappable. Releases are built
+  on the provider host (`proleteriat.tech`), which is also the cache
+  host. Scaling is vertical; distributing the builder/cache is deferred
+  until the problem is real.
+
+  **Decision — delivery (Model A).** The customer box evaluates its own
+  `config.nix` and *substitutes* prebuilt store paths from the
+  provider's cache. The provider never receives a customer's
+  configuration. The cache is **harmonia** (nix-community, in nixpkgs):
+  it serves the provider host's local `/nix/store`, so building on the
+  host *is* populating the cache — no push step, no database, no tokens.
+  `nix.settings.substituters` (harmonia + `cache.nixos.org`) and
+  `trusted-public-keys` are **module defaults in cococoir** — provider
+  infrastructure, never a customer option (ADR-004's budget).
+
+  **Why Model A, not Model B (deploy-rs / colmena / `--target-host`).**
+  Model B requires shipping each customer's full configuration to the
+  provider's builder — the service set, domain, port layout, network
+  shape. On a privacy product that is the configuration a customer
+  exists to keep local; it is disqualifying, not a tradeoff.
+
+  **Invariants (consequences).** (1) The box evaluates its own config —
+  measured 583 MB / 2 s cold; that is the per-box floor and the reason
+  the product targets ≥4 GB. (2) **A customer box never compiles the
+  workspace** — the Rust build peaks at 3.9 GB (measured,
+  `CARGO_BUILD_JOBS = "2"`), which exceeds a 4 GB box. (3) Every release
+  is fully substituted; a cache miss must not be reachable in normal
+  operation. (4) Only shared, identical-across-customers derivations
+  reach the cache; the provider never learns a customer's config hash.
+
+  **Trust root.** The signing *public* key is baked into cococoir as a
+  **list** (`trusted-public-keys`). It is the integrity root of every
+  box: a leak lets an attacker serve arbitrary binaries to every
+  customer. The *private* key is a provider-only sops secret rendered to
+  an absolute path outside the store. Rotation is a release: ship the
+  new key beside the old, migrate, then drop the old — which is exactly
+  why the key is a list. harmonia's `signKeyPaths` takes a list for this
+  reason; atticd's `--regenerate-keypair` ("all users must configure the
+  new key") is the footgun this avoids.
+
+  **Retention.** harmonia has no GC of its own; it serves the store,
+  which Nix prunes by roots. So retention *is* the provider host's gc
+  roots: keep N releases rooted (`nix build --out-link releases/vX.Y.Z`
+  per release). GC the host and old releases vanish, breaking rollback
+  for every box.
+
+  **Enforced by (to be added with the implementation).** CI asserts a
+  release is fully substituted (build a customer-shaped config with
+  `--option fallback false`). `fortress-apply.service` gains
+  `MemoryMax`/`MemorySwapMax` below box RAM so a fallback compile dies
+  alone and the customer's services keep running. An L1 assertion that
+  the signing private key never appears in a rendered closure or a
+  customer sops file.
+
+  **Rejected.** Model B (config leaves the box); atticd (DB, JWT, push,
+  server-managed key); Hydra (Postgres + build farm — more machine than
+  the problem); a single hardcoded public key (makes rotation a
+  footgun); `require-sigs = false` (normalizes unsigned substitution on
+  a privacy product). Decided; not yet implemented — amon-sul still pins
+  a `main` SHA and no cache exists.
 
 Build order. No dates. Each item: what it produces, what test
 verifies it. "Done" = shipped, tested, committed.

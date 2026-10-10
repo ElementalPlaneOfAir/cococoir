@@ -96,7 +96,15 @@ for i in $(seq 1 450); do
   fi
   sleep 2
 done
-[ "$jellarr_ok" = "1" ] || fail "jellarr pipeline" "timeout"
+if [ "$jellarr_ok" = "1" ]; then :; else
+  fail "jellarr pipeline" "timeout"
+  # A timeout must be diagnosable: `is-failed` is false while a unit is
+  # crash-looping (Restart=on-failure parks it in activating), so the
+  # FAILED branch above never fires and the cause is invisible.
+  systemctl status jellarr.service jellarr-api-key-bootstrap.service \
+    --no-pager -l >&2 || true
+  journalctl -u jellarr -u jellarr-api-key-bootstrap --no-pager -n 60 >&2 || true
+fi
 
 echo ""
 echo "─── Media automation stack (qbittorrent, radarr, sonarr, seerr) ───"
@@ -117,7 +125,11 @@ for i in $(seq 1 450); do
   fi
   sleep 2
 done
-[ "$apply_ok" = "1" ] || fail "media-apply pipeline" "timeout"
+if [ "$apply_ok" = "1" ]; then :; else
+  fail "media-apply pipeline" "timeout"
+  systemctl status fortress-media-apply.service --no-pager -l >&2 || true
+  journalctl -u fortress-media-apply --no-pager -n 80 >&2 || true
+fi
 
 if [ "$apply_ok" = "1" ]; then
   radarr_key=$(cat /var/lib/fortress-media/radarr-api-key)
@@ -125,30 +137,41 @@ if [ "$apply_ok" = "1" ]; then
 
   qbt_ok=0
   for i in $(seq 1 30); do
+    # Presence alone is not enough: on amon-sul the categories existed
+    # with STALE save paths (/media/media/...) left by an older layout
+    # derivation, so torrents landed where no *arr looked. Assert the
+    # save path actually points into the media tree's downloads area.
     if curl -sf http://127.0.0.1:8080/api/v2/torrents/categories \
-      | jq -e 'has("movies") and has("tv")' >/dev/null 2>&1; then
+      | jq -e '(.movies.savePath | test("/movies/downloads$")) and (.tv.savePath | test("/shows/downloads$"))' >/dev/null 2>&1; then
       qbt_ok=1
-      pass "qbt categories" "movies + tv save paths"
+      pass "qbt categories" "movies + tv save paths under media tree"
       break
     fi
     sleep 2
   done
-  [ "${qbt_ok:-0}" = "1" ] || fail "qbt categories" "missing movies/tv save paths"
+  [ "${qbt_ok:-0}" = "1" ] || fail "qbt categories" "missing or stale movies/tv save paths"
 
   for svc in radarr sonarr; do
     port=$( [ "$svc" = radarr ] && echo 7878 || echo 8989 )
     key=$(cat "/var/lib/fortress-media/$svc-api-key")
+    field=$( [ "$svc" = radarr ] && echo movieCategory || echo tvCategory )
+    want=$( [ "$svc" = radarr ] && echo movies || echo tv )
     arr_ok=0
     for i in $(seq 1 30); do
+      # A qBittorrent client existing is not enough: the applier used to
+      # send the field name "category", which the *arrs accept and
+      # silently discard, leaving the default (radarr/tv-sonarr) and
+      # routing every torrent to a save path nothing imports from.
       if curl -sf -H "X-Api-Key: $key" "http://127.0.0.1:$port/$svc/api/v3/downloadclient" \
-        | jq -e 'map(select(.name == "qBittorrent")) | length > 0' >/dev/null 2>&1; then
+        | jq -e --arg f "$field" --arg w "$want" \
+            'map(select(.name == "qBittorrent")) | first | (.fields[] | select(.name == $f) | .value) == $w' >/dev/null 2>&1; then
         arr_ok=1
-        pass "$svc download client" "qBittorrent wired (category)"
+        pass "$svc download client" "qBittorrent wired ($field=$want)"
         break
       fi
       sleep 2
     done
-    [ "$arr_ok" = "1" ] || fail "$svc download client" "qBittorrent missing"
+    [ "$arr_ok" = "1" ] || fail "$svc download client" "qBittorrent missing or $field != $want"
   done
 
   seerr_ok=0

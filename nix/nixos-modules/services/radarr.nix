@@ -34,6 +34,7 @@ mkFortressService {
   defaultPort = 7878;
   defaultHealthPath = "/ping";
   requires = ["jellyfin"];
+  accessGroup = "arr";
   extraConfig = {
     cfg,
     lib,
@@ -48,40 +49,16 @@ mkFortressService {
       config.fortress.media.layout.moviesLibrary
     ];
     # Radarr ignores the RADARR__SERVER__APIKEY env override once
-    # config.xml exists (it keeps its own generated key), so the key is
-    # pinned straight into config.xml — and so is the base path
-    # (ADR-034): <UrlBase> is the app's own knob and nothing else
-    # (nixpkgs, seerr) can set it declaratively.
-    # `install` deliberately does NOT pass -o/-g: nixpkgs' hardening sets
-    # CapabilityBoundingSet= (empty), so a uid-0 unit has no CAP_CHOWN and
-    # `install -o root` dies with "Operation not permitted" even on a
-    # root-owned dir. The unit runs as root, so the dirs come out
-    # root-owned anyway; StateDirectory= guarantees they exist.
-    pinApiKey = pkgs.writeShellScript "radarr-pin-api-key" ''
-      set -euo pipefail
-      key=$(cat ${config.sops.secrets.radarr-api-key.path})
-      dir=/var/lib/radarr/.config/Radarr
-      install -d -m 0750 "$dir"
-      if [ -f "$dir/config.xml" ]; then
-        ${pkgs.gnused}/bin/sed -i \
-          -e "s|<ApiKey>[^<]*</ApiKey>|<ApiKey>$key</ApiKey>|" \
-          -e "s|<UrlBase>[^<]*</UrlBase>|<UrlBase>${cfg.path}</UrlBase>|" \
-          "$dir/config.xml"
-      else
-        cat > "$dir/config.xml" <<EOF
-  <Config>
-    <BindAddress>127.0.0.1</BindAddress>
-    <Port>7878</Port>
-    <UrlBase>${cfg.path}</UrlBase>
-    <ApiKey>$key</ApiKey>
-    <AuthenticationMethod>External</AuthenticationMethod>
-    <UpdateMechanism>External</UpdateMechanism>
-    <AnalyticsEnabled>False</AnalyticsEnabled>
-  </Config>
-EOF
-      fi
-      chown root:root "$dir/config.xml"
-    '';
+    # config.xml exists (it keeps its own generated key), and <UrlBase> is
+    # the app's own knob (ADR-034) — so both are pinned straight into
+    # config.xml, along with the auth posture the Dex gate depends on.
+    # See services/_pin-arr.nix.
+    pinApiKey = import ./_pin-arr.nix {
+      inherit pkgs;
+      dataDir = "/var/lib/radarr/.config/Radarr";
+      apiKeySecretPath = config.sops.secrets.radarr-api-key.path;
+      urlBase = cfg.path;
+    };
   in {
     services.radarr = {
       enable = true;

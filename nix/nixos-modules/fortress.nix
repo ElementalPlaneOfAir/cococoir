@@ -43,6 +43,7 @@
     ./integrations/jellyfin-oidc.nix
     ./integrations/cryptpad-oidc.nix
     ./integrations/forgejo-oidc.nix
+    ./integrations/dex-gate.nix
   ];
 
   # Every fortress box gets comma (`pkgs.comma-with-db`, nix-community):

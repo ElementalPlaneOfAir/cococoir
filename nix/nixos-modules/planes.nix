@@ -47,6 +47,7 @@
   ...
 }: let
   inherit (lib) mkOption types;
+  inherit (import ./gate-policy.nix {inherit lib;}) gateGroups;
   servicesCfg = config.fortress.services;
   baseDomain = config.fortress.baseDomain;
   lan = config.fortress.network.lanAddress;
@@ -97,14 +98,50 @@
 
   cookieScope = path: ''>Set-Cookie "^(.+)$" "$1; Path=${path}"'';
 
-  proxyHandle = name: s: ''
-    @row-${name} path ${s.path} ${s.path}/*
-    handle @row-${name} {
+  # Canonicalise a prefix-stripped path's bare form to the trailing-slash
+  # form. An app that emits relative asset URLs (qBittorrent) is broken at
+  # the bare path: the browser resolves `css/style.css` against `/`, gets a
+  # 404, and the UI renders unstyled. Rows that serve *under* the path
+  # (BaseUrl/UrlBase-style) generate absolute URLs and do not need this.
+  bareSlashRedirect = s: lib.optionalString s.stripPath ''
+    handle ${s.path} {
+      redir ${s.path}/ 307
+    }
+  '';
+
+  gateUpstream = config.fortress.gate.authUpstream or "http://127.0.0.1:4180";
+  allowedFor = s: lib.concatStringsSep "," (gateGroups [s.accessGroup]);
+
+  # One row body for every proxy row. The gate preflight is the only thing
+  # that differs between the `/api` exemption and the gated UI row, so it is
+  # threaded in rather than duplicated — a second copy that forgets the
+  # strip or the cookie scope would drift silently.
+  rowBody = s: gate: ''
       route {
-        ${lib.optionalString s.stripPath "uri strip_prefix ${s.path}\n"}        header ${cookieScope s.path}
+        ${gate}${lib.optionalString s.stripPath "uri strip_prefix ${s.path}\n"}        header ${cookieScope s.path}
         reverse_proxy 127.0.0.1:${toString s.port}
       }
+  '';
+
+  # Gated rows admit a browser only after Dex has vouched for it. Group
+  # policy rides the request (`?allowed_groups=`), so one gate serves every
+  # group and each route keeps its own — see gate-policy.nix.
+  gatePreflight = s: ''
+    forward_auth ${gateUpstream} {
+      uri /oauth2/auth?allowed_groups=${allowedFor s}
     }
+  '';
+
+  proxyHandle = name: s: let
+    gated = s.accessGroup != null;
+  in ''
+    ${bareSlashRedirect s}${lib.optionalString gated ''
+    @row-${name}-api path ${s.path}/api ${s.path}/api/*
+    handle @row-${name}-api {
+    ${rowBody s ""}    }
+    ''}    @row-${name} path ${s.path} ${s.path}/*
+    handle @row-${name} {
+    ${rowBody s (lib.optionalString gated (gatePreflight s))}    }
   '';
 
   aliasHandle = name: target: path: ''

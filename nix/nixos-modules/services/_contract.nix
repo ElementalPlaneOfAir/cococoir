@@ -240,6 +240,27 @@ in
         internal = true;
       };
 
+      accessGroup = mkOption {
+        type = types.nullOr types.str;
+        default = args.accessGroup or null;
+        defaultText = literalMD ''`null` — no Dex gate'';
+        description = ''
+          Dex group that admits a browser to this service's UI. When set,
+          the plane row fronts the service with Caddy `forward_auth` to the
+          Dex gate and the app's own login is disabled — the gate is the
+          ONLY thing between a LAN client and the app.
+
+          `admins` is an implicit member of every group (root), so a
+          superuser never needs listing; the rule lives in gate-policy.nix.
+
+          The `/api` prefix is exempted from the gate: Prowlarr and mobile
+          apps authenticate with X-Api-Key and would otherwise be handed an
+          HTML login redirect. They keep the API key, which the *arrs
+          require on every API path regardless of auth method.
+        '';
+        internal = true;
+      };
+
       journald.units = mkOption {
         type = types.listOf types.str;
         default = ["${args.name}.service"];
@@ -266,6 +287,18 @@ in
               fortress.services.${args.name}: `public = true` requires
               `services.caddy.enable = true`. The Caddy vhost is
               the security boundary.
+            '';
+          }
+          {
+            # The app's own login is disabled whenever accessGroup is set,
+            # so a missing gate is not a downgrade — it is an open door.
+            assertion = cfg.accessGroup == null || (config.fortress.services.dex.enable or false);
+            message = ''
+              fortress.services.${args.name}: `accessGroup = "${toString cfg.accessGroup}"`
+              disables the app's own login and relies on the Dex gate, but
+              `fortress.services.dex.enable` is not true — so nothing would
+              stand between a LAN client and ${args.name}. Enable dex (which
+              activates the gate) or drop accessGroup.
             '';
           }
         ]
