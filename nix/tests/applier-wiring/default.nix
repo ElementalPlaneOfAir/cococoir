@@ -175,6 +175,15 @@ in
 assert lib.assertMsg (missingInfra == [])
   "applier-wiring: these units are enabled but NOT reachable from fortress.target (the applier starts only fortress.target, so they would never run): ${builtins.toJSON missingInfra}";
 
+# The gate is only real if oauth2-proxy is in the DEPLOYED closure. A unit
+# that evaluates but is unreachable from fortress.target is dropped
+# silently — every gated route then points at a port nothing is listening
+# on, and the app behind it has had its own login switched off. That is
+# exactly what shipped to amon-sul: secrets installed fine, Caddyfile
+# updated, gate never ran. `wantedBy` is the whole fix.
+assert lib.assertMsg (gatedRows == [] || builtins.elem "oauth2-proxy.service" closure)
+  "applier-wiring: these services are gated by the Dex gate (${toString (map (r: r.name) gatedRows)}) but oauth2-proxy.service is not in the applier closure — the gate would never start, so every gated route points at a dead port while the apps' own auth is disabled. Set systemd.services.oauth2-proxy.wantedBy = [ \"fortress.target\" ].";
+
 # jellarr is a flake input, so it is absent from the module list unless
 # fortress.nix imports it. Without it every `options.services ? jellarr`
 # gate is false and the guarded block vanishes silently.
@@ -348,6 +357,7 @@ assert lib.assertMsg (builtins.elem "fortress.target" installBefore && builtins.
       a prefix-stripped path redirects its bare form to the slash form
       every gated service row carries a forward_auth preflight
       every gate group is admitted (with the admins superset)
+      the Dex gate's oauth2-proxy is in the deployed closure
       caddy runs as root (no named OS account the applier cannot create)
       caddy reads its Caddyfile from the store, not /etc
       fortress.target starts caddy, so a public service is reachable

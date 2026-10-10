@@ -105,9 +105,24 @@ let
         echo "generator disagree — a box would boot without that credential." >&2
         exit 1
       fi
+      # oauth2-proxy refuses a cookie seed whose byte length is not 16, 24
+      # or 32. `openssl rand -base64 32` is 44 chars ending in `=`, and that
+      # padding does not survive into the rendered env file, so
+      # oauth2-proxy cannot base64-decode it, counts raw bytes instead, and
+      # will not start. 24 raw bytes encode to exactly 32 base64 chars with
+      # no padding to lose. Shipped to amon-sul: the gate crash-looped to
+      # `start-limit-hit` on "cookie_secret must be 16, 24, or 32 bytes".
+      if ! grep -q 'gate-cookie-secret).*openssl rand -base64 24' bootstrap.sh; then
+        echo "fortress-bootstrap-inventory: gate-cookie-secret is not minted with" >&2
+        echo "'openssl rand -base64 24'. oauth2-proxy needs a 16/24/32-byte seed;" >&2
+        echo "base64 32 yields 44 chars whose padding is lost, and the service" >&2
+        echo "refuses to start. base64 24 is exactly 32 chars, unpadded." >&2
+        exit 1
+      fi
       cat > $out <<EOF
       fortress bootstrap-inventory (L1): PASS
         every fortress.secrets._inventory key is minted by fortress-bootstrap
+        gate-cookie-secret is 32 chars unpadded (oauth2-proxy accepts it)
       EOF
     '';
   contractConformanceTests = import ./contract-conformance {inherit pkgs;};

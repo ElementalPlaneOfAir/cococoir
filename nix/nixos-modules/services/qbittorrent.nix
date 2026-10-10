@@ -68,15 +68,24 @@ mkFortressService {
         };
         Preferences.WebUI = {
           Address = "127.0.0.1";
-          # Bypass auth for localhost — the value this comment always
-          # described but the config never set. qBittorrent has no
-          # "trust the reverse proxy" mode, so this IS the posture: the
-          # app trusts the loopback source and the Dex gate (caddy
-          # `forward_auth`, planes.nix) is the only thing between a LAN
-          # client and the WebUI. It binds 127.0.0.1 only, so the reachable
-          # surface is the gate. Woe betide a route that loses its gate:
-          # asserted in applier-wiring.
-          LocalHostAuth = true;
+          # `false` = BYPASS authentication for loopback. qBittorrent has
+          # no "trust the reverse proxy" mode, so this is the posture: the
+          # control plane (radarr, sonarr, fortress-media-apply) is
+          # same-host, same trust domain, and needs unauthenticated API
+          # access to manage categories. `true` makes it demand a password
+          # from localhost too — and with no password configured that is a
+          # hard 403 on every call, which is what fortress-media-apply hit
+          # when this was flipped.
+          #
+          # The human-facing boundary is the Dex gate (caddy
+          # `forward_auth`, planes.nix), NOT a qBittorrent login — every
+          # LAN client goes through it. What this does NOT cover is a
+          # local process or an SSRF against 127.0.0.1:8080, which retains
+          # full control. Closing that needs a real WebUI credential that
+          # media-apply logs in with; there is no such credential today.
+          # It binds 127.0.0.1 only. Woe betide a route that loses its
+          # gate: asserted in applier-wiring.
+          LocalHostAuth = false;
           HostHeaderValidation = false;
           UseUPnP = false;
           CSRFProtection = true;

@@ -152,9 +152,28 @@ in {
 
     # oauth2-proxy reads Dex over the loopback issuer and must see the
     # secrets materialize first.
+    #
+    # `wantedBy` is load-bearing, not decoration: the applier deploys ONLY
+    # the transitive wants/requires closure of fortress.target (flake.nix).
+    # Without it the unit evaluates fine and is then silently dropped from
+    # the deployed tree — every gated route points at a port nothing is
+    # listening on, and nothing fails at build time. Lived through exactly
+    # that on amon-sul (see nix/tests/applier-wiring `gateInClosure`).
     systemd.services.oauth2-proxy = {
+      wantedBy = ["fortress.target"];
       after = ["sops-install-secrets.service" "dex.service"];
       requires = ["sops-install-secrets.service"];
+      serviceConfig = {
+        # nixpkgs' module creates a dedicated `oauth2-proxy` OS user and
+        # runs as it. The applier cannot create OS users (ADR-036), so
+        # systemd rejects the unit with `status=217/USER` before the
+        # binary ever starts — exactly the class of failure that made
+        # caddy and qbittorrent run as root. The gate binds loopback
+        # only, so it is never the exposed surface. `mkForce` because
+        # nixpkgs sets User at the same priority, not as a default.
+        User = lib.mkForce "root";
+        Group = lib.mkForce "root";
+      };
     };
   };
 }

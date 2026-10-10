@@ -230,9 +230,15 @@ mint_value() {
   case "$1" in
     fortress-admin-password-hash) ensure_admin_pair; MINTED_VALUE="$admin_hash" ;;
     jellyfin-admin-password) ensure_jellyfin_pw; MINTED_VALUE="$jellyfin_pw" ;;
-    # oauth2-proxy rejects a cookie seed that is not exactly 16, 24 or 32
-    # bytes base64-encoded — hex is not valid base64.
-    gate-cookie-secret) MINTED_VALUE="$(openssl rand -base64 32)" ;;
+    # oauth2-proxy rejects a cookie seed that is not 16, 24 or 32 BYTES.
+    # `openssl rand -base64 32` yields 44 chars ending in `=` padding, and
+    # the padding does not survive the round trip into the rendered env
+    # file — oauth2-proxy then fails to base64-decode it, falls back to
+    # counting raw bytes, and refuses to start (`cookie_secret must be
+    # 16, 24, or 32 bytes ... but is 44 bytes`). 24 raw bytes encode to
+    # exactly 32 base64 chars with NO padding to lose, so the value is
+    # valid under either interpretation. Lived through it on amon-sul.
+    gate-cookie-secret) MINTED_VALUE="$(openssl rand -base64 24)" ;;
     *) MINTED_VALUE="$(openssl rand -hex 32)" ;;
   esac
   [ -n "$MINTED_VALUE" ] || {
